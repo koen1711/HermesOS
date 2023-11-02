@@ -229,3 +229,13 @@ char *uint_to_string(uint32_t u, char *s)
 	s[i] = 0;
 	return s;
 }
+
+
+int memcmp(void* dst, void* src, unsigned length) {
+    for (int i = 0; i < length; i++) {
+        if (((char*)dst)[i] != ((char*)src)[i]) {
+            return ((char*)dst)[i] - ((char*)src)[i];
+        }
+    }
+    return 0;
+}

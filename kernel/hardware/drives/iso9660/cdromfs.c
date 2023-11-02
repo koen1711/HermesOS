@@ -116,6 +116,7 @@ static int cdrom_dirent_close( struct fs_dirent *d )
 
 static int cdrom_dirent_list(struct fs_dirent *dir, char *buffer, int buffer_length)
 {
+    printf("cdrom_dirent_list\n");
 	if(!dir->isdir) return KERROR_NOT_A_DIRECTORY;
 
 	char *temp = page_alloc(0);

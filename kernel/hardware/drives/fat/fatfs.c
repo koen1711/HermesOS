@@ -64,6 +64,7 @@ struct fs_volume * fatfs_volume_open( struct device *d )
 }
 
 struct fs_dirent * fatfs_dirent_lookup( struct fs_dirent *d, const char *name ) {
+    printf("fatfs_dirent_lookup\n");
     struct fs_dirent *d2 = kmalloc(sizeof(struct fs_dirent));
     d2->volume = d->volume;
     d2->size = 0;
@@ -96,24 +97,27 @@ struct fs_dirent * fatfs_dirent_lookup( struct fs_dirent *d, const char *name ) 
 
 int fatfs_dirent_list( struct fs_dirent *d, char *buffer, int length )
 {
-    FILINFO fno;
+    FILINFO* fno = kmalloc(sizeof(FILINFO));
     int i = 0;
-    while (f_readdir(&d->fatfs_dir, &fno) == FR_OK) {
-        if (fno.fname[0] == 0) break;
+    while (f_readdir(&d->fatfs_dir, fno) == FR_OK) {
+        printf("name: %s\n", fno->fname);
+        if (fno->fname[0] == 0) break;
         if (i >= length) break;
-        strcpy(buffer + i, fno.fname);
-        i += strlen(fno.fname);
+        strcpy(buffer + i, fno->fname);
+        i += strlen(fno->fname);
         strcpy(buffer + i, "\n");
         i++;
     }
+    kfree(fno);
     return i;
 }
 
 int fatfs_dirent_close( struct fs_dirent *d )
 {
-    if (d->isdir)
+    if (d->isdir) {
+        printf("Closing directory\n");
         f_closedir(&d->fatfs_dir);
-    else
+    } else
         f_close(&d->fatfs_file);
     return 0;
 }

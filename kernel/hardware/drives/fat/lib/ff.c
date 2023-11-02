@@ -4724,6 +4724,8 @@ FRESULT f_readdir (
 			FREE_NAMBUF();
 		}
 	}
+    // print the return code
+    printf("f_readdir: %d\n", res);
 	LEAVE_FF(fs, res);
 }
 

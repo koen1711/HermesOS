@@ -28,14 +28,7 @@ const char *strchr(const char *s, char ch);
 
 void memset(void *d, char value, unsigned length);
 void memcpy(void *d, const void *s, unsigned length);
-int memcmp(void* dst, void* src, unsigned length) {
-    for (int i = 0; i < length; i++) {
-        if (((char*)dst)[i] != ((char*)src)[i]) {
-            return ((char*)dst)[i] - ((char*)src)[i];
-        }
-    }
-    return 0;
-}
+
 
 void printf(const char *s, ...);
 

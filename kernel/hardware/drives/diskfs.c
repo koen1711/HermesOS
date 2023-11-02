@@ -297,6 +297,7 @@ struct fs_dirent * diskfs_dirent_lookup( struct fs_dirent *d, const char *name )
 
 int diskfs_dirent_list( struct fs_dirent *d, char *buffer, int length )
 {
+    printf("diskfs_dirent_list\n");
 	struct diskfs_block *b = page_alloc(0);
 
 	int nblocks = d->size / DISKFS_BLOCK_SIZE;

@@ -91,10 +91,10 @@ int main(int argc, char *argv[])
 	struct event e;
 
 	struct window windows[NWINDOWS] = {
-		{ .x=0,         .y=0,         .console_mode=1, .exec = "bin/shell.exe", .arg=0, .argc = 2 },
-		{ .x=nw_width(nw)/2, .y=0,         .console_mode=0, .exec = "bin/saver.exe", .arg=0, .argc = 2 },
-		{ .x=0,         .y=nw_height(nw)/2, .console_mode=0, .exec = "bin/snake.exe", .arg=0, .argc = 2 },
-		{ .x=nw_width(nw)/2, .y=nw_height(nw)/2, .console_mode=1, .exec = "bin/fractal.exe", .arg=0, .argc = 2 },
+		{ .x=0,         .y=0,         .console_mode=1, .exec = "bin/shell", .arg=0, .argc = 2 },
+		{ .x=nw_width(nw)/2, .y=0,         .console_mode=0, .exec = "bin/saver", .arg=0, .argc = 2 },
+		{ .x=0,         .y=nw_height(nw)/2, .console_mode=0, .exec = "bin/snake", .arg=0, .argc = 2 },
+		{ .x=nw_width(nw)/2, .y=nw_height(nw)/2, .console_mode=1, .exec = "bin/fractal", .arg=0, .argc = 2 },
 	};
 
 	int i;

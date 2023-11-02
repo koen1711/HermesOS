@@ -68,12 +68,10 @@ static int kshell_automount()
         if(kshell_mount("ata",i,"fatfs")==0) return 0;
     }
 
-	for(i=0;i<4;i++) {
-		printf("automount: trying atapi unit %d...\n",i);
-		if(kshell_mount("atapi",i,"cdromfs")==0) return 0;
-	}
-
-
+    for(i=0;i<4;i++) {
+        printf("automount: trying atapi unit %d...\n",i);
+        if(kshell_mount("atapi",i,"cdromfs")==0) return 0;
+    }
 
 	printf("automount: no bootable devices available.\n");
 	return -1;
@@ -138,7 +136,7 @@ static int kshell_listdir(const char *path)
 {
 	struct fs_dirent *d = fs_resolve(path);
 	if(d) {
-		int buffer_length = 1024;
+		int buffer_length = 4096;
 		char *buffer = kmalloc(buffer_length);
 		if(buffer) {
 			int length = fs_dirent_list(d, buffer, buffer_length);
@@ -147,11 +145,13 @@ static int kshell_listdir(const char *path)
 			} else {
 				printf("list: %s is not a directory\n", path);
 			}
-			kfree(buffer);
 		}
+        kfree(buffer);
+        fs_dirent_close(d);
 	} else {
 		printf("list: %s does not exist\n", path);
 	}
+
 
 	return 0;
 }

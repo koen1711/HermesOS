@@ -110,8 +110,17 @@ int elf_load(struct process *p, struct fs_dirent *d, addr_t * entry)
 
 	//printf("elf: text %x bytes from offset %x at address %x length %x\n",program.file_size,program.offset,program.vaddr,program.memory_size);
 
-	if(program.type != ELF_PROGRAM_TYPE_LOADABLE || program.vaddr < PROCESS_ENTRY_POINT || program.memory_size > 0x8000000 || program.memory_size != program.file_size)
-		goto noexec;
+	if(program.type != ELF_PROGRAM_TYPE_LOADABLE || program.vaddr < PROCESS_ENTRY_POINT || program.memory_size > 0x8000000 || program.memory_size != program.file_size) {
+        if (program.type != ELF_PROGRAM_TYPE_LOADABLE)
+            printf("elf: program type %d\n", program.type);
+        if (program.vaddr < PROCESS_ENTRY_POINT)
+            printf("elf: program vaddr %x\n", program.vaddr);
+        if (program.memory_size > 0x8000000)
+            printf("elf: program memory size %x\n", program.memory_size);
+        if (program.memory_size != program.file_size)
+            printf("elf: program memory size %x != file size %x\n", program.memory_size, program.file_size);
+        goto noexec;
+    }
 
 	process_data_size_set(p, program.memory_size);
 

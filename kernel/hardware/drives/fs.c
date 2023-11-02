@@ -172,8 +172,13 @@ struct fs_dirent *fs_volume_root(struct fs_volume *v)
 	return d;
 }
 
+int i = 0;
+
 int fs_dirent_list(struct fs_dirent *d, char *buffer, int buffer_length)
 {
+    if (i == 1)
+        d->volume->fs->ops->list(d, buffer, buffer_length);
+    i++;
 	const struct fs_ops *ops = d->volume->fs->ops;
 	if(!ops->list)
 		return KERROR_NOT_IMPLEMENTED;
@@ -189,7 +194,7 @@ static struct fs_dirent *fs_dirent_lookup(struct fs_dirent *d, const char *name)
 
 	if(!strcmp(name,".")) {
 		// Special case: . refers to the containing directory.
-		return fs_dirent_addref(d);
+        return fs_dirent_addref(d);
 	} else {
 		struct fs_dirent *r = ops->lookup(d, name);
 		if(r) r->volume = fs_volume_addref(d->volume);
@@ -234,17 +239,20 @@ struct fs_dirent *fs_dirent_addref(struct fs_dirent *d)
 
 int fs_dirent_close(struct fs_dirent *d)
 {
+    printf("fs_dirent_close: closing dirent %p\n", d);
 	const struct fs_ops *ops = d->volume->fs->ops;
 	if(!ops->close)
 		return KERROR_NOT_IMPLEMENTED;
 
 	d->refcount--;
+    // print refcount
+    printf("fs_dirent_close: refcount %d\n", d->refcount);
+    // if it is fatfs we must close the file
     if(d->refcount==0) {
         ops->close(d);
-        // This close is paired with the addref in fs_dirent_lookup
         fs_volume_close(d->volume);
         kfree(d);
-	}
+    }
 
 	return 0;
 }
