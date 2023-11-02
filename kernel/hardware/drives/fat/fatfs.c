@@ -84,11 +84,6 @@ struct fs_dirent * fatfs_dirent_lookup( struct fs_dirent *d, const char *name ) 
     }
     else {
         d2->isdir = 0;
-        result = f_stat(name, &fno);
-        if (result != FR_OK) {
-            printf("f_stat result: %d\n", result);
-            return 0;
-        }
         f_open(&d2->fatfs_file, name, FA_READ);
     }
     d2->size = fno.fsize;
@@ -99,6 +94,7 @@ int fatfs_dirent_list( struct fs_dirent *d, char *buffer, int length )
 {
     FILINFO* fno = kmalloc(sizeof(FILINFO));
     int i = 0;
+    f_rewinddir(&d->fatfs_dir);
     while (f_readdir(&d->fatfs_dir, fno) == FR_OK) {
         printf("name: %s\n", fno->fname);
         if (fno->fname[0] == 0) break;

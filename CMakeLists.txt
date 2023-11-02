@@ -32,6 +32,7 @@ else ()
         COMMAND dd if=/dev/zero of=${CMAKE_BINARY_DIR}/drive.img bs=512 count=2880
         COMMAND mkfs.fat -F 12 ${CMAKE_BINARY_DIR}/drive.img
         COMMAND mmd -i ${CMAKE_BINARY_DIR}/drive.img ::bin
+        COMMAND mmd -i ${CMAKE_BINARY_DIR}/drive.img ::bin/kernel
     )
 endif ()
 
