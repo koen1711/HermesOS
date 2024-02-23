@@ -10,9 +10,9 @@ foreach(SOURCE ${USER_EXECUTABLES})
             # also add libbase.a in build/
             # copy all the files with mcopy -i disk.img SOURCE ::bin/USER
             COMMAND ${CMAKE_C_COMPILER} -m32 -Wall -c -ffreestanding -fno-pie -g -std=gnu99 -I ${CMAKE_SOURCE_DIR}/include/ ${SOURCE} -o ${CMAKE_BINARY_DIR}/user/${SOURCE_NAME}.o
-            COMMAND ${CMAKE_C_LINKER} -Ttext 0x80000000 ${CMAKE_BINARY_DIR}/library/user-start.o ${CMAKE_BINARY_DIR}/user/${SOURCE_NAME}.o ${CMAKE_BINARY_DIR}/libbase.a -o ${CMAKE_BINARY_DIR}/user/${SOURCE_NAME}
+            COMMAND ${CMAKE_LINKER} -Ttext 0x80000000 ${CMAKE_BINARY_DIR}/library/user-start.o ${CMAKE_BINARY_DIR}/user/${SOURCE_NAME}.o ${CMAKE_BINARY_DIR}/libbase.a -o ${CMAKE_BINARY_DIR}/user/${SOURCE_NAME}
             COMMAND mcopy -i ${CMAKE_BINARY_DIR}/drive.img ${CMAKE_BINARY_DIR}/user/${SOURCE_NAME} ::${SOURCE_NAME}
-            DEPENDS base
+            DEPENDS baselib
     )
 
     # Add the object file to the list

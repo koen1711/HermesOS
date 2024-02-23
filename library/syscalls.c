@@ -7,20 +7,16 @@ See the file LICENSE for details.
 #include "kernel/syscall.h"
 #include "kernel/stats.h"
 #include "kernel/gfxstream.h"
-
-void syscall_debug(const char *str)
-{
-	syscall(SYSCALL_DEBUG, (uint32_t) str, 0, 0, 0, 0);
-}
+#include "../include/kernel/syscall.h"
 
 void syscall_process_exit(int status)
 {
-	syscall(SYSCALL_PROCESS_EXIT, status, 0, 0, 0, 0);
+	syscall(SYSCALL_EXIT, status, 0, 0, 0, 0);
 }
 
 int syscall_process_yield()
 {
-	return syscall(SYSCALL_PROCESS_YIELD, 0, 0, 0, 0, 0);
+	return syscall(SYSCALL_SCHED_YIELD, 0, 0, 0, 0, 0);
 }
 
 int syscall_process_run(int fd, int argc, const char **argv)
@@ -30,7 +26,7 @@ int syscall_process_run(int fd, int argc, const char **argv)
 
 int syscall_process_wrun(int fd, int argc, const char **argv, int * fds, int fd_len)
 {
-	return syscall(SYSCALL_PROCESS_WRUN, fd, argc, (uint32_t) argv, (uint32_t) fds, fd_len);
+	return syscall(SYSCALL_PRO, fd, argc, (uint32_t) argv, (uint32_t) fds, fd_len);
 }
 
 int syscall_process_fork()
@@ -53,9 +49,9 @@ int syscall_process_parent()
 	return syscall(SYSCALL_PROCESS_PARENT, 0, 0, 0, 0, 0);
 }
 
-int syscall_process_kill(unsigned int pid)
+int syscall_process_kill(unsigned int pid, int sig)
 {
-	return syscall(SYSCALL_PROCESS_KILL, pid, 0, 0, 0, 0);
+	return syscall(SYSCALL_PROCESS_KILL, pid, 15, 0, 0, 0);
 }
 
 int syscall_process_reap(unsigned int pid)
@@ -185,7 +181,7 @@ int syscall_bcache_flush()
 
 int syscall_system_time( uint32_t *t )
 {
-	return syscall(SYSCALL_SYSTEM_TIME, (uint32_t)t, 0, 0, 0, 0);
+	return syscall(SYSCALL_TIME, (uint32_t)t, 0, 0, 0, 0);
 }
 
 int syscall_system_rtc( struct rtc_time *time )

@@ -9,7 +9,7 @@
 
 #define KILO 1024
 #define MEGA (KILO*KILO)
-#define GIGA (KILO*K<string.h>ILO*KILO)
+#define GIGA (KILO*KILO*KILO)
 
 #define MAX_ARGV_LENGTH 256
 

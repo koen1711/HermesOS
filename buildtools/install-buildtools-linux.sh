@@ -38,7 +38,7 @@ fi
 
 # build and install libtools
 cd $BINUTILS
-./configure --prefix="$PREFIX" --target=i686-elf --disable-nls --disable-werror --with-sysroot
+./configure --prefix="$PREFIX" --target=x86_64-elf --disable-nls --disable-werror --with-sysroot
 make -j $THREADS && make install
 cd ..
 
@@ -50,14 +50,22 @@ cd ..
 # build and install gcc
 mkdir $GCC-elf-objs
 cd $GCC-elf-objs
-../$GCC/configure --prefix="$PREFIX" --target=i686-elf --disable-nls --enable-languages=c --without-headers
+../$GCC/configure --prefix="$PREFIX" --target=x86_64-elf --disable-nls --enable-languages=c --without-headers
 make all-gcc -j $THREADS && make all-target-libgcc -j $THREADS && make install-gcc && make install-target-libgcc
 cd ..
 
 # build and install GDB
 mkdir ${GDB}-build
 cd ${GDB}-build
-../${GDB}/configure --prefix="$PREFIX" --target=i686-elf
+../${GDB}/configure --prefix="$PREFIX" --target=x86_64-elf
+make -j $THREADS && make install
+cd ..
+
+# build and install NASM
+curl --insecure -O https://www.nasm.us/pub/nasm/releasebuilds/2.14.02/nasm-2.14.02.tar.gz
+tar -zxf nasm-2.14.02.tar.gz
+cd nasm-2.14.02
+./configure --prefix="$PREFIX"
 make -j $THREADS && make install
 cd ..
 
