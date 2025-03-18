@@ -1,0 +1,6 @@
+build/
+buildtools/cross
+
+cmake-build-debug/
+cmake-build-release/
+.idea/
