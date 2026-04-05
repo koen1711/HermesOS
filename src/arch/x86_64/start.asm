@@ -67,101 +67,106 @@
 
 .code32
 .section .bss
-.comm pml4, PML4_SIZE, PML4_ALIGNMENT // Page Map Level 4 Table
+.comm pml4, PML4_SIZE, PML4_ALIGNMENT           /* Page Map Level 4 Table */
 
-// High and Low Page Directory Pointer Tables
+/* High and Low Page Directory Pointer Tables */
 .comm low_pdpt, PDPT_SIZE, PDPT_ALIGNMENT
 .comm high_pdpt, PDPT_SIZE, PDPT_ALIGNMENT
 
-// High and Low Page Directory Tables
+/* High and Low Page Directory Tables */
 .comm low_page_directory_table, PAGE_DIRECTORY_SIZE, PAGE_DIRECTORY_ALIGNMENT
 .comm high_page_directory_table, PAGE_DIRECTORY_SIZE, PAGE_DIRECTORY_ALIGNMENT
 
-.comm paging_space, PAGING_SIZE, PAGING_ALIGNMENT // More page table space
-.comm tmp_stack, STACK_SIZE, STACK_ALIGNMENT // Temporary Stack
+.comm paging_space, PAGING_SIZE, PAGING_ALIGNMENT   /* More page table space */
+.comm tmp_stack, STACK_SIZE, STACK_ALIGNMENT         /* Temporary Stack */
 
 .data
 gdt_start:
-    .quad GDT_FIRST_ENTRY // Unused / Invalid Entry
-    .quad GDT_ENTRY_CODE  // Kernel Entry
+    .quad GDT_FIRST_ENTRY  /* Unused / Invalid Entry */
+    .quad GDT_ENTRY_CODE   /* Kernel Entry */
     .quad GDT_ENTRY_DATA
 gdt_end:
-    .skip (GDT_SIZE - (gdt_end - gdt_start))  // Empty space for more entries.
-gdt_ptr:  // LGDT instruction requires a pointer to 2 Byte GDT Size + 4 Byte GDT pointer.
+    .skip (GDT_SIZE - (gdt_end - gdt_start))  /* Empty space for more entries */
+gdt_ptr:  /* LGDT instruction requires a pointer to 2 Byte GDT Size + 4 Byte GDT pointer */
     .short GDT_SIZE - 1
     .long gdt_start
 
 .section .text
-.global _start // Setup entry point as function.
+.global _start  /* Setup entry point as function */
 _start:
 
 check_cpuid:
-    // Check if CPUID instruction is supported by trying to execute it and catching any exceptions.
-    pushfd // Save EFLAGS
-    pushfd
-    xor dword [esp],0x00200000           ;Invert the ID bit in stored EFLAGS
-    popfd // Load stored EFLAGS (with ID bit inverted)
-    pushfd // Store EFLAGS again
-    pop eax // eax = modified EFLAGS
-    xor eax,[esp] // eax = whichever bits were changed
-    popfd // Restore original EFLAGS
-    and eax,0x00200000 // eax = zero if ID bit can't be changed, else non-zero
+    /* Check if CPUID instruction is supported by trying to toggle the ID bit in EFLAGS */
+    pushfl                              /* Save EFLAGS */
+    pushfl
+    xorl $0x00200000, (%esp)            /* Invert the ID bit in stored EFLAGS */
+    popfl                               /* Load stored EFLAGS (with ID bit inverted) */
+    pushfl                              /* Store EFLAGS again */
+    popl %eax                           /* eax = modified EFLAGS */
+    xorl (%esp), %eax                   /* eax = whichever bits were changed */
+    popfl                               /* Restore original EFLAGS */
+    andl $0x00200000, %eax              /* eax = zero if ID bit can't be changed, else non-zero */
     jz cpuid_not_supported
 
-    push %ebx // Sav EBX for CPUID
+    push %ebx  /* Save EBX for CPUID */
 
-    mov $1, %eax
+    /* Check if extended CPUID leaves are supported */
+    mov $0x80000000, %eax
     cpuid
+    cmp $0x80000001, %eax
+    jb no_long_mode  /* Extended CPUID not supported */
 
-    // Check for Long Mode support by checking if EDX bit 29 (Long Mode) is set.
+    /* Check for Long Mode support (EDX bit 29 of CPUID leaf 0x80000001) */
+    mov $0x80000001, %eax
+    cpuid
     test $0x20000000, %edx
-    jz no_long_mode // Jump if Long Mode is not supported
+    jz no_long_mode
 
-    pop %ebx // Restore EBX after CPUID
+    pop %ebx  /* Restore EBX after CPUID */
 
-    // Set Stack Pointer to point to the end of the stack as the stack grows downwards.
+    /* Set Stack Pointer to point to the end of the stack as the stack grows downwards */
     movl $tmp_stack + STACK_SIZE, %esp
 
-    push $0 // Put multiboot structure pointer on the stack
+    push $0  /* Put multiboot structure pointer on the stack */
     push %ebx
 
-    // PML4 entry for Low PDPT
-    movl $low_pdpt, %eax                                                                        // Pointer to Low PDPT
-    or $(MMU_PRESENT | MMU_WRITABLE), %eax                                                      // Set Page Present and Writable Flags
-    movl %eax, pml4 + (((PHYSICAL_START >> 39) & 0x1FF) * PML4_ENTRY_SIZE)       // Copy Entry
+    /* PML4 entry for Low PDPT */
+    movl $low_pdpt, %eax                                                       /* Pointer to Low PDPT */
+    or $(MMU_PRESENT | MMU_WRITABLE), %eax                                     /* Set Page Present and Writable Flags */
+    movl %eax, pml4 + (((PHYSICAL_START >> 39) & 0x1FF) * PML4_ENTRY_SIZE)    /* Copy Entry */
 
-    // PML4 entry for High PDPT
-    movl $high_pdpt, %eax                                                                       // Pointer to High PDPT
-    or $(MMU_PRESENT | MMU_WRITABLE), %eax                                                      // Set Page Present and Writable Flags
-    movl %eax, pml4 + (((VIRTUAL_START >> 39) & 0x1FF) * PML4_ENTRY_SIZE)        // Copy Entry
+    /* PML4 entry for High PDPT */
+    movl $high_pdpt, %eax                                                      /* Pointer to High PDPT */
+    or $(MMU_PRESENT | MMU_WRITABLE), %eax                                     /* Set Page Present and Writable Flags */
+    movl %eax, pml4 + (((VIRTUAL_START >> 39) & 0x1FF) * PML4_ENTRY_SIZE)     /* Copy Entry */
 
-    // PDPT entry for Low PDT
-    movl $low_page_directory_table, %eax                                                        // Pointer to Low PDT
-    or $(MMU_PRESENT | MMU_WRITABLE), %eax                                                      // Set Page Present and Writable Flags
-    movl %eax, low_pdpt + (((PHYSICAL_START >> 30) & 0x1FF) * PDPT_ENTRY_SIZE)   // Copy Entry
+    /* PDPT entry for Low PDT */
+    movl $low_page_directory_table, %eax                                       /* Pointer to Low PDT */
+    or $(MMU_PRESENT | MMU_WRITABLE), %eax                                     /* Set Page Present and Writable Flags */
+    movl %eax, low_pdpt + (((PHYSICAL_START >> 30) & 0x1FF) * PDPT_ENTRY_SIZE) /* Copy Entry */
 
-    // PDPT entry for High PDT
-    movl $high_page_directory_table, %eax                                                       // Pointer to High PDT
-    or $(MMU_PRESENT | MMU_WRITABLE), %eax                                                      // Set Page Present and Writable Flags
-    movl %eax, high_pdpt + (((VIRTUAL_START >> 30) & 0x1FF) * PDPT_ENTRY_SIZE)   // Copy Entry
+    /* PDPT entry for High PDT */
+    movl $high_page_directory_table, %eax                                      /* Pointer to High PDT */
+    or $(MMU_PRESENT | MMU_WRITABLE), %eax                                     /* Set Page Present and Writable Flags */
+    movl %eax, high_pdpt + (((VIRTUAL_START >> 30) & 0x1FF) * PDPT_ENTRY_SIZE) /* Copy Entry */
 
-    // Clear ECX Register for later use.
+    /* Clear ECX Register for later use */
     xor %ecx, %ecx
 
-    // Load physical kernel end address and divide it by 2MB (the page size).
+    /* Load physical kernel end address and divide it by 2MB (the page size) */
     movl $(_kernel_physical_end + HEAP_SIZE), %esi
     shrl $TWO_MEGABYTES_SHIFT, %esi
     addl $1, %esi
 
 page_directory_table_loop:
-    // EAX = 2MB * ECX
+    /* EAX = 2MB * ECX */
     movl $TWO_MEGABYTES, %eax
     mul %ecx
 
-    // Set present, writable, 2MB page size flags.
+    /* Set present, writable, 2MB page size flags */
     or $(MMU_PRESENT | MMU_WRITABLE | MMU_PDE_TWO_MB), %eax
 
-    // Create an entry in High and Low PDT.
+    /* Create an entry in High and Low PDT */
     movl %eax, low_page_directory_table(, %ecx, PAGE_DIRECTORY_ENTRY_SIZE)
     movl %eax, high_page_directory_table(, %ecx, PAGE_DIRECTORY_ENTRY_SIZE)
 
@@ -179,32 +184,53 @@ page_directory_table_loop:
     movl $MSR_EFER, %ecx
     rdmsr
 
-    or $MSR_EFER_LME, %eax // Enable Long Mode
+    or $MSR_EFER_LME, %eax  /* Enable Long Mode */
     wrmsr
 
-    // Load Control Register 0 flags.
+    /* Load Control Register 0 flags */
     movl $CR0, %eax
     movl %eax, %cr0
 
     lgdt gdt_ptr
     ljmp $(GDT_ENTRY * GDT_ENTRY_SIZE), $_start64
 
+no_support:
+    /* Print "NOSUPPORT" in RED to 0xB8000 (VGA Text Mode Buffer) */
+    /* Each entry is: low byte = ASCII char, high byte = attribute (0x0C = red on black) */
+    mov $0xB8000, %edi
+    movw $0x0C4E,   (%edi)  /* 'N' */
+    movw $0x0C4F,  2(%edi)  /* 'O' */
+    movw $0x0C53,  4(%edi)  /* 'S' */
+    movw $0x0C55,  6(%edi)  /* 'U' */
+    movw $0x0C50,  8(%edi)  /* 'P' */
+    movw $0x0C50, 10(%edi)  /* 'P' */
+    movw $0x0C4F, 12(%edi)  /* 'O' */
+    movw $0x0C52, 14(%edi)  /* 'R' */
+    movw $0x0C54, 16(%edi)  /* 'T' */
+
+    ret
 cpuid_not_supported:
-    // If CPUID is not supported, halt the CPU
+    /* If CPUID is not supported, halt the CPU */
+
+    call no_support
+
     cli
     hlt
     jmp cpuid_not_supported
 
 no_long_mode:
-    // If Long Mode is not supported, halt the CPU
+    /* If Long Mode is not supported, halt the CPU */
+
+    call no_support
+
     cli
     hlt
     jmp no_long_mode
 
 .code64
-.global _start64 // Setup 64-bit entry point as function.
+.global _start64  /* Setup 64-bit entry point as function */
 _start64:
-    // Set segment selectors
+    /* Set segment selectors */
     mov $0, %ax
     movw %ax, %ds
     movw %ax, %es

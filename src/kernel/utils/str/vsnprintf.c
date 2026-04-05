@@ -66,11 +66,10 @@ static void fmt_int(char *buf, size_t *len, size_t maxlen,
     char nbuf[64], sign = 0;
     char altb[8]; // small buf for sign and #
     unsigned long n = num;
-    int npad;           // number of pads
-    char pchar = ' ';   // padding character
-    char *digits = "0123456789ABCDEF";
+    // number of pads
+    const char paddingChar = ' ';   // padding character
+    const char *digits = "0123456789ABCDEF";
     char *ldigits = "0123456789abcdef";
-    int i, j;
 
     if (base < 2 || base > 16)
         return;
@@ -85,13 +84,13 @@ static void fmt_int(char *buf, size_t *len, size_t maxlen,
     } else if (flags & F_SPACE)
         sign = ' ';
 
-    i = 0;
+    int i = 0;
     do {
         nbuf[i++] = digits[n % base];
         n = n / base;
     } while (n > 0);
 
-    j = 0;
+    int j = 0;
     if (sign) altb[j++] = sign;
     if (flags & F_ALTERNATE) {
         if (base == 8 || base == 16) {
@@ -102,18 +101,18 @@ static void fmt_int(char *buf, size_t *len, size_t maxlen,
     }
     altb[j] = 0;
 
-    npad = width > i + j ? width - i - j : 0;
+    int paddingCount = width > i + j ? width - i - j : 0;
 
     if (width > i + j)
-        npad = width - i - j;
+        paddingCount = width - i - j;
 
-    if (npad > 0 && ((flags & F_LEFT) == 0)) {
+    if (paddingCount > 0 && ((flags & F_LEFT) == 0)) {
         if (flags & F_ZEROPAD) {
             for (j = 0; altb[j]; j++)
                 bputc(buf, len, maxlen, altb[j]);
             altb[0] = 0;
         }
-        while (npad-- > 0)
+        while (paddingCount-- > 0)
             bputc(buf, len, maxlen, (flags & F_ZEROPAD) ? '0' : ' ');
     }
     for (j = 0; altb[j]; j++)
@@ -122,9 +121,9 @@ static void fmt_int(char *buf, size_t *len, size_t maxlen,
     while (i-- > 0)
         bputc(buf, len, maxlen, nbuf[i]);
 
-    if (npad > 0 && (flags & F_LEFT))
-        while(npad-- > 0)
-            bputc(buf, len, maxlen, pchar);
+    if (paddingCount > 0 && (flags & F_LEFT))
+        while(paddingCount-- > 0)
+            bputc(buf, len, maxlen, paddingChar);
 }
 
 static void fmt_chr(char *buf, size_t *pos, size_t max, char c,

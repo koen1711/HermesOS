@@ -124,6 +124,7 @@ static bool is_valid_gpt_entry(const gpt_entry* entry) {
 }
 
 int ata_read(uint32_t unique_id, uint64_t begin_byte, uint64_t end_byte, uint8_t *buffer);
+int ata_write(uint32_t unique_id, uint64_t begin_byte, uint64_t end_byte, const uint8_t *buffer);
 
 void ata_initialize();
 

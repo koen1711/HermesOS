@@ -5,7 +5,8 @@
 #include <stdint.h>
 
 #include <hardware/memory/alloc.h>
-#include <drivers/fs/fs_utils.h>
+
+#include "drivers/fs/fs_utils.h"
 
 typedef struct
 {
@@ -42,7 +43,7 @@ typedef struct {
     uint64_t lba_end;
     uint64_t attributes;
     uint16_t partition_name[36]; // UTF-16
-    file_system_type fs_type;
+    partition_type part_type;
 } __attribute__((packed)) gpt_entry;
 
 typedef struct
@@ -61,7 +62,7 @@ static const uint8_t GUIDS[][16] = {
     { 0x21, 0x68, 0x61, 0x48, 0x64, 0x49, 0x6E, 0x6F, 0x74, 0x4E, 0x65, 0x65, 0x64, 0x45, 0x46, 0x49 }  // BIOS Boot
 };
 
-static const file_system_type TYPES[] = {
+static const partition_type TYPES[] = {
     FS_FAT32, FS_EXT4, FS_EXT3, FS_EFI_SYSTEM, FS_BIOS_BOOT
 };
 
@@ -76,7 +77,7 @@ static void swap_guid_endian(const uint8_t* guid, uint8_t* out) {
 }
 
 // Function to map GPT partition type to filesystem type
-static file_system_type gpt_partition_fs_type(const gpt_entry* entry) {
+static partition_type gpt_partition_fs_type(const gpt_entry* entry) {
     uint8_t guid_fixed[16];
     swap_guid_endian(entry->partition_type_guid, guid_fixed);  // Fix endianness
 

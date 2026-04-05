@@ -1,25 +1,17 @@
 #include "fs.h"
 #include "fat/fat32.h"
-#include "hardware/terminal/stdio.h"
+#include "vfs/vfs.h"
 
-void register_filesystem(fs_node * node) {
-    switch (node->fs_type) {
-    case FS_FAT32:
-        fat32_initialize(node);
-        break;
-    case FS_EXT4:
-        printf("EXT4 filesystem detected\n");
-        break;
-    case FS_EXT3:
-        printf("EXT3 filesystem detected\n");
-        break;
-    case FS_EFI_SYSTEM:
-        fat32_initialize(node);
-        break;
-    case FS_BIOS_BOOT:
-        break;
-    default:
-        printf("Unknown filesystem detected\n");
-        break;
-    }
+#include <hardware/terminal/stdio.h>
+
+void fs_init(void)
+{
+    vfs_init();
+    vfs_register_filesystem(&fat32_fs_type);
+}
+
+int fs_mount_partition(const char *fs_type_name, const char *dev_name,
+                       struct block_device *bdev)
+{
+    return vfs_mount_root_dev(fs_type_name, dev_name, bdev);
 }

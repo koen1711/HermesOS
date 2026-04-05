@@ -3,6 +3,7 @@
 #include <stdint.h>
 
 #include <drivers/fs/fs.h>
+#include <drivers/fs/fat/fat32.h>
 #include <hardware/port/pci.h>
 #include <hardware/port/ports.h>
 #include <hardware/memory/alloc.h>
@@ -12,6 +13,27 @@
 
 #include "disk.h"
 #include "hardware/interrupts/panic.h"
+
+/* ── block_device adapters for ATA ─────────────────────────────── */
+
+static int ata_bdev_read(struct block_device *bdev, uint64_t off,
+                         uint32_t len, void *buf)
+{
+    uint64_t abs_off = bdev->part_offset + off;
+    return ata_read(bdev->unique_id, abs_off, abs_off + len, buf);
+}
+
+static int ata_bdev_write(struct block_device *bdev, uint64_t off,
+                          uint32_t len, const void *buf)
+{
+    uint64_t abs_off = bdev->part_offset + off;
+    return ata_write(bdev->unique_id, abs_off, abs_off + len, (const uint8_t *)buf);
+}
+
+static const struct block_device_ops ata_bdev_ops = {
+    .read_bytes  = ata_bdev_read,
+    .write_bytes = ata_bdev_write,
+};
 
 // Create a linked list for the registry
 full_map* ata_disk_registry = NULL;
@@ -183,7 +205,7 @@ int ata_read(const uint32_t unique_id, const uint64_t begin_byte, const uint64_t
     return 0;
 }
 
-int ata_write(const uint32_t unique_id, const uint64_t begin_byte, const uint64_t end_byte, const uint8_t* buffer)
+int ata_write(const uint32_t unique_id, const uint64_t begin_byte, const uint64_t end_byte, const uint8_t *buffer)
 {
     const ata_device* dev = map_get(ata_disk_registry, (void*)unique_id);
 
@@ -272,14 +294,14 @@ void ata_get_gpt(const ata_device * dev, full_gpt* gpt)
         memcpy(tmp_entry,
                (uint8_t*)sector_buffer + entry_offset * entry_size,
                entry_size);
-        tmp_entry->fs_type = FS_UNKNOWN;
+        tmp_entry->part_type = FS_UNKNOWN;
 
         if (!is_valid_gpt_entry(tmp_entry))
             continue;
-        tmp_entry->fs_type = gpt_partition_fs_type(tmp_entry);
+        tmp_entry->part_type = gpt_partition_fs_type(tmp_entry);
         gpt->entries[i] = tmp_entry;
 
-        if (gpt->entries[i]->fs_type == FS_UNKNOWN) {
+        if (gpt->entries[i]->part_type == FS_UNKNOWN) {
             // Print the partition GUID
             printf("Unknown partition type: ");
             for (int j = 0; j < 16; j++) {
@@ -328,25 +350,37 @@ void ata_device_initialize(ata_device * dev)
 
         for (int i = 0; i < 128; i++) {
             if (gpt->entries[i] != NULL) {
-                disk_node * node = malloc(sizeof(disk_node));
-                node->unique_id = (uint32_t)dev;
+                disk_node *node = malloc(sizeof(disk_node));
+                node->unique_id = (uint32_t)(uintptr_t)dev;
                 node->length = gpt->entries[i]->lba_end - gpt->entries[i]->lba_start;
                 node->offset = gpt->entries[i]->lba_start;
-                node->fs_type = gpt_partition_fs_type(gpt->entries[i]);
-                node->disk_type = ATA;
+                node->part_type = gpt_partition_fs_type(gpt->entries[i]);
+                node->disk_type = DISK_ATA;
                 node->name = str_utf16_to_utf8(gpt->entries[i]->partition_name);
 
-                map_put(ata_disk_registry, (void*)node->unique_id, dev);
+                map_put(ata_disk_registry, (void*)(uintptr_t)node->unique_id, dev);
 
-                fs_node * fs_node = malloc(sizeof(fs_node));
-                fs_node->unique_id = (uint32_t)fs_node;
-                fs_node->device_name = strdup(node->name);
+                /* Create a block_device for this partition */
+                uint64_t part_off = node->offset * ATA_SECTOR_SIZE;
+                uint64_t part_len = node->length * ATA_SECTOR_SIZE;
+                struct block_device *bdev = fat32_create_bdev(
+                    node->unique_id, part_off, part_len, &ata_bdev_ops, dev);
 
-                fs_node->read = ata_read;
-                fs_node->write = ata_write;
+                const char *fs_name = NULL;
+                switch (node->part_type) {
+                case FS_FAT32:
+                case FS_EFI_SYSTEM:
+                    fs_name = "fat32";
+                    break;
+                default:
+                    break;
+                }
 
-
-                register_filesystem(fs_node);
+                if (fs_name && bdev) {
+                    fs_mount_partition(fs_name, node->name, bdev);
+                } else {
+                    free(bdev);
+                }
             }
         }
     } else if (boot_type == BOOT_EL_TORITO)

@@ -1,6 +1,14 @@
 #ifndef DISK_H
 #define DISK_H
+
+#include <stdint.h>
 #include <drivers/fs/fs_utils.h>
+
+typedef enum {
+    DISK_UNKNOWN = 0,
+    DISK_ATA,
+    DISK_ATAPI,
+} disk_type_t;
 
 typedef struct {
     const char* device_name;
@@ -12,11 +20,8 @@ typedef struct {
     uint64_t length;
     uint64_t offset;
 
-    file_system_type fs_type;
-    disk_type disk_type;
-} __attribute__((packed)) disk_node;
+    disk_type_t disk_type;
+    partition_type part_type;
+} disk_node;
 
-
-
-
-#endif //DISK_H
+#endif /* DISK_H */

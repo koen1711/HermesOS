@@ -1,58 +1,52 @@
 #ifndef VFS_H
 #define VFS_H
 
+#include <os/types.h>
 #include <stddef.h>
-#include <stdbool.h>
 #include <stdint.h>
 
-#include "../fs_utils.h"
+struct file;
+struct inode;
+struct dentry;
+struct super_block;
+struct file_system_type;
+struct vfsmount;
 
-typedef int gid_t;
-typedef int uid_t;
-typedef int dev_t;
-typedef int ino_t;
-typedef int mode_t;
-typedef unsigned short nlink_t;
-typedef unsigned long blksize_t;
-typedef long off_t;
-typedef long time_t;
-typedef long clock_t;
+#define AT_FDCWD (-100)
 
-typedef struct
-{
+int vfs_init(void);
 
-} __attribute__((packed)) stat_t;
+int vfs_register_filesystem(const struct file_system_type *fs);
 
-struct fs_node_s;
+int vfs_mount_root(const char *fs_type_name, const char *root_device);
+int vfs_mount_root_dev(const char *fs_type_name, const char *dev_name, void *data);
 
-typedef int ssize_t;
+struct vfsmount *vfs_get_root_mount(void);
 
-typedef ssize_t (*read_type_t) (struct fs_node_s *,  off_t, size_t, uint8_t *);
-typedef ssize_t (*write_type_t) (struct fs_node_s *, off_t, size_t, uint8_t *);
-typedef void (*open_type_t) (struct fs_node_s *, unsigned int flags);
-typedef void (*close_type_t) (struct fs_node_s *);
-typedef struct dirent *(*readdir_type_t) (struct fs_node_s *, unsigned long);
-typedef struct fs_node_s *(*finddir_type_t) (struct fs_node_s *, char *name);
-typedef int (*create_type_t) (struct fs_node_s *, char *name, mode_t permission);
-typedef int (*unlink_type_t) (struct fs_node_s *, char *name);
-typedef int (*mkdir_type_t) (struct fs_node_s *, char *name, mode_t permission);
-typedef int (*ioctl_type_t) (struct fs_node_s *, unsigned long request, void * argp);
-typedef int (*get_size_type_t) (struct fs_node_s *);
-typedef int (*chmod_type_t) (struct fs_node_s *, mode_t mode);
-typedef int (*symlink_type_t) (struct fs_node_s *, char * name, char * value);
-typedef ssize_t (*readlink_type_t) (struct fs_node_s *, char * buf, size_t size);
-typedef int (*selectcheck_type_t) (struct fs_node_s *);
-typedef int (*selectwait_type_t) (struct fs_node_s *, void * process);
-typedef int (*chown_type_t) (struct fs_node_s *, uid_t, gid_t);
-typedef int (*truncate_type_t) (struct fs_node_s *);
+int     vfs_openat(int dirfd, const char *path, int flags, uint32_t mode);
+int     vfs_close(int fd);
 
-int vfs_mount(const fs_node* device, const char* mount_point);
-int vfs_unmount(const char* mount_point);
-int vfs_open(const char* path, int flags);
-int vfs_close(int fd);
-int vfs_read(int fd, void* buffer, size_t size);
-int vfs_write(int fd, const void* buffer, size_t size);
-int vfs_stat(const char* path, stat_t* buffer);
+ssize_t vfs_read(int fd, void *buffer, size_t size);
+ssize_t vfs_write(int fd, const void *buffer, size_t size);
 
+int     vfs_fsync(int fd);
+int     vfs_ftruncate(int fd, uint64_t length);
 
-#endif //VFS_H
+ssize_t vfs_getdents64(int fd, void *user_buf, size_t size);
+
+int vfs_mkdirat(int dirfd, const char *path, uint32_t mode);
+int vfs_unlinkat(int dirfd, const char *path, int flags);
+int vfs_renameat2(int olddirfd, const char *oldpath,
+                  int newdirfd, const char *newpath,
+                  unsigned int flags);
+
+int vfs_linkat(int olddirfd, const char *oldpath,
+               int newdirfd, const char *newpath,
+               unsigned int flags);
+
+int vfs_symlinkat(const char *target, int newdirfd, const char *linkpath);
+ssize_t vfs_readlinkat(int dirfd, const char *path, char *buf, size_t bufsz);
+
+int vfs_open(const char *path, int flags, uint32_t mode);
+
+#endif /* VFS_H */

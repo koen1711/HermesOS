@@ -3,7 +3,17 @@
 
 #include "fs_utils.h"
 
-extern int register_filesystem(struct file_system_type *);
-extern int unregister_filesystem(struct file_system_type *);
+struct block_device;
 
-#endif //FS_H
+/* Register all built-in filesystem types with the VFS */
+void fs_init(void);
+
+/* Mount a partition as the root filesystem.
+ * fs_type_name: e.g. "fat32"
+ * dev_name:     human-readable device/partition name
+ * bdev:         block_device* for the partition
+ */
+int fs_mount_partition(const char *fs_type_name, const char *dev_name,
+                       struct block_device *bdev);
+
+#endif /* FS_H */

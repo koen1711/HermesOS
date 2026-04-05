@@ -1,77 +1,80 @@
-#include "../vfs.h"
+#include "vfs_type.h"
+#include "vfs.h"
 
 #include <hardware/memory/alloc.h>
+#include <hardware/terminal/stdio.h>
+#include <utils/str/str.h>
 
-#include "../fs_utils.h"
-#include "hardware/disks/disk.h"
+/* ── filesystem type registry ─────────────────────────────────── */
 
-vfs_node* root_node = NULL; // Root node of the VFS
-vfs_node* device_node = NULL; // Device node for special files
+#define MAX_FS_TYPES 16
 
-int vfs_init() {
-    // Initialize the VFS
-    root_node = (vfs_node*)malloc(sizeof(vfs_node));
-    if (!root_node) return -1;
+static const struct file_system_type *fs_types[MAX_FS_TYPES];
+static int num_fs_types = 0;
 
-    root_node->fd = -1;
-    root_node->path = "/";
-    root_node->flags = 0;
-    root_node->is_directory = true;
-    root_node->children = NULL;
+path vfs_root = {0};
 
-    device_node = (vfs_node*)malloc(sizeof(vfs_node));
-    if (!device_node) {
-        free(root_node);
+int vfs_register_filesystem(const struct file_system_type *fs)
+{
+    if (!fs || !fs->name || num_fs_types >= MAX_FS_TYPES)
         return -1;
-    }
-    device_node->fd = -1;
-    device_node->path = "/dev";
-    device_node->flags = 0;
-    device_node->is_directory = true;
-    device_node->children = NULL;
-
-    return 0; // Success
+    fs_types[num_fs_types++] = fs;
+    return 0;
 }
 
-int vfs_mount(const fs_node* device, const char* mount_point) {
-    vfs_node* node = (vfs_node*)malloc(sizeof(vfs_node));
-    if (!node) return -1; // Memory allocation failed
-    device->mount(device->unique_id, node);
+static const struct file_system_type *find_fs_type(const char *name)
+{
+    for (int i = 0; i < num_fs_types; i++) {
+        if (strcmp(fs_types[i]->name, name) == 0)
+            return fs_types[i];
+    }
+    return NULL;
+}
+
+/* ── root mount accessor ──────────────────────────────────────── */
+
+struct vfsmount *vfs_get_root_mount(void)
+{
+    return vfs_root.mnt;
+}
+
+/* ── mount root filesystem ────────────────────────────────────── */
+
+int vfs_mount_root(const char *fs_type_name, const char *root_device)
+{
+    return vfs_mount_root_dev(fs_type_name, root_device, NULL);
+}
+
+int vfs_mount_root_dev(const char *fs_type_name, const char *dev_name, void *data)
+{
+    const struct file_system_type *fst = find_fs_type(fs_type_name);
+    if (!fst) {
+        printf("vfs: unknown filesystem type '%s'\n", fs_type_name);
+        return -1;
+    }
+
+    struct super_block *sb = fst->mount(
+        (struct file_system_type *)fst, 0, dev_name, data);
+    if (!sb) {
+        printf("vfs: mount failed for '%s'\n", fs_type_name);
+        return -1;
+    }
+
+    struct vfsmount *mnt = malloc(sizeof(struct vfsmount));
+    if (!mnt) return -1;
+    mnt->sb = sb;
+
+    vfs_root.mnt    = mnt;
+    vfs_root.dentry = sb->s_root;
 
     return 0;
 }
 
-int vfs_unmount(const char* mount_point) {
-    // Implementation for unmounting a filesystem
-    // This function will typically involve flushing any cached data and
-    // releasing resources associated with the mounted filesystem.
-    return 0; // Placeholder return value
-}
+/* ── init ─────────────────────────────────────────────────────── */
 
-int vfs_open(const char* path, int flags) {
-    // Implementation for opening a file
-    // This function will typically involve looking up the file in the VFS
-    // and returning a file descriptor.
-    return 0; // Placeholder return value
-}
-
-int vfs_close(int fd) {
-    // Implementation for closing a file
-    // This function will typically involve releasing the file descriptor
-    // and any associated resources.
-    return 0; // Placeholder return value
-}
-
-int vfs_read(int fd, void* buffer, size_t size) {
-    // Implementation for reading from a file
-    // This function will typically involve reading data from the file
-    // associated with the given file descriptor into the provided buffer.
-    return 0; // Placeholder return value
-}
-
-int vfs_write(int fd, const void* buffer, size_t size) {
-    // Implementation for writing to a file
-    // This function will typically involve writing data from the provided
-    // buffer to the file associated with the given file descriptor.
-    return 0; // Placeholder return value
+int vfs_init(void)
+{
+    memset(&vfs_root, 0, sizeof(vfs_root));
+    num_fs_types = 0;
+    return 0;
 }

@@ -1,183 +1,183 @@
-#ifndef OS_VFS_TYPE_H
-#define OS_VFS_TYPE_H
-#include "stdint.h"
+#ifndef VFS_TYPE_H
+#define VFS_TYPE_H
 
-typedef unsigned long blkcnt_t;
+#include <stdint.h>
+#include <stddef.h>
+#include <stdbool.h>
 
-struct address_space_operations {
-    int (*read_folio)(struct file *, struct folio *);
-    int (*writepages)(struct address_space *, struct writeback_control *);
-    bool (*dirty_folio)(struct address_space *, struct folio *);
-    void (*readahead)(struct readahead_control *);
-    int (*write_begin)(const struct kiocb *, struct address_space *mapping,
-                       loff_t pos, unsigned len,
-                       struct page **pagep, void **fsdata);
-    int (*write_end)(const struct kiocb *, struct address_space *mapping,
-                     loff_t pos, unsigned len, unsigned copied,
-                     struct folio *folio, void *fsdata);
-    sector_t (*bmap)(struct address_space *, sector_t);
-    void (*invalidate_folio) (struct folio *, size_t start, size_t len);
-    bool (*release_folio)(struct folio *, gfp_t);
-    void (*free_folio)(struct folio *);
-    ssize_t (*direct_IO)(struct kiocb *, struct iov_iter *iter);
-	int (*migrate_folio)(struct address_space *, struct folio *dst,
-				struct folio *src, enum migrate_mode);
-    int (*launder_folio) (struct folio *);
+typedef int64_t   loff_t;
+typedef uint64_t  u64;
+typedef uint32_t  u32;
+typedef uint16_t  u16;
+typedef uint8_t   u8;
+typedef int64_t   s64;
+typedef int32_t   s32;
 
-    bool (*is_partially_uptodate) (struct folio *, size_t from,
-                                   size_t count);
-    void (*is_dirty_writeback)(struct folio *, bool *, bool *);
-	int (*error_remove_folio)(struct address_space *mapping, struct folio *);
+typedef long      ssize_t;
+typedef u32       umode_t;
+
+typedef u32 kuid_t;
+typedef u32 kgid_t;
+
+typedef u64 dev_t;
+
+typedef u64 ino_t;
+
+typedef s64 time64_t;
+
+struct timespec64 {
+    time64_t tv_sec;
+    long     tv_nsec;
+};
+
+struct super_block;
+struct inode;
+struct dentry;
+struct file;
+struct path;
+struct dir_context;
+
+struct qstr {
+    const char *name;
+    u32 len;
+    u32 hash;
+};
+
+struct vfsmount {
+    struct super_block *sb;
+};
+
+typedef struct {
+    struct vfsmount *mnt;
+    struct dentry   *dentry;
+} path;
+
+typedef bool (*dir_emit_t)(struct dir_context *ctx,
+                           const char *name, int namelen,
+                           u64 ino, unsigned type);
+
+struct dir_context {
+    dir_emit_t actor;
+    u64 pos;
+};
+
+enum vfs_dtype {
+    VFS_DT_UNKNOWN = 0,
+    VFS_DT_FIFO    = 1,
+    VFS_DT_CHR     = 2,
+    VFS_DT_DIR     = 4,
+    VFS_DT_BLK     = 6,
+    VFS_DT_REG     = 8,
+    VFS_DT_LNK     = 10,
+    VFS_DT_SOCK    = 12,
+    VFS_DT_WHT     = 14,
 };
 
 struct file_operations {
-        struct module *owner;
-        fop_flags_t fop_flags;
-        loff_t (*llseek) (struct file *, loff_t, int);
-        ssize_t (*read) (struct file *, char __user *, size_t, loff_t *);
-        ssize_t (*write) (struct file *, const char __user *, size_t, loff_t *);
-        ssize_t (*read_iter) (struct kiocb *, struct iov_iter *);
-        ssize_t (*write_iter) (struct kiocb *, struct iov_iter *);
+    loff_t  (*llseek)(struct file *file, loff_t off, int whence);
 
-        int (*iterate_shared) (struct file *, struct dir_context *);
-        __poll_t (*poll) (struct file *, struct poll_table_struct *);
-        long (*unlocked_ioctl) (struct file *, unsigned int, unsigned long);
-        long (*compat_ioctl) (struct file *, unsigned int, unsigned long);
-        int (*mmap) (struct file *, struct vm_area_struct *);
-        int (*open) (struct inode *, struct file *);
-        int (*flush) (struct file *, fl_owner_t id);
-        int (*release) (struct inode *, struct file *);
-        int (*fsync) (struct file *, loff_t, loff_t, int datasync);
-        int (*fasync) (int, struct file *, int);
-        int (*lock) (struct file *, int, struct file_lock *);
-        unsigned long (*get_unmapped_area)(struct file *, unsigned long, unsigned long, unsigned long, unsigned long);
-        int (*check_flags)(int);
-        int (*flock) (struct file *, int, struct file_lock *);
-        ssize_t (*splice_write)(struct pipe_inode_info *, struct file *, loff_t *, size_t, unsigned int);
-        ssize_t (*splice_read)(struct file *, loff_t *, struct pipe_inode_info *, size_t, unsigned int);
-        void (*splice_eof)(struct file *file);
-        int (*setlease)(struct file *, int, struct file_lease **, void **);
-        long (*fallocate)(struct file *file, int mode, loff_t offset,
-                          loff_t len);
-        void (*show_fdinfo)(struct seq_file *m, struct file *f);
-        unsigned (*mmap_capabilities)(struct file *);
-        ssize_t (*copy_file_range)(struct file *, loff_t, struct file *,
-                        loff_t, size_t, unsigned int);
-        loff_t (*remap_file_range)(struct file *file_in, loff_t pos_in,
-                                   struct file *file_out, loff_t pos_out,
-                                   loff_t len, unsigned int remap_flags);
-        int (*fadvise)(struct file *, loff_t, loff_t, int);
-        int (*mmap_prepare)(struct vm_area_desc *);
+    ssize_t (*read)(struct file *file, void *user_buf, size_t len, loff_t *pos);
+    ssize_t (*write)(struct file *file, const void *user_buf, size_t len, loff_t *pos);
+
+    int     (*iterate_shared)(struct file *file, struct dir_context *ctx);
+
+    int     (*open)(struct inode *inode, struct file *file);
+    int     (*release)(struct inode *inode, struct file *file);
+
+    long    (*unlocked_ioctl)(struct file *file, unsigned int cmd, unsigned long arg);
 };
 
-struct dentry_operations {
-    int (*d_revalidate)(struct inode *, const struct qstr *,
-                        struct dentry *, unsigned int);
-    int (*d_weak_revalidate)(struct dentry *, unsigned int);
-    int (*d_hash)(const struct dentry *, struct qstr *);
-    int (*d_compare)(const struct dentry *,
-                     unsigned int, const char *, const struct qstr *);
-    int (*d_delete)(const struct dentry *);
-    int (*d_init)(struct dentry *);
-    void (*d_release)(struct dentry *);
-    void (*d_iput)(struct dentry *, struct inode *);
-    char *(*d_dname)(struct dentry *, char *, int);
-    struct vfsmount *(*d_automount)(struct path *);
-    int (*d_manage)(const struct path *, bool);
-    struct dentry *(*d_real)(struct dentry *, enum d_real_type type);
-    bool (*d_unalias_trylock)(const struct dentry *);
-    void (*d_unalias_unlock)(const struct dentry *);
+struct inode_operations {
+    struct dentry *(*lookup)(struct inode *dir, struct dentry *dentry);
+
+    /* Creation / mutation (implement as needed) */
+    int (*create)(struct inode *dir, struct dentry *dentry, umode_t mode);
+    int (*mkdir)(struct inode *dir, struct dentry *dentry, umode_t mode);
+    int (*unlink)(struct inode *dir, struct dentry *dentry);
+    int (*rmdir)(struct inode *dir, struct dentry *dentry);
+    int (*rename)(struct inode *old_dir, struct dentry *old_dentry,
+                  struct inode *new_dir, struct dentry *new_dentry,
+                  unsigned int flags);
+
+    int (*link)(struct dentry *old_dentry, struct inode *dir, struct dentry *new_dentry);
+    int (*symlink)(struct inode *dir, struct dentry *dentry, const char *target);
+
+    ssize_t (*readlink)(struct dentry *dentry, char *user_buf, size_t bufsz);
+    const char *(*get_link)(struct dentry *dentry);
+};
+
+struct super_operations {
+    void (*put_super)(struct super_block *sb);
+    struct inode *(*alloc_inode)(struct super_block *sb);
+    void (*destroy_inode)(struct inode *inode);
+    int (*sync_fs)(struct super_block *sb, int wait);
 };
 
 struct inode {
-	umode_t			i_mode;
-	unsigned short		i_opflags;
-	unsigned int		i_flags;
-	kuid_t			i_uid;
-	kgid_t			i_gid;
+    ino_t   i_ino;
+    umode_t i_mode;
+    kuid_t  i_uid;
+    kgid_t  i_gid;
+    u64     i_nlink;
+    u64     i_size;
+    u64     i_blocks;
+    dev_t   i_rdev;
 
-	const struct inode_operations	*i_op;
-	struct super_block	*i_sb;
-	struct address_space	*i_mapping;
+    struct timespec64 i_atime;
+    struct timespec64 i_mtime;
+    struct timespec64 i_ctime;
 
-	void			*i_security;
+    struct super_block *i_sb;
 
-	/* Stat data, not accessed from path walking */
-	unsigned long		i_ino;
-	/*
-	 * Filesystems may only read i_nlink directly.  They shall use the
-	 * following functions for modification:
-	 *
-	 *    (set|clear|inc|drop)_nlink
-	 *    inode_(inc|dec)_link_count
-	 */
-	union {
-		const unsigned int i_nlink;
-		unsigned int __i_nlink;
-	};
-	dev_t			i_rdev;
-	loff_t			i_size;
-	time64_t		i_atime_sec;
-	time64_t		i_mtime_sec;
-	time64_t		i_ctime_sec;
-	u32			i_atime_nsec;
-	u32			i_mtime_nsec;
-	u32			i_ctime_nsec;
-	u32			i_generation;
-	spinlock_t		i_lock;	/* i_blocks, i_bytes, maybe i_size */
-	unsigned short          i_bytes;
-	u8			i_blkbits;
-	enum rw_hint		i_write_hint;
-	blkcnt_t		i_blocks;
+    const struct inode_operations *i_op;
+    const struct file_operations  *i_fop; /* default fops */
 
-	seqcount_t i_size_seqcount;
-
-	/* Misc */
-	struct inode_state_flags i_state;
-	/* 32-bit hole */
-	struct rw_semaphore	i_rwsem;
-
-	unsigned long		dirtied_when;	/* jiffies of first dirtying */
-	unsigned long		dirtied_time_when;
-
-	struct hlist_node	i_hash;
-	struct list_head	i_io_list;	/* backing dev IO list */
-
-	/* foreign inode detection, see wbc_detach_inode() */
-	int			i_wb_frn_winner;
-	u16			i_wb_frn_avg_time;
-	u16			i_wb_frn_history;
-	struct list_head	i_lru;		/* inode LRU list */
-	struct list_head	i_sb_list;
-	struct list_head	i_wb_list;	/* backing dev writeback list */
-	union {
-		struct hlist_head	i_dentry;
-		struct rcu_head		i_rcu;
-	};
-	atomic64_t		i_version;
-	atomic64_t		i_sequence; /* see futex */
-	atomic_t		i_count;
-	atomic_t		i_dio_count;
-	atomic_t		i_writecount;
-	atomic_t		i_readcount; /* struct files open RO */
-	union {
-		const struct file_operations	*i_fop;	/* former ->i_op->default_file_ops */
-		void (*free_inode)(struct inode *);
-	};
-	struct file_lock_context	*i_flctx;
-	struct address_space	i_data;
-	union {
-		struct list_head	i_devices;
-		int			i_linklen;
-	};
-	union {
-		struct pipe_inode_info	*i_pipe;
-		struct cdev		*i_cdev;
-		char			*i_link;
-		unsigned		i_dir_seq;
-	};
-
-	void			*i_private; /* fs or device private pointer */
+    void *i_private;
 };
 
-#endif //OS_VFS_TYPE_H
+struct dentry {
+    struct qstr name;
+    struct dentry *parent;
+    struct inode  *inode;
+
+    u32 refcnt;
+
+    void *d_private;
+};
+
+struct file {
+    path f_path;
+
+    const struct file_operations *f_op;
+
+    loff_t f_pos;
+    u32    f_flags;
+
+    void  *private_data;
+};
+
+struct super_block {
+    u64 s_magic;
+    u32 s_blocksize;
+
+    const struct super_operations *s_op;
+
+    struct dentry *s_root;
+    void *s_fs_info;
+};
+
+struct file_system_type {
+    const char *name;
+
+    struct super_block *(*mount)(struct file_system_type *fs_type,
+                                 u32 mount_flags,
+                                 const char *dev_name,
+                                 void *data);
+
+    void (*kill_sb)(struct super_block *sb);
+};
+
+static inline struct inode *d_inode(const struct dentry *d) { return d ? d->inode : NULL; }
+static inline struct super_block *inode_sb(const struct inode *i) { return i ? i->i_sb : NULL; }
+
+#endif /* VFS_TYPE_H */
