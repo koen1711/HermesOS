@@ -1,0 +1,215 @@
+#ifndef KEYCODES_H
+#define KEYCODES_H
+
+typedef enum
+{
+    // Letters
+    VK_A = 0x61,
+    VK_B = 0x62,
+    VK_C = 0x63,
+    VK_D = 0x64,
+    VK_E = 0x65,
+    VK_F = 0x66,
+    VK_G = 0x67,
+    VK_H = 0x68,
+    VK_I = 0x68,
+    VK_J = 0x6A,
+    VK_K = 0x6B,
+    VK_L = 0x6C,
+    VK_M = 0x6D,
+    VK_N = 0x6E,
+    VK_O = 0x6F,
+    VK_P = 0x70,
+    VK_Q = 0x71,
+    VK_R = 0x72,
+    VK_S = 0x73,
+    VK_T = 0x74,
+    VK_U = 0x75,
+    VK_V = 0x76,
+    VK_W = 0x77,
+    VK_X = 0x78,
+    VK_Y = 0x79,
+    VK_Z = 0x7A,
+
+    // Numbers
+    VK_0 = 0x30,
+    VK_1 = 0x31,
+    VK_2 = 0x32,
+    VK_3 = 0x33,
+    VK_4 = 0x34,
+    VK_5 = 0x35,
+    VK_6 = 0x36,
+    VK_7 = 0x37,
+    VK_8 = 0x38,
+    VK_9 = 0x39,
+
+    // Special
+    VK_BACKTICK = 0x60,
+    VK_MINUS = 0x2D,
+    VK_EQUALS = 0x3D,
+    VK_BACKSPACE = 0x08,
+
+    // Locks
+    VK_CAPSLOCK = 0x80,
+    VK_NUMLOCK = 0x81,
+    VK_SCRLOCK = 0x82,
+
+    // Function keys
+    VK_ESCAPE = 0x83,
+    VK_F1 = 0x84,
+    VK_F2 = 0x85,
+    VK_F3 = 0x86,
+    VK_F4 = 0x87,
+    VK_F5 = 0x88,
+    VK_F6 = 0x89,
+    VK_F7 = 0x8A,
+    VK_F8 = 0x8B,
+    VK_F9 = 0x8C,
+    VK_F10 = 0x8D,
+    VK_F11 = 0x8E,
+    VK_F12 = 0x8F,
+    VK_F13 = 0x90,
+    VK_F14 = 0x91,
+    VK_F15 = 0x92,
+    VK_F16 = 0x93,
+    VK_F17 = 0x94,
+    VK_F18 = 0x95,
+    VK_F19 = 0x96,
+    VK_F20 = 0x97,
+    VK_F21 = 0x98,
+    VK_F22 = 0x99,
+    VK_F23 = 0x9A,
+    VK_F24 = 0x9B,
+
+    // Modifiers and miscellaneous
+    VK_LCTRL = 0x9C,
+    VK_RCTRL = 0x9D,
+    VK_LSHIFT = 0x9E,
+    VK_RSHIFT = 0x9F,
+    VK_LALT = 0xA0,
+    VK_RALT = 0xA1,
+    VK_LWINDOWS = 0xA2,
+    VK_RWINDOWS = 0xA3,
+    VK_TAB = 0x09,
+    VK_MENU = 0xA4,
+    VK_INSERT = 0xA5,
+    VK_DELETE = 0x7F,
+    VK_HOME = 0x6B,
+    VK_END = 0x6C,
+    VK_SPACE = 0x20,
+    VK_ENTER = 0x0A,
+
+    // Punctuation
+    VK_BRACKET_OPEN = 0x5B,
+    VK_BRACKET_CLOSE = 0x5D,
+    VK_BACKSLASH = 0x5C,
+    VK_SEMI_COLON = 0x3B,
+    VK_SINGLE_QUOTE = 0x27,
+    VK_COMMA = 0x2C,
+    VK_PERIOD = 0x2E,
+    VK_SLASH = 0x2F,
+
+    // Mouse
+    VK_MOUSE_LEFT = 0b001,
+    VK_MOUSE_RIGHT = 0b010,
+    VK_MOUSE_MIDDLE = 0b100,
+
+    // Modifier flags
+    MOD_CTRL = 0b00000001,
+    MOD_SHIFT = 0b00000010,
+    MOD_ALT = 0b00000100,
+    MOD_CAPSLOCK = 0b00001000,
+    MOD_NUMLOCK = 0b00010000,
+    MOD_SCRLOCK  = 0b00100000,
+
+    // Letters
+    SC_A = 0x1E,
+    SC_B = 0x30,
+    SC_C = 0x2E,
+    SC_D = 0x20,
+    SC_E = 0x12,
+    SC_F = 0x21,
+    SC_G = 0x22,
+    SC_H = 0x23,
+    SC_I = 0x17,
+    SC_J = 0x24,
+    SC_K = 0x25,
+    SC_L = 0x26,
+    SC_M = 0x32,
+    SC_N = 0x31,
+    SC_O = 0x18,
+    SC_P = 0x19,
+    SC_Q = 0x10,
+    SC_R = 0x13,
+    SC_S = 0x1F,
+    SC_T = 0x14,
+    SC_U = 0x16,
+    SC_V = 0x2F,
+    SC_W = 0x11,
+    SC_X = 0x2D,
+    SC_Y = 0x15,
+    SC_Z = 0x2C,
+
+    // Numbers
+    SC_0 = 0x0B,
+    SC_1 = 0x02,
+    SC_2 = 0x03,
+    SC_3 = 0x04,
+    SC_4 = 0x05,
+    SC_5 = 0x06,
+    SC_6 = 0x07,
+    SC_7 = 0x08,
+    SC_8 = 0x09,
+    SC_9 = 0x0A,
+
+    // Special
+    SC_BACKTICK = 0x29,
+    SC_MINUS = 0x0C,
+    SC_EQUALS = 0x0D,
+    SC_BACKSPACE = 0x0E,
+
+    // Locks
+    SC_CAPSLOCK = 0x3A,
+    SC_NUMLOCK = 0x45,
+    SC_SCRLOCK = 0x46,
+
+    // Function keys
+    SC_ESCAPE = 0x01,
+    SC_F1 = 0x3B,
+    SC_F2 = 0x3C,
+    SC_F3 = 0x3D,
+    SC_F4 = 0x3E,
+    SC_F5 = 0x3F,
+    SC_F6 = 0x40,
+    SC_F7 = 0x41,
+    SC_F8 = 0x42,
+    SC_F9 = 0x43,
+    SC_F10 = 0x44,
+    SC_F11 = 0x57,
+    SC_F12 = 0x58,
+
+    // Modifiers and miscellaneous
+    SC_LCTRL = 0x1D,
+    SC_LSHIFT = 0x2A,
+    SC_RSHIFT = 0x36,
+    SC_LALT = 0x38,
+    SC_TAB = 0x0F,
+    SC_ENTER = 0x1C,
+    SC_SPACE = 0x39,
+
+    // Punctuation
+    SC_BRACKET_OPEN = 0x1A,
+    SC_BRACKET_CLOSE = 0x1B,
+    SC_BACKSLASH = 0x2B,
+    SC_SEMI_COLON = 0x27,
+    SC_SINGLE_QUOTE = 0x28,
+    SC_COMMA = 0x33,
+    SC_PERIOD = 0x34,
+    SC_SLASH = 0x35,
+
+    // Release Bit and Escape Code
+    SC_RELEASE = 0x80,
+    SC_ESCAPE_CODE = 0xE0
+} key_code;
+
+#endif //KEYCODES_H

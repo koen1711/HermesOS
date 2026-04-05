@@ -33,7 +33,16 @@
 #define ATA_SR_IDX     0x02
 #define ATA_SR_ERR     0x01
 
+#define ATA_CMD_READ_PIO          0x20
+#define ATA_CMD_READ_PIO_EXT      0x24
+
+#define ATA_CMD_WRITE_PIO         0x30
+#define ATA_CMD_WRITE_PIO_EXT     0x34
+
 #include <stdint.h>
+
+#include <hardware/port/ports.h>
+#include "partition_table.h"
 
 typedef struct {
     uint16_t flags;
@@ -53,33 +62,68 @@ typedef struct {
     uint16_t _6[38];
     uint64_t sectors_48;
     uint16_t _7[152]; // Unused
-} __attribute__((packed)) ata_identify_t;
+} __attribute__((packed)) ata_identify;
 
 typedef struct {
     uintptr_t offset;
     uint16_t bytes;
     uint16_t last;
-} prdt_t;
+} prdt;
 
-struct ata_device {
+typedef struct {
     int io_base;
     int control;
     int slave;
     int is_atapi;
-    ata_identify_t identity;
-    prdt_t * dma_prdt;
+    ata_identify identity;
+    prdt * dma_prdt;
     uintptr_t dma_prdt_phys;
     uint8_t * dma_start;
     uintptr_t dma_start_phys;
     uint32_t bar4;
     uint32_t atapi_lba;
     uint32_t atapi_sector_size;
-};
+} ata_device;
 
-static struct ata_device ata_primary_master   = {.io_base = 0x1F0, .control = 0x3F6, .slave = 0};
-static struct ata_device ata_primary_slave    = {.io_base = 0x1F0, .control = 0x3F6, .slave = 1};
-static struct ata_device ata_secondary_master = {.io_base = 0x170, .control = 0x376, .slave = 0};
-static struct ata_device ata_secondary_slave  = {.io_base = 0x170, .control = 0x376, .slave = 1};
+static ata_device ata_primary_master   = {.io_base = 0x1F0, .control = 0x3F6, .slave = 0};
+static ata_device ata_primary_slave    = {.io_base = 0x1F0, .control = 0x3F6, .slave = 1};
+static ata_device ata_secondary_master = {.io_base = 0x170, .control = 0x376, .slave = 0};
+static ata_device ata_secondary_slave  = {.io_base = 0x170, .control = 0x376, .slave = 1};
+
+static void ata_select_device(const ata_device * dev)
+{
+    port_write_u8(dev->io_base + ATA_REG_HDDEVSEL, 0xA0 | dev->slave << 4);
+}
+
+static int is_el_torito(const uint8_t* sector) {
+    return sector[0] == 0x01 &&  // Boot Record Indicator
+        sector[1] == 'C' &&   // "CD001" standard identifier
+        sector[2] == 'D' &&
+        sector[3] == '0' &&
+        sector[4] == '0' &&
+        sector[5] == '1' &&
+        sector[6] == 0x00;   // Boot System Identifier
+}
+
+static int is_gpt(const uint8_t* sector) {
+    // GPT signature is "EFI PART" at offset 0x200 (sector 1)
+    return sector[0] == 'E' &&
+        sector[1] == 'F' &&
+        sector[2] == 'I' &&
+        sector[3] == ' ' &&
+        sector[4] == 'P' &&
+        sector[5] == 'A' &&
+        sector[6] == 'R' &&
+        sector[7] == 'T';
+}
+
+static bool is_valid_gpt_entry(const gpt_entry* entry) {
+    // Check if the type GUID is all zeros
+    if (entry->partition_type_guid[0] == 0 && entry->partition_type_guid[1] == 0) return false;
+    return true;
+}
+
+int ata_read(uint32_t unique_id, uint64_t begin_byte, uint64_t end_byte, uint8_t *buffer);
 
 void ata_initialize();
 

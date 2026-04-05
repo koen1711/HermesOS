@@ -1,21 +1,18 @@
 #include "interrupts.h"
 
 #include <stdbool.h>
-#include <hardware/vga/vga.h>
 #include <hardware/interrupts/pic.h>
-
-#include "hardware/io_ports/ports.h"
 
 extern void irq_interrupt_timer();
 extern void irq_interrupt_keyboard();
 
-struct IDTEntry idt[IDT_SIZE];
+idt_entry idt[IDT_SIZE];
 
 
 
 void idt_set_entry(const uint8_t index, const uint64_t handler)
 {
-    struct IDTEntry entry;
+    idt_entry entry;
     entry.offset_low = handler & 0xFFFF;
     entry.selector = 0x08;
     entry.ist = 0;
@@ -27,7 +24,7 @@ void idt_set_entry(const uint8_t index, const uint64_t handler)
     idt[index] = entry;
 }
 
-void handle_interrupt(struct InterruptContext* context)
+void handle_interrupt(struct interrupt_context* context)
 {
     // vga_text_write_string("Interrupt handledA");
 }

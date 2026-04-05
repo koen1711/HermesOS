@@ -1,7 +1,7 @@
 #ifndef DRIVERS_H
 #define DRIVERS_H
 
-#include <drivers/keyboard/ps2_keyboard.h>
+#include <drivers/ps2/keyboard.h>
 #include <drivers/timer/rtc.h>
 
 static void register_drivers()

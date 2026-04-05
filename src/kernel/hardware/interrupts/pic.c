@@ -2,9 +2,9 @@
 
 #include "interrupts.h"
 
-#include "drivers/keyboard/ps2_keyboard.h"
+#include "drivers/ps2/keyboard.h"
 
-void handle_pic_interrupt(const struct InterruptContext* context)
+void handle_pic_interrupt(const interrupt_context* context)
 {
     const uint8_t irq_number = context->interrupt_number;
 

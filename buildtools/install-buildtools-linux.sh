@@ -30,12 +30,6 @@ then
 	tar -zxf $GCC.tar.gz
 fi
 
-if [ ! -d $GDB ]
-then
-	curl --insecure -O http://ftp.gnu.org/gnu/gdb/$GDB.tar.gz
-	tar -zxf $GDB.tar.gz
-fi
-
 # build and install libtools
 cd $BINUTILS || exit
 ./configure --prefix="$PREFIX" --target=x86_64-elf --disable-nls --disable-werror --with-sysroot
@@ -54,20 +48,6 @@ cd $GCC-elf-objs || exit
 make all-gcc -j "$THREADS" && make all-target-libgcc -j "$THREADS" && make install-gcc && make install-target-libgcc
 cd ..
 
-# build and install GDB
-mkdir ${GDB}-build
-cd ${GDB}-build || exit
-../${GDB}/configure --prefix="$PREFIX" --target=x86_64-elf
-make -j "$THREADS" && make install
-cd ..
-
-# build and install NASM
-curl --insecure -O https://www.nasm.us/pub/nasm/releasebuilds/2.14.02/nasm-2.14.02.tar.gz
-tar -zxf nasm-2.14.02.tar.gz
-cd nasm-2.14.02 || exit
-./configure --prefix="$PREFIX"
-make -j "$THREADS" && make install
-cd ..
 
 cd "$CUR_DIR" || exit
 rm -rf "$WORKDIR"

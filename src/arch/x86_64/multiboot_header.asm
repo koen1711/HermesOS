@@ -1,19 +1,20 @@
 # LIST OF CONSTANTS
-.set ALIGN,    1<<0             /* align loaded modules on page boundaries */
-.set MEMINFO,  1<<1             /* provide memory map */
-.set FLAGS,    ALIGN | MEMINFO  /* this is the Multiboot 'flag' field */
-.set MAGIC,    0xe85250d6       /* 'magic number' lets bootloader find the header */
-.set CHECKSUM, -(MAGIC + FLAGS) /* checksum of above, to prove we are multiboot */
+.set MAGIC,    0xE85250D6 # 'Magic'
 
-.section .multiboot # this is the header of the multiboot
+.section .multiboot
 header_start:
     .LONG MAGIC
-    .LONG 0 // 32-bit, 0
-    .LONG header_end - header_start // header_length
-    .LONG - (MAGIC + 0 + (header_end - header_start)) // checksum
+    .LONG 0 # 32-bit, 0
+    .LONG header_end - header_start # header_length
+    .LONG -(MAGIC + 0 + (header_end - header_start)) # Checksum
 
-    // Mandatory end tag
-    .SHORT 0 // 16-bit, type `0`
-	.SHORT 0 // 16-bit, flag
-	.LONG 8 // 32-bit, 8
+    # Request Memory Map
+    .SHORT 4 # type = 4 (memory map request)
+    .SHORT 0 # flags = 0 (optional = false)
+    .LONG 8  # size = 8 bytes
+
+    # Mandatory end tag
+    .SHORT 0 # 16-bit, type `0`
+    .SHORT 0 # 16-bit, flag
+    .LONG 8 # 32-bit, 8
 header_end:
