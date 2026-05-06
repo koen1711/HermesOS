@@ -1,12 +1,14 @@
 .code64
 .equ ENOSYS, 38
 
+.global irq_interrupt_syscall
 .global irq_interrupt_timer
 .global irq_interrupt_keyboard
 
 .extern handle_pic_interrupt
+.extern handle_syscall
 
-syscall_interrupt:
+irq_interrupt_syscall:
     pushq %rax
     pushq %rbx
     pushq %rcx
@@ -23,17 +25,13 @@ syscall_interrupt:
     pushq %r14
     pushq %r15
 
-    # In 64-bit mode, we don't typically save segment registers
-    # as they're mostly ignored, but if you need them:
-    # Note: You'll need to use movw to save them to memory or stack
-
     # Push error code or syscall number
     pushq $-ENOSYS  # Use immediate value with pushq
 
     # Call the syscall handler
     # In 64-bit calling convention, arguments are passed in registers
     # You might need to set up arguments in %rdi, %rsi, etc.
-    #call handle_syscall
+    call handle_syscall
 
     # Clean up the pushed error code
     addq $8, %rsp   # 8 bytes in 64-bit mode

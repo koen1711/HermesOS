@@ -5,12 +5,13 @@
 
 extern void irq_interrupt_timer();
 extern void irq_interrupt_keyboard();
+extern void irq_interrupt_syscall();
 
 idt_entry idt[IDT_SIZE];
 
 
 
-void idt_set_entry(const uint8_t index, const uint64_t handler)
+void idt_set_entry(const uint8_t index, const uintptr_t handler)
 {
     idt_entry entry;
     entry.offset_low = handler & 0xFFFF;
@@ -66,11 +67,13 @@ void idt_initialize()
 
     uintptr_t irq_timer_handler_address = (uintptr_t)irq_interrupt_timer;
     uintptr_t irq_keyboard_handler_address = (uintptr_t)irq_interrupt_keyboard;
+    uintptr_t irq_syscall_handler_address = (uintptr_t)irq_interrupt_syscall;
 
     // for (int i = 0; i < IRQ_OFFSET; i++)
     //     idt_set_entry(i, handler_address);
-    idt_set_entry(IRQ_OFFSET, (uint64_t)irq_timer_handler_address);
-    idt_set_entry(IRQ_OFFSET + 1, (uint64_t)irq_keyboard_handler_address);
+    idt_set_entry(IRQ_OFFSET, irq_timer_handler_address);
+    idt_set_entry(IRQ_OFFSET + 1, irq_keyboard_handler_address);
+    idt_set_entry(IRQ_OFFSET + 0x80, irq_syscall_handler_address);
 
 
 

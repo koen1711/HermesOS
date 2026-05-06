@@ -38,8 +38,9 @@ void ps2_keyboard_interrupt_handler() {
         case SC_RELEASE | SC_LCTRL: ctrl = 0; break;
         case SC_RELEASE | SC_LALT: alt = 0; break;
 
-        case SC_LSHIFT: shift = 0xFF; break;
-        case SC_RSHIFT: shift = 0xFF; break;
+        case SC_LSHIFT:
+        case SC_RSHIFT:
+            shift = 0xFF; break;
         case SC_LCTRL: ctrl = 0xFF; break;
         case SC_LALT: alt = 0xFF; break;
     }
