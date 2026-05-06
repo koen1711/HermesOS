@@ -11,6 +11,7 @@
 #include <hardware/memory/pmm.h>
 #include <hardware/terminal/terminal.h>
 
+#include "drivers/video/LFB.h"
 #include "hardware/interrupts/panic.h"
 
 void kernel_main(void* multiboot_info_ptr)
@@ -27,6 +28,8 @@ void kernel_main(void* multiboot_info_ptr)
     register_drivers();
 
     idt_initialize();
+
+    lfb_initialize();
 
     while (1)
     {

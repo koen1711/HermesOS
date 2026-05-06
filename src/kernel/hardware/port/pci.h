@@ -24,6 +24,9 @@
 #define PCI_BAR4                 0x20 // 4
 #define PCI_BAR5                 0x24 // 4
 
+#define PCI_INTERRUPT_LINE        0x3C // 1
+#define PCI_INTERRUPT_PIN         0x3D // 1
+
 #define PCI_NONE 0xFFFF
 
 #define PCI_TYPE_BRIDGE 0x0604
@@ -68,16 +71,17 @@ typedef struct {
 } scan_result;
 
 void pci_initialize();
-bool pci_get_device(uint32_t bus, uint32_t device);
+int pci_get_device(uint32_t bus, uint32_t device, uint32_t func, pci_device *out);
 
 static pci_address pci_convert_address(const uint32_t address) {
     pci_address addr;
-    addr.bus = address >> 16;
-    addr.device = address >> 8;
-    addr.function = address;
+    addr.bus      = (address >> 16) & 0xFF;
+    addr.device   = (address >>  8) & 0xFF;
+    addr.function =  address        & 0x07;
     return addr;
 }
 
+uint32_t pci_config_read_u32(uint8_t bus, uint8_t slot, uint8_t func, uint8_t offset);
 uint16_t pci_config_read_u16(uint8_t bus, uint8_t slot, uint8_t func, uint8_t offset);
 uint8_t pci_config_read_u8(uint8_t bus, uint8_t slot, uint8_t func, uint8_t offset);
 

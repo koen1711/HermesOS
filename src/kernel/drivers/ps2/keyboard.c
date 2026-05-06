@@ -5,23 +5,21 @@
 #include "codes.h"
 #include "hardware/terminal/stdio.h"
 
-void ps2_keyboard_initialize() {
+int ps2_keyboard_initialize() {
     port_clear_read_buffer(COMMAND_PORT, DATA_PORT);
 
-    // Controller Command OxAE = Enable Keyboard
     port_write_u8(COMMAND_PORT, 0xAE);
-    // Controller Command 0x20 = Read Controller Command Byte
     port_write_u8(COMMAND_PORT, 0x20);
-    // Set the status
-    const uint8_t status = (port_read_u8(DATA_PORT) | 1) & ~0x10;
-    // Controller Command 0x60 = Write Controller Command Byte
-    port_write_u8(COMMAND_PORT, 0x60);
-    port_write_u8(DATA_PORT, status); // Write the status
 
-    // Controller Command 0xAA = Self Test
+    const uint8_t status = (port_read_u8(DATA_PORT) | 1) & ~0x10;
+    port_write_u8(COMMAND_PORT, 0x60);
+    port_write_u8(DATA_PORT, status);
+
     port_write_u8(COMMAND_PORT, 0xAA);
     if (port_read_u8(DATA_PORT) != 0x55)
-        return; //TODO: Handle error
+        return -1;
+
+    return 0;
 }
 
 void ps2_keyboard_interrupt_handler() {
