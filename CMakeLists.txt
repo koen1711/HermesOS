@@ -42,10 +42,10 @@ include_directories(include)
 
 # Freestanding kernel compile/link flags (C only — as doesn't understand GCC flags)
 target_compile_options(${PROJECT_NAME} PRIVATE
-    $<$<COMPILE_LANGUAGE:C>:-ffreestanding -fno-builtin -nostdinc
+    $<$<COMPILE_LANGUAGE:C>:-m64 -ffreestanding -fno-builtin -nostdinc
     -fno-pie -mno-red-zone -mno-sse>)
 target_link_options(${PROJECT_NAME} PRIVATE
-    -nostdlib -no-pie -static -z max-page-size=0x1000)
+    -m64 -nostdlib -no-pie -static -z max-page-size=0x1000)
 
 add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_BINARY_DIR}/isodir/boot/grub
