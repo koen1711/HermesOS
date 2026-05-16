@@ -4,7 +4,7 @@
 #define DATA_PORT 0x60
 #define COMMAND_PORT 0x64
 
-#include <stdint.h>
+#include <os/stdint.h>
 
 void port_io_wait(void);
 

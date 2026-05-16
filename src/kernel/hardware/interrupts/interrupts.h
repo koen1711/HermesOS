@@ -7,7 +7,7 @@
 
 #define IRQ_OFFSET 0x20
 
-#include <stdint.h>
+#include <os/stdint.h>
 
 typedef struct {
     uint16_t offset_low;

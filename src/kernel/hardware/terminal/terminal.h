@@ -1,6 +1,6 @@
 #ifndef TERMINAL_H
 #define TERMINAL_H
-#include <stddef.h>
+#include <os/stddef.h>
 
 typedef enum
 {

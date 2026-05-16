@@ -1,6 +1,6 @@
 #include "keyboard.h"
 
-#include <stdbool.h>
+#include <os/stdbool.h>
 #include <hardware/port/ports.h>
 #include "codes.h"
 #include "hardware/terminal/stdio.h"

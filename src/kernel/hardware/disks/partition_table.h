@@ -1,8 +1,8 @@
 #ifndef GPT_H
 #define GPT_H
 
-#include <stddef.h>
-#include <stdint.h>
+#include <os/stddef.h>
+#include <os/stdint.h>
 
 #include <hardware/memory/alloc.h>
 

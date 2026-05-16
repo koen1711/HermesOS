@@ -41,13 +41,8 @@ include_directories(src/kernel)
 include_directories(include)
 
 # Freestanding kernel compile/link flags (C only — as doesn't understand GCC flags)
-execute_process(
-    COMMAND ${CMAKE_C_COMPILER} -print-file-name=include
-    OUTPUT_VARIABLE GCC_FREESTANDING_INCLUDE
-    OUTPUT_STRIP_TRAILING_WHITESPACE)
 target_compile_options(${PROJECT_NAME} PRIVATE
     $<$<COMPILE_LANGUAGE:C>:-ffreestanding -fno-builtin -nostdinc
-    -isystem ${GCC_FREESTANDING_INCLUDE}
     -fno-pie -mno-red-zone -mno-sse>)
 target_link_options(${PROJECT_NAME} PRIVATE
     -nostdlib -no-pie -static -z max-page-size=0x1000)

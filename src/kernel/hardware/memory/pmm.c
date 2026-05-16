@@ -1,6 +1,6 @@
 #include "pmm.h"
-#include <stdint.h>
-#include <stddef.h>
+#include <os/stdint.h>
+#include <os/stddef.h>
 #include <multiboot.h>
 
 #include "hardware/terminal/stdio.h"

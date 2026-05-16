@@ -2,7 +2,7 @@
 #include "terminal.h"
 #include "procs/vga.h"
 
-#include <stdarg.h>
+#include <os/stdarg.h>
 #include <hardware/memory/alloc.h>
 #include <utils/str/vsnprintf.h>
 

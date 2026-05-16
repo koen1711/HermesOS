@@ -1,8 +1,8 @@
 #ifndef MMU_H
 #define MMU_H
 
-#include <stdint.h>
-#include <stddef.h>
+#include <os/stdint.h>
+#include <os/stddef.h>
 
 // Flags for page table entries
 #define MMU_PRESENT       0x001

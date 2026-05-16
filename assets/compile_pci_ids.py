@@ -49,7 +49,7 @@ def generate_c_code(vendors):
  * Only includes vendor and device IDs (no subsystem IDs)
  */
 
-#include <stdint.h>
+#include <os/stdint.h>
 
 const char* pci_lookup_device_name(uint16_t vendor_id, uint16_t device_id)
 {

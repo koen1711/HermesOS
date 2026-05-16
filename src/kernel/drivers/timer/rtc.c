@@ -1,6 +1,6 @@
 #include "rtc.h"
 
-#include <stdbool.h>
+#include <os/stdbool.h>
 #include <hardware/port/ports.h>
 
 #include "hardware/interrupts/pic.h"

@@ -5,7 +5,7 @@
 
 #define MULTIBOOT_TAG_TYPE_END 0
 #define MULTIBOOT_TAG_TYPE_MMAP 6
-#include "stddef.h"
+#include <os/stddef.h>
 #include "hardware/memory/alloc.h"
 
 typedef enum {

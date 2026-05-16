@@ -2,8 +2,8 @@
 #define VFS_H
 
 #include <os/types.h>
-#include <stddef.h>
-#include <stdint.h>
+#include <os/stddef.h>
+#include <os/stdint.h>
 
 struct file;
 struct inode;

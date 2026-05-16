@@ -1,6 +1,6 @@
 #ifndef OS_STR_H
 #define OS_STR_H
-#include <stdarg.h>
+#include <os/stdarg.h>
 
 #include "hardware/memory/alloc.h"
 

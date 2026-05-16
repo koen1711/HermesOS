@@ -2,7 +2,7 @@
 #define FAT32_H
 
 #include <drivers/fs/vfs/vfs_type.h>
-#include <stdint.h>
+#include <os/stdint.h>
 
 /* ── block device abstraction ─────────────────────────────────── */
 

@@ -1,7 +1,7 @@
 #ifndef OS_FS_UTILS_H
 #define OS_FS_UTILS_H
 
-#include <stdbool.h>
+#include <os/stdbool.h>
 
 typedef enum {
     BOOT_UNKNOWN,

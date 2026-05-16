@@ -22,8 +22,8 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
  * THE SOFTWARE.
  */
-#include <stddef.h>     // for size_t
-#include <stdarg.h>     // for va_args
+#include <os/stddef.h>     // for size_t
+#include <os/stdarg.h>     // for va_args
 
 #define is_digit(c) (c >= '0' && c <= '9')
 

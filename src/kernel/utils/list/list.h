@@ -1,8 +1,8 @@
 #ifndef LIST_H
 #define LIST_H
 
-#include <stddef.h>
-#include <stdint.h>
+#include <os/stddef.h>
+#include <os/stdint.h>
 
 struct map_entry {
     void* key;

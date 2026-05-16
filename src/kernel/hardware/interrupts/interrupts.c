@@ -1,6 +1,6 @@
 #include "interrupts.h"
 
-#include <stdbool.h>
+#include <os/stdbool.h>
 #include <hardware/interrupts/pic.h>
 
 extern void irq_interrupt_timer();

@@ -1,6 +1,6 @@
 #include "LFB.h"
 
-#include "stddef.h"
+#include <os/stddef.h>
 #include "hardware/terminal/stdio.h"
 
 static video_driver_t *active_driver = NULL;

@@ -1,7 +1,7 @@
 #ifndef PMM_H
 #define PMM_H
 
-#include <stdint.h>
+#include <os/stdint.h>
 
 #include <multiboot.h>
 

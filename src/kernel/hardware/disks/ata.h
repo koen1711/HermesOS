@@ -39,7 +39,7 @@
 #define ATA_CMD_WRITE_PIO         0x30
 #define ATA_CMD_WRITE_PIO_EXT     0x34
 
-#include <stdint.h>
+#include <os/stdint.h>
 
 #include <hardware/port/ports.h>
 #include "partition_table.h"

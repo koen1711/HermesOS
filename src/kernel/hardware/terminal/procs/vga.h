@@ -4,9 +4,9 @@
 #define VGA_WIDTH 80
 #define VGA_HEIGHT 25
 
-#include <stdbool.h>
-#include <stdint.h>
-#include <stddef.h>
+#include <os/stdbool.h>
+#include <os/stdint.h>
+#include <os/stddef.h>
 
 #include "hardware/terminal/terminal.h"
 

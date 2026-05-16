@@ -1,7 +1,7 @@
 #ifndef DISK_H
 #define DISK_H
 
-#include <stdint.h>
+#include <os/stdint.h>
 #include <drivers/fs/fs_utils.h>
 
 typedef enum {

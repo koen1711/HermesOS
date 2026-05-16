@@ -40,8 +40,8 @@
 
 #define MAX_DEVICES 10
 
-#include <stdint.h>
-#include <stdbool.h>
+#include <os/stdint.h>
+#include <os/stdbool.h>
 
 typedef struct {
     uint8_t bus;

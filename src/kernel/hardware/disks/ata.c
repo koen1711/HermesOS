@@ -1,6 +1,6 @@
 #include "ata.h"
 
-#include <stdint.h>
+#include <os/stdint.h>
 
 #include <drivers/fs/fs.h>
 #include <drivers/fs/fat/fat32.h>
