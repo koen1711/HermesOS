@@ -1,15 +1,17 @@
 #!/bin/sh
+set -e
 
-echo -n "Please enter the amount of threads: "
-read THREADS
+THREADS=${THREADS:-$(nproc 2>/dev/null || echo 4)}
 
 GCC="gcc-14.2.0"
 BINUTILS="binutils-2.43"
 GDB="gdb-16.2"
 
-CUR_DIR=$(pwd)
+CUR_DIR=$(cd "$(dirname "$0")" && pwd)
 PREFIX=$CUR_DIR/cross
 WORKDIR=$(mktemp -d)
+
+echo "Building cross-compiler with $THREADS thread(s)"
 
 echo "Installing cross-compiler to $PREFIX"
 echo "Building in directory $WORKDIR"
