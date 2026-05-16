@@ -1,6 +1,7 @@
 #include "interrupts.h"
 
 #include <os/stdbool.h>
+#include <os/stdint.h>
 #include <hardware/interrupts/pic.h>
 
 extern void irq_interrupt_timer();
@@ -34,16 +35,16 @@ void handle_interrupt(struct interrupt_context* context)
 
 bool are_interrupts_enabled()
 {
-    unsigned long flags;
-    asm volatile ( "pushf\n\t"
-                   "pop %0"
+    uint64_t flags;
+    asm volatile ( "pushfq\n\t"
+                   "popq %0"
                    : "=g"(flags) );
     return flags & (1 << 9);
 }
 
-void irq_restore(unsigned long flags)
+void irq_restore(uint64_t flags)
 {
-    asm ("push %0\n\tpopf" : : "rm"(flags) : "memory","cc");
+    asm ("pushq %0\n\tpopfq" : : "rm"(flags) : "memory","cc");
 }
 
 
