@@ -10,8 +10,9 @@ file(GLOB_RECURSE ALL_ASM_SOURCES "src/*.asm")
 list(APPEND SOURCES ${ALL_ASM_SOURCES})
 set_source_files_properties(${ALL_ASM_SOURCES} PROPERTIES LANGUAGE ASM)
 
-# If ASM compiler is a GCC driver (not raw 'as'), it needs -x assembler for .asm files
-get_filename_component(_asm_name "${CMAKE_ASM_COMPILER}" NAME)
+# If ASM compiler is a GCC driver (not raw 'as'), it needs -x assembler for .asm files.
+# NAME_WE strips the .exe suffix on Windows so the suffix check works there too.
+get_filename_component(_asm_name "${CMAKE_ASM_COMPILER}" NAME_WE)
 if(NOT _asm_name MATCHES "-as$" AND NOT _asm_name STREQUAL "as")
     set_source_files_properties(${ALL_ASM_SOURCES} PROPERTIES
         COMPILE_FLAGS "-x assembler")
