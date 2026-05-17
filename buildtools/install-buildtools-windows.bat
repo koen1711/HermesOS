@@ -6,7 +6,7 @@ rem existing install-buildtools-linux.sh under a Unix-like shell (MSYS2).
 rem
 rem Prereqs (one-time, inside MSYS2):
 rem   pacman -Syu
-rem   pacman -S --needed base-devel mingw-w64-x86_64-toolchain curl tar
+rem   pacman -S --needed base-devel mingw-w64-x86_64-toolchain curl tar mtools mingw-w64-x86_64-gptfdisk
 
 set "SCRIPT_DIR=%~dp0"
 
@@ -22,7 +22,7 @@ if not defined BASH_EXE (
     echo.
     echo Install MSYS2 from https://www.msys2.org/ then run inside the MSYS2 shell:
     echo     pacman -Syu
-    echo     pacman -S --needed base-devel mingw-w64-x86_64-toolchain curl tar
+    echo     pacman -S --needed base-devel mingw-w64-x86_64-toolchain curl tar mtools mingw-w64-x86_64-gptfdisk
     echo.
     echo Re-run this script afterwards.
     exit /b 1
