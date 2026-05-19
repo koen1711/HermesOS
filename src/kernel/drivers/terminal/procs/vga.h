@@ -8,7 +8,7 @@
 #include <os/stdint.h>
 #include <os/stddef.h>
 
-#include "hardware/terminal/terminal.h"
+#include "drivers/terminal/terminal.h"
 
 typedef enum {
     VGA_COLOR_BLACK = 0,

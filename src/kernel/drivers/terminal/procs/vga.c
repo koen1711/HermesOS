@@ -4,9 +4,6 @@
 #include "hardware/port/ports.h"
 #include <utils/vector/vector.h>
 
-#include "hardware/terminal/stdio.h"
-
-
 terminal_contents* terminal = NULL;
 vga_color terminal_color = VGA_COLOR_WHITE;
 

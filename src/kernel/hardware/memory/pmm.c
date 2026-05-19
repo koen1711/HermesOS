@@ -3,7 +3,7 @@
 #include <os/stddef.h>
 #include <multiboot.h>
 
-#include "hardware/terminal/stdio.h"
+#include "drivers/terminal/terminal.h"
 
 extern void* _kernel_virtual_end;
 

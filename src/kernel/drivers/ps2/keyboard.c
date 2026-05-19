@@ -3,7 +3,7 @@
 #include <os/stdbool.h>
 #include <hardware/port/ports.h>
 #include "codes.h"
-#include "hardware/terminal/stdio.h"
+#include "drivers/terminal/terminal.h"
 
 int ps2_keyboard_initialize() {
     port_clear_read_buffer(COMMAND_PORT, DATA_PORT);
@@ -143,7 +143,7 @@ void ps2_keyboard_interrupt_handler() {
     escape = 0;
 
     if (charKey != '\0' && !keyUp) {
-        printf("%c", charKey);
+        terminal_printf("%c", charKey);
     }
 
 }

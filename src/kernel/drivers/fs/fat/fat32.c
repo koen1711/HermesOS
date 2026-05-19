@@ -1,7 +1,7 @@
 #include "fat32.h"
 
 #include <hardware/memory/alloc.h>
-#include <hardware/terminal/stdio.h>
+#include "drivers/terminal/terminal.h"
 #include <utils/str/str.h>
 
 #include <drivers/fs/vfs/vfs.h>
@@ -466,20 +466,20 @@ struct super_block *fat32_mount(struct file_system_type *fs_type,
      */
     struct block_device *bdev = (struct block_device *)data;
     if (!bdev) {
-        printf("fat32: no block device\n");
+        terminal_printf("fat32: no block device\n");
         return NULL;
     }
 
     /* Read boot sector */
     fat32_boot_sector bs;
     if (bdev->ops->read_bytes(bdev, 0, sizeof(bs), &bs) != 0) {
-        printf("fat32: failed to read boot sector\n");
+        terminal_printf("fat32: failed to read boot sector\n");
         return NULL;
     }
 
     if (bs.bytes_per_sector == 0 ||
         (bs.bytes_per_sector & (bs.bytes_per_sector - 1)) != 0) {
-        printf("fat32: invalid bytes_per_sector\n");
+        terminal_printf("fat32: invalid bytes_per_sector\n");
         return NULL;
     }
 

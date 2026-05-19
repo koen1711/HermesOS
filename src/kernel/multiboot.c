@@ -1,6 +1,5 @@
 #include "multiboot.h"
 
-#include "hardware/terminal/stdio.h"
 
 multiboot_info_t parse_multiboot_info(multiboot_info_t_header* mb_info) {
     multiboot_info_t result = {0};

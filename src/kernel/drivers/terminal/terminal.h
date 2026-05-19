@@ -5,6 +5,7 @@
 typedef enum
 {
     VGA_TEXT_MODE,
+    VGA_LFB_MODE,
 } terminal_mode;
 
 typedef struct
@@ -13,5 +14,11 @@ typedef struct
     size_t length;
     size_t capacity;
 } terminal_contents;
+
+
+void terminal_initialize(terminal_mode mode);
+void terminal_switch_mode(terminal_mode mode);
+void terminal_printf(const char* format, ...);
+void terminal_update();
 
 #endif //TERMINAL_H

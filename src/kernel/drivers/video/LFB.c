@@ -1,22 +1,23 @@
 #include "LFB.h"
 
 #include <os/stddef.h>
-#include "hardware/terminal/stdio.h"
+#include "drivers/terminal/terminal.h"
+
 
 static video_driver_t *active_driver = NULL;
 static pci_address active_gpu;
 
 int lfb_initialize(void) {
-    printf("Initializing LFB...\n");
+    terminal_printf("Initializing LFB...\n");
 
     const scan_result *result = pci_scan(0x03);
     if (result == NULL) return -1;
 
-    printf("Found %d display devices.\n", result->count);
+    terminal_printf("Found %d display devices.\n", result->count);
 
     for (int i = 0; i < result->count; i++)
     {
-        printf("Checking device %d/%d...\n", i + 1, result->count);
+        terminal_printf("Checking device %d/%d...\n", i + 1, result->count);
         const pci_address dev = pci_convert_address(result->devices[i]);
 
         for (size_t j = 0; j < NUM_VIDEO_DRIVERS; j++)
@@ -29,6 +30,9 @@ int lfb_initialize(void) {
             {
                 active_driver = &video_drivers[j];
                 active_gpu = dev;
+
+                // terminal_switch_mode(VGA_LFB_MODE);
+
                 return video_drivers[j].init(device);
             }
         }

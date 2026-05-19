@@ -2,8 +2,9 @@
 #include "vfs.h"
 
 #include <hardware/memory/alloc.h>
-#include <hardware/terminal/stdio.h>
 #include <utils/str/str.h>
+
+#include "drivers/terminal/terminal.h"
 
 /* ── filesystem type registry ─────────────────────────────────── */
 
@@ -49,14 +50,14 @@ int vfs_mount_root_dev(const char *fs_type_name, const char *dev_name, void *dat
 {
     const struct file_system_type *fst = find_fs_type(fs_type_name);
     if (!fst) {
-        printf("vfs: unknown filesystem type '%s'\n", fs_type_name);
+        terminal_printf("vfs: unknown filesystem type '%s'\n", fs_type_name);
         return -1;
     }
 
     struct super_block *sb = fst->mount(
         (struct file_system_type *)fst, 0, dev_name, data);
     if (!sb) {
-        printf("vfs: mount failed for '%s'\n", fs_type_name);
+        terminal_printf("vfs: mount failed for '%s'\n", fs_type_name);
         return -1;
     }
 

@@ -1,8 +1,9 @@
 #include "alloc.h"
 
 #include "mmu.h"
+#include "pmm.h"
+#include "drivers/terminal/terminal.h"
 #include "hardware/interrupts/panic.h"
-#include "hardware/terminal/stdio.h"
 
 #define DEFAULT_BLOCK_SIZE 4096
 #define BLOCKS 8192
@@ -19,7 +20,10 @@ typedef struct memory_block_s memory_block_t;
 
 memory_block_t* first_free_block = NULL;  // Pointer to the first free memory block
 
-void memory_initialize() {
+void memory_initialize(const multiboot_info_t mb_info) {
+    pmm_initialize(mb_info);
+    mmu_initialize();
+
     first_free_block = (memory_block_t*)vmalloc(DEFAULT_BLOCK_SIZE * BLOCKS);
 
     if (first_free_block == NULL) {
@@ -42,11 +46,11 @@ uint64_t get_amount_of_free_memory() {
 void get_memory_overview() {
     // Print debug info about memory
     const uint64_t total_size = get_amount_of_free_memory();
-    printf("Memory Overview:\n");
-    printf("Total Memory: %lu bytes\n", total_size);
-    printf("Free Blocks:\n");
+    terminal_printf("Memory Overview:\n");
+    terminal_printf("Total Memory: %lu bytes\n", total_size);
+    terminal_printf("Free Blocks:\n");
     for (const memory_block_t* current = first_free_block; current != NULL; current = current->next) {
-        printf(" - Block at %p: %lu bytes\n", (void*)current, current->size);
+        terminal_printf(" - Block at %p: %lu bytes\n", (void*)current, current->size);
     }
 }
 
@@ -101,15 +105,15 @@ void* malloc(const uintptr_t size) {
     }
 
     // Out of memory
-    printf("malloc: Out of memory! Requested size: %lu bytes\n", aligned_size);
+    terminal_printf("malloc: Out of memory! Requested size: %lu bytes\n", aligned_size);
     if (previous != NULL)
     {
-        printf("First free block size: %lu bytes at address %p\n", first_free_block->size, (void*)first_free_block);
-        printf("Last free block size: %lu bytes at address %p\n", previous->size, (void*)previous);
+        terminal_printf("First free block size: %lu bytes at address %p\n", first_free_block->size, (void*)first_free_block);
+        terminal_printf("Last free block size: %lu bytes at address %p\n", previous->size, (void*)previous);
         get_memory_overview();
     }
     else
-        printf("No free blocks available.\n");
+        terminal_printf("No free blocks available.\n");
 
     panic("Out of memory in malloc!", __FILE__, __LINE__);
     return NULL;

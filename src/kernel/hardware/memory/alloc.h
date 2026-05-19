@@ -1,11 +1,14 @@
 #ifndef ALLOCATION_H
 #define ALLOCATION_H
 
+#include <multiboot.h>
+
 #include <os/stdbool.h>
-#include <os/stddef.h>
 #include <os/stdint.h>
 
-void memory_initialize();
+
+
+void memory_initialize(multiboot_info_t mb_info);
 
 void* malloc(uintptr_t size);
 void free(void* ptr);
