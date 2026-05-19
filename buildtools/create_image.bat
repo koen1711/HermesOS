@@ -30,5 +30,5 @@ rem MSYS2 bash wants forward-slash paths.
 set "SCRIPT_DIR_MSYS=%SCRIPT_DIR:\=/%"
 set "BINARY_DIR_MSYS=%BINARY_DIR:\=/%"
 
-"%BASH_EXE%" -lc "cd '%SCRIPT_DIR_MSYS%' && sh ./create_image_windows.sh '%BINARY_DIR_MSYS%'"
+"%BASH_EXE%" -lc "export PATH=/mingw64/bin:/usr/bin:$PATH && cd '%SCRIPT_DIR_MSYS%' && sh ./create_image_windows.sh '%BINARY_DIR_MSYS%'"
 exit /b %ERRORLEVEL%

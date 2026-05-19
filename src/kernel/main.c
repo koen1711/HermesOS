@@ -29,7 +29,7 @@ void kernel_main(void* multiboot_info_ptr)
 
     idt_initialize();
 
-    lfb_initialize();
+    /*lfb_initialize();*/
 
     while (1)
     {
