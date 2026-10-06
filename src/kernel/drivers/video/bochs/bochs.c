@@ -1,6 +1,7 @@
 #include "bochs.h"
 
 #include "hardware/memory/mmu.h"
+#include "hardware/memory/pmm.h"
 #include "hardware/port/ports.h"
 
 int bochs_detect(pci_device *dev) {
@@ -40,11 +41,11 @@ int bochs_init(pci_device *dev) {
     uint64_t fb_phys = (uint64_t)(bar0 & ~0xFULL);
 
     const size_t fb_size = 1024 * 768 * 4;
-    const uint64_t fb_virt = 0xFFFF800020000000ULL; // choose a safe VA for your kernel
+    const uint64_t fb_virt = vmm_alloc_mmio_region(fb_size);
     uint32_t *framebuffer = (uint32_t*)map_mmio_region(fb_phys, fb_size, fb_virt);
 
     for (int i = 0; i < 1024 * 768; ++i)
-        framebuffer[i] = 0x00000000;
+        framebuffer[i] = 0x00FF00FF;
 
     return 0;
 }
