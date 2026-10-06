@@ -3,12 +3,12 @@ set -e
 
 THREADS=${THREADS:-$(nproc 2>/dev/null || echo 4)}
 
-GCC="gcc-14.2.0"
-BINUTILS="binutils-2.43"
+GCC="gcc-16.2.0"
+BINUTILS="binutils-2_43"
 GDB="gdb-16.2"
 
 CUR_DIR=$(cd "$(dirname "$0")" && pwd)
-PREFIX=$CUR_DIR/cross
+SYSROOT=$CUR_DIR/cross
 WORKDIR=$(mktemp -d)
 
 echo "Building cross-compiler with $THREADS thread(s)"
@@ -22,20 +22,20 @@ cd "$WORKDIR" || exit
 
 if [ ! -d $BINUTILS ]
 then
-	curl --insecure -O https://ftp.gnu.org/gnu/binutils/$BINUTILS.tar.gz
+	wget https://github.com/memfault/binutils-gdb/archive/refs/tags/$BINUTILS.tar.gz
 	tar -zxf $BINUTILS.tar.gz
 fi
 
 if [ ! -d $GCC ]
 then
-	curl --insecure -O https://ftp.gnu.org/gnu/gcc/$GCC/$GCC.tar.gz
+	wget https://github.com/gcc-mirror/gcc/archive/refs/tags/releases/$GCC.tar.gz
 	tar -zxf $GCC.tar.gz
 fi
 
 # build and install libtools
 cd $BINUTILS || exit
-./configure --prefix="$PREFIX" --target=x86_64-elf --disable-nls --disable-werror --with-sysroot
-make -j "$THREADS" && make install
+./configure --prefix=/usr --target=x86_64-elf --disable-nls --disable-werror --enable-default-execstack=no --with-sysroot=$SYSROOT
+make -j "$THREADS" && DESTDIR="${SYSROOT}" make install
 cd ..
 
 # download gcc prerequisites
@@ -46,8 +46,18 @@ cd ..
 # build and install gcc
 mkdir $GCC-elf-objs
 cd $GCC-elf-objs || exit
-../$GCC/configure --prefix="$PREFIX" --target=x86_64-elf --disable-nls --enable-languages=c --without-headers
-make all-gcc -j "$THREADS" && make all-target-libgcc -j "$THREADS" && make install-gcc && make install-target-libgcc
+CFLAGS_FOR_TARGET="-march=x86_64 -mabi-lp64d" \
+CXXFLAGS_FOR_TARGET="-march=x86_64 -mabi-lp64d" \
+../$GCC/configure --prefix="$PREFIX" \
+  --target=x86_64-elf \
+  --disable-nls \
+  --enable-threads=posix \
+  --disable-multilib \
+  --enable-languages=c,c++ \
+  --with-sysroot=$SYSROOT \
+  --without-headers
+make -j$THREADS all-gcc all-target-libgcc
+DESTDIR="${SYSROOT}" make install-gcc install-target-libgcc
 cd ..
 
 
