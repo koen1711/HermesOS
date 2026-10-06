@@ -18,6 +18,8 @@ echo "Building in directory $WORKDIR"
 
 cd "$WORKDIR" || exit
 
+./mlibc-headers.sh
+
 # get and extract sources
 
 if [ ! -d $BINUTILS ]
@@ -33,13 +35,13 @@ then
 fi
 
 # build and install libtools
-cd $BINUTILS || exit
+cd binutils-gdb-$BINUTILS || exit
 ./configure --prefix=/usr --target=x86_64-elf --disable-nls --disable-werror --enable-default-execstack=no --with-sysroot=$SYSROOT
 make -j "$THREADS" && DESTDIR="${SYSROOT}" make install
 cd ..
 
 # download gcc prerequisites
-cd $GCC || exit
+cd gcc-releases-$GCC || exit
 ./contrib/download_prerequisites
 cd ..
 
@@ -48,7 +50,7 @@ mkdir $GCC-elf-objs
 cd $GCC-elf-objs || exit
 CFLAGS_FOR_TARGET="-march=x86_64 -mabi-lp64d" \
 CXXFLAGS_FOR_TARGET="-march=x86_64 -mabi-lp64d" \
-../$GCC/configure --prefix="$PREFIX" \
+../gcc-releases-$GCC/configure --prefix="$PREFIX" \
   --target=x86_64-elf \
   --disable-nls \
   --enable-threads=posix \
