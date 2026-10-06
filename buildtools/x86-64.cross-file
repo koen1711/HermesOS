@@ -5,11 +5,8 @@ endian = 'little'
 target_machine = 'x86_64-demo-unknown-hermesossysroot'
 cpu = 'x86_64'
 [binaries]
-c = 'x86_64-elf-gcc'
-cpp = 'x86_64-elf-g++'
-ar = 'x86_64-elf-ar'
-strip = 'x86_64-elf-strip'
-ld = 'x86_64-elf-ld'
-[built-in options]
-c_args = ['-march=x86_64', '-mabi=lp64d']
-cpp_args = ['-march=x86_64', '-mabi=lp64d']
+c = 'x86_64-hermes-gcc'
+cpp = 'x86_64-hermes-g++'
+ar = 'x86_64-hermes-ar'
+strip = 'x86_64-hermes-strip'
+ld = 'x86_64-hermes-ld'

@@ -1,4 +1,4 @@
-# Toolchain file for cross-compiling the kernel to x86_64-elf.
+# Toolchain file for cross-compiling the kernel to x86_64-hermes.
 # Usage:  cmake -B build -DCMAKE_TOOLCHAIN_FILE=buildtools/toolchain.cmake
 
 set(CMAKE_SYSTEM_NAME Generic)
@@ -8,7 +8,7 @@ set(CMAKE_SYSTEM_PROCESSOR x86_64)
 # would fail. Have it compile a static library instead.
 set(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY)
 
-set(TC_PREFIX x86_64-elf-)
+set(TC_PREFIX x86_64-hermes-)
 set(TC_PATH ${CMAKE_CURRENT_LIST_DIR}/cross/bin/)
 
 if(CMAKE_HOST_WIN32)
@@ -30,7 +30,7 @@ if(NOT EXISTS ${TC_PATH}${TC_PREFIX}gcc${TC_EXT})
         message(FATAL_ERROR
             "Cross-compiler not found at ${TC_PATH}${TC_PREFIX}gcc${TC_EXT}.\n"
             "No auto-build script exists for this host. Build or install an "
-            "x86_64-elf-gcc toolchain into buildtools/cross/ manually.")
+            "x86_64-hermes-gcc toolchain into buildtools/cross/ manually.")
     endif()
 
     message(STATUS "Cross-compiler not found at ${TC_PATH} — building via ${_tc_script_name} (this takes a while)")

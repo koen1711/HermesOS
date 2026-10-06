@@ -1,7 +1,7 @@
 @echo off
 setlocal enabledelayedexpansion
 
-rem Build the x86_64-elf cross-compiler on Windows by handing off to the
+rem Build the x86_64-hermes cross-compiler on Windows by handing off to the
 rem existing install-buildtools-linux.sh under a Unix-like shell (MSYS2).
 rem
 rem Prereqs (one-time, inside MSYS2):
