@@ -1,52 +1,36 @@
-#ifndef VFS_H
-#define VFS_H
+#ifndef OS_VFS_V2_H
+#define OS_VFS_V2_H
 
-#include <os/types.h>
-#include <os/stddef.h>
-#include <os/stdint.h>
+#include <drivers/fs/vfs/driver.h>
 
-struct file;
-struct inode;
-struct dentry;
-struct super_block;
-struct file_system_type;
-struct vfsmount;
+#define MAX_OPEN_FILES 256
+#define MAX_MOUNTED_FILESYSTEMS 10
+#define MAX_DRIVERS 8
+#define VFS_NAME_MAX 16
+#define VFS_PATH_MAX 64
 
-#define AT_FDCWD (-100)
 
-int vfs_init(void);
+typedef struct RegisteredDriver {
+    char name[VFS_NAME_MAX];
+    int magic_bytes;
+    FileSystemDriver *fsd;
+} RegisteredDriver;
 
-int vfs_register_filesystem(const struct file_system_type *fs);
+typedef struct MountedFileSystem {
+    char mount_path[VFS_PATH_MAX];
+    size_t mount_path_length;
+    inode* root;
+    RegisteredDriver* driver;
+    int flags;
+    int open_count;
+} MountedFileSystem;
 
-int vfs_mount_root(const char *fs_type_name, const char *root_device);
-int vfs_mount_root_dev(const char *fs_type_name, const char *dev_name, void *data);
+int  vfs_register_driver(const char *name, FileSystemDriver* fsd);
+int vfs_mount(const char *mount_path, const char* fs_name, void *blob);
+int vfs_unmount(const char *mount_path);
+int vfs_open(const char *path, int flags);
+ssize_t vfs_read(int fd, void *buf, size_t length);
+ssize_t vfs_write(int fd, const void *buf, size_t length);
+int vfs_close(int fd);
 
-struct vfsmount *vfs_get_root_mount(void);
-
-int     vfs_openat(int dirfd, const char *path, int flags, uint32_t mode);
-int     vfs_close(int fd);
-
-ssize_t vfs_read(int fd, void *buffer, size_t size);
-ssize_t vfs_write(int fd, const void *buffer, size_t size);
-
-int     vfs_fsync(int fd);
-int     vfs_ftruncate(int fd, uint64_t length);
-
-ssize_t vfs_getdents64(int fd, void *user_buf, size_t size);
-
-int vfs_mkdirat(int dirfd, const char *path, uint32_t mode);
-int vfs_unlinkat(int dirfd, const char *path, int flags);
-int vfs_renameat2(int olddirfd, const char *oldpath,
-                  int newdirfd, const char *newpath,
-                  unsigned int flags);
-
-int vfs_linkat(int olddirfd, const char *oldpath,
-               int newdirfd, const char *newpath,
-               unsigned int flags);
-
-int vfs_symlinkat(const char *target, int newdirfd, const char *linkpath);
-ssize_t vfs_readlinkat(int dirfd, const char *path, char *buf, size_t bufsz);
-
-int vfs_open(const char *path, int flags, uint32_t mode);
-
-#endif /* VFS_H */
+#endif //OS_VFS_V2_H

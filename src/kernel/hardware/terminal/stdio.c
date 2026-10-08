@@ -49,7 +49,7 @@ void* old_realloc(void* ptr, const uintptr_t size) {
 void terminal_initialize(const terminal_mode mode)
 {
     current_mode = mode;
-    terminal_contents* terminal = old_malloc(sizeof(terminal_contents));
+    terminal_contents* terminal = malloc(sizeof(terminal_contents));
     if (terminal == NULL)
     {
         panic("Failed to allocate terminal", __FILE__, __LINE__);
