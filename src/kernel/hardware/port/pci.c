@@ -4,7 +4,7 @@
 #include <hardware/port/pci_ids.h>
 
 #include "ports.h"
-#include <hardware/terminal/stdio.h>
+#include "drivers/terminal/terminal.h"
 #include "utils/str/str.h"
 
 uint32_t pci_config_read_u32(const uint8_t bus, const uint8_t slot, const uint8_t func, const uint8_t offset) {
@@ -83,13 +83,13 @@ void pci_initialize()
 			vendor_name = str_concat_variadic(4, "Unknown 0x", str_u16_hex(vendor_id), " 0x", str_u16_hex(device_id));
 		}
 
-		printf("PCI: %s with function %u at %02x:%02x.%u\n", vendor_name, PCI_FUNC(dev), PCI_BUS(dev), PCI_SLOT(dev), PCI_FUNC(dev));
+		terminal_printf("PCI: %s with function %u at %02x:%02x.%u\n", vendor_name, PCI_FUNC(dev), PCI_BUS(dev), PCI_SLOT(dev), PCI_FUNC(dev));
 
 		uint8_t class_code = pci_config_read_u8(PCI_BUS(dev), PCI_SLOT(dev), PCI_FUNC(dev), PCI_CLASS);
 		uint8_t subclass   = pci_config_read_u8(PCI_BUS(dev), PCI_SLOT(dev), PCI_FUNC(dev), PCI_SUBCLASS);
 		uint8_t prog_if    = pci_config_read_u8(PCI_BUS(dev), PCI_SLOT(dev), PCI_FUNC(dev), PCI_PROG_IF);
 
-		printf("PCI %02x:%02x.%u vid:did=%04x:%04x class=%02x subclass=%02x prog_if=%02x\n",
+		terminal_printf("PCI %02x:%02x.%u vid:did=%04x:%04x class=%02x subclass=%02x prog_if=%02x\n",
 			   PCI_BUS(dev), PCI_SLOT(dev), (unsigned)PCI_FUNC(dev),
 			   vendor_id, device_id, class_code, subclass, prog_if);
 	}

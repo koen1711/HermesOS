@@ -2,7 +2,6 @@
 #include "fat/fat32.h"
 #include "vfs/vfs.h"
 
-#include <hardware/terminal/stdio.h>
 
 void fs_init(void)
 {

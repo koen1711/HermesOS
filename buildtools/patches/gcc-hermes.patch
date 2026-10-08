@@ -1,0 +1,93 @@
+diff --color -ruN a/config.sub b/config.sub
+--- a/config.sub	2026-10-06 09:37:15.618049003 +0200
++++ b/config.sub	2026-10-06 09:37:15.640049407 +0200
+@@ -1735,7 +1735,7 @@
+ 	     | bosx* | nextstep* | cxux* | aout* | elf* | oabi* \
+ 	     | ptx* | coff* | ecoff* | winnt* | domain* | vsta* \
+ 	     | udi* | lites* | ieee* | go32* | aux* | hcos* \
+-	     | chorusrdb* | cegcc* | glidix* | serenity* \
++	     | chorusrdb* | cegcc* | glidix* | serenity* | hermes* \
+ 	     | cygwin* | msys* | pe* | moss* | proelf* | rtems* \
+ 	     | midipix* | mingw32* | mingw64* | mint* \
+ 	     | uxpv* | beos* | mpeix* | udk* | moxiebox* \
+diff --color -ruN a/gcc/config/hermes.h b/gcc/config/hermes.h
+--- a/gcc/config/hermes.h	1970-01-01 01:00:00.000000000 +0100
++++ b/gcc/config/hermes.h	2026-10-06 09:37:28.746290494 +0200
+@@ -0,0 +1,27 @@
++/* Target definitions for HermesOS (mlibc-based userspace).  */
++
++#undef TARGET_HERMES
++#define TARGET_HERMES 1
++
++#undef LIB_SPEC
++#define LIB_SPEC "-lc"
++
++/* mlibc's hermes sysdeps provide crt1.o; x86_64 uses .init_array, so no crti/crtn.  */
++#undef STARTFILE_SPEC
++#define STARTFILE_SPEC "%{!shared:crt1.o%s} %{shared:crtbeginS.o%s;:crtbegin.o%s}"
++
++#undef ENDFILE_SPEC
++#define ENDFILE_SPEC "%{shared:crtendS.o%s;:crtend.o%s}"
++
++#undef LINK_SPEC
++#define LINK_SPEC "%{shared:-shared} %{static:-static} %{!shared:%{!static:%{rdynamic:-export-dynamic} -dynamic-linker /usr/lib/ld.so}}"
++
++#undef TARGET_OS_CPP_BUILTINS
++#define TARGET_OS_CPP_BUILTINS()          \
++  do {                                    \
++    builtin_define ("__hermes__");        \
++    builtin_define ("__unix__");          \
++    builtin_assert ("system=hermes");     \
++    builtin_assert ("system=unix");       \
++    builtin_assert ("system=posix");      \
++  } while (0)
+diff --color -ruN a/gcc/config.gcc b/gcc/config.gcc
+--- a/gcc/config.gcc	2026-10-06 09:37:15.624049113 +0200
++++ b/gcc/config.gcc	2026-10-06 09:37:28.741290402 +0200
+@@ -932,6 +932,12 @@
+   rust_target_objs="${rust_target_objs} freebsd-rust.o"
+   target_has_targetrustm=yes
+   ;;
++*-*-hermes*)
++  gas=yes
++  gnu_ld=yes
++  default_use_cxa_atexit=yes
++  use_gcc_stdint=wrap
++  ;;
+ *-*-fuchsia*)
+   native_system_header_dir=/include
+   tmake_file="t-fuchsia"
+@@ -2015,6 +2021,9 @@
+ x86_64-*-elf*)
+ 	tm_file="${tm_file} i386/unix.h i386/att.h elfos.h newlib-stdint.h i386/i386elf.h i386/x86-64.h"
+ 	;;
++x86_64-*-hermes*)
++	tm_file="${tm_file} i386/unix.h i386/att.h elfos.h glibc-stdint.h i386/i386elf.h i386/x86-64.h hermes.h"
++	;;
+ x86_64-*-rtems*)
+ 	tm_file="${tm_file} i386/unix.h i386/att.h elfos.h newlib-stdint.h i386/i386elf.h i386/x86-64.h i386/rtemself.h rtems.h"
+ 	;;
+diff --color -ruN a/libgcc/config.host b/libgcc/config.host
+--- a/libgcc/config.host	2026-10-06 09:37:15.630049223 +0200
++++ b/libgcc/config.host	2026-10-06 09:37:28.742290420 +0200
+@@ -293,6 +293,10 @@
+       ;;
+   esac
+   ;;
++*-*-hermes*)
++  tmake_file="$tmake_file t-crtstuff-pic t-libgcc-pic"
++  extra_parts="crtbegin.o crtbeginS.o crtend.o crtendS.o"
++  ;;
+ *-*-fuchsia*)
+   tmake_file="$tmake_file t-crtstuff-pic t-libgcc-pic t-eh-dw2-dip t-slibgcc t-slibgcc-fuchsia"
+   extra_parts="crtbegin.o crtend.o"
+@@ -754,6 +758,9 @@
+ 	    ;;
+ 	esac
+ 	;;
++x86_64-*-hermes*)
++	tmake_file="$tmake_file i386/t-crtstuff"
++	;;
+ x86_64-*-fuchsia*)
+ 	tmake_file="$tmake_file t-libgcc-pic"
+ 	;;

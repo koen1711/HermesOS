@@ -7,7 +7,7 @@
 #include <hardware/port/pci.h>
 #include <hardware/port/ports.h>
 #include <hardware/memory/alloc.h>
-#include <hardware/terminal/stdio.h>
+#include <drivers/terminal/terminal.h>
 #include <utils/list/list.h>
 #include <utils/str/str.h>
 
@@ -303,11 +303,11 @@ void ata_get_gpt(const ata_device * dev, full_gpt* gpt)
 
         if (gpt->entries[i]->part_type == FS_UNKNOWN) {
             // Print the partition GUID
-            printf("Unknown partition type: ");
+            terminal_printf("Unknown partition type: ");
             for (int j = 0; j < 16; j++) {
-                printf("%02X", gpt->entries[i]->partition_guid[j]);
+                terminal_printf("%02X", gpt->entries[i]->partition_guid[j]);
             }
-            printf("\n");
+            terminal_printf("\n");
         }
     }
 
@@ -384,9 +384,9 @@ void ata_device_initialize(ata_device * dev)
             }
         }
     } else if (boot_type == BOOT_EL_TORITO)
-        printf("El Torito boot detected\n");
+        terminal_printf("El Torito boot detected\n");
     else
-        printf("Unknown boot type\n");
+        terminal_printf("Unknown boot type\n");
 
     free(gpt);
 }

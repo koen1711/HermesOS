@@ -1,0 +1,59 @@
+diff --color -ruN a/bfd/config.bfd b/bfd/config.bfd
+--- a/bfd/config.bfd	2026-10-06 09:37:15.597048617 +0200
++++ b/bfd/config.bfd	2026-10-06 09:37:15.634049297 +0200
+@@ -681,7 +681,7 @@
+     targ_selvecs="i386_elf32_vec iamcu_elf32_vec"
+     want64=true
+     ;;
+-  x86_64-*-elf* | x86_64-*-rtems* | x86_64-*-fuchsia | x86_64-*-genode*)
++  x86_64-*-elf* | x86_64-*-rtems* | x86_64-*-fuchsia | x86_64-*-genode* | x86_64-*-hermes*)
+     targ_defvec=x86_64_elf64_vec
+     targ_selvecs="i386_elf32_vec iamcu_elf32_vec x86_64_elf32_vec"
+     case "${targ}" in
+diff --color -ruN a/config.sub b/config.sub
+--- a/config.sub	2026-10-06 09:37:15.591048506 +0200
++++ b/config.sub	2026-10-06 09:37:15.632049260 +0200
+@@ -1754,7 +1754,7 @@
+ 	     | bosx* | nextstep* | cxux* | oabi* \
+ 	     | ptx* | ecoff* | winnt* | domain* | vsta* \
+ 	     | udi* | lites* | ieee* | go32* | aux* | hcos* \
+-	     | chorusrdb* | cegcc* | glidix* | serenity* \
++	     | chorusrdb* | cegcc* | glidix* | serenity* | hermes* \
+ 	     | cygwin* | msys* | moss* | proelf* | rtems* \
+ 	     | midipix* | mingw32* | mingw64* | mint* \
+ 	     | uxpv* | beos* | mpeix* | udk* | moxiebox* \
+diff --color -ruN a/gas/configure.tgt b/gas/configure.tgt
+--- a/gas/configure.tgt	2026-10-06 09:37:15.602048708 +0200
++++ b/gas/configure.tgt	2026-10-06 09:37:15.636049334 +0200
+@@ -230,6 +230,7 @@
+   i386-*-elfiamcu)			fmt=elf arch=iamcu ;;
+   i386-*-elf*)				fmt=elf ;;
+   i386-*-fuchsia*)			fmt=elf ;;
++  i386-*-hermes*)			fmt=elf ;;
+   i386-*-haiku*)			fmt=elf em=haiku ;;
+   i386-*-genode*)			fmt=elf ;;
+   i386-*-bsd*)				fmt=aout em=386bsd ;;
+diff --color -ruN a/gdb/configure.tgt b/gdb/configure.tgt
+--- a/gdb/configure.tgt	2026-10-06 09:37:15.613048911 +0200
++++ b/gdb/configure.tgt	2026-10-06 09:37:15.639049389 +0200
+@@ -714,7 +714,7 @@
+ 	gdb_target_obs="${i386_tobjs} \
+ 			dicos-tdep.o i386-dicos-tdep.o amd64-dicos-tdep.o"
+ 	;;
+-x86_64-*-elf*)
++x86_64-*-elf* | x86_64-*-hermes*)
+ 	gdb_target_obs="${i386_tobjs}"
+ 	;;
+ x86_64-*-linux*)
+diff --color -ruN a/ld/configure.tgt b/ld/configure.tgt
+--- a/ld/configure.tgt	2026-10-06 09:37:15.608048819 +0200
++++ b/ld/configure.tgt	2026-10-06 09:37:15.637049353 +0200
+@@ -1036,7 +1036,7 @@
+ 			tdir_elf_i386=`echo ${targ_alias} | \
+ 			    sed -e 's/x86_64/i386/' -e 's/aout//'`
+ 			;;
+-x86_64-*-elf* | x86_64-*-rtems* | x86_64-*-fuchsia* | x86_64-*-genode*)
++x86_64-*-elf* | x86_64-*-rtems* | x86_64-*-fuchsia* | x86_64-*-genode* | x86_64-*-hermes*)
+ 			targ_emul=elf_x86_64
+ 			targ_extra_emuls="elf_i386 elf_iamcu elf32_x86_64"
+ 			targ_extra_libpath="elf_i386 elf_iamcu elf32_x86_64"
