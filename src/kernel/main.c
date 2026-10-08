@@ -25,7 +25,7 @@ void kernel_main(void* multiboot_info_ptr)
     pci_initialize();
     fs_init();
     ata_initialize();
-
+    
     register_drivers();
 
     idt_initialize();

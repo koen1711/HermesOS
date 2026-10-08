@@ -1,5 +1,5 @@
 #include "vfs.h"
-#include "hardware/terminal/stdio.h"
+#include "drivers/terminal/terminal.h"
 #include "utils/str/str.h"
 
 static file* fd_table[MAX_OPEN_FILES];
@@ -45,7 +45,7 @@ int vfs_register_driver(const char* name, FileSystemDriver* fsd) {
     for (int i = 0; i < driver_count; i++) {
         if (strcmp(name, driver_table[i].name) == 0) {return -1;}
     }
-    snprintf(driver_table[driver_count].name,
+    terminal_printf(driver_table[driver_count].name,
         sizeof(driver_table[driver_count].name), "%s", name);
     driver_table[driver_count].fsd = fsd;
     driver_count++;
@@ -69,7 +69,7 @@ int vfs_mount(const char* mount_path, const char* fs_name, void*blob) {
         if (mount_table[i].root == NULL) {
             mount_table[i].driver = reg_driver;
             mount_table[i].root = root_node;
-            snprintf(mount_table[i].mount_path, sizeof(mount_table[i].mount_path), "%s", mount_path);
+            terminal_printf(mount_table[i].mount_path, sizeof(mount_table[i].mount_path), "%s", mount_path);
             return 0;
         }
     }
