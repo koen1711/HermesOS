@@ -37,6 +37,9 @@ list(APPEND SOURCES ${CMAKE_BINARY_DIR}/pci_ids.c)
 
 add_executable(${PROJECT_NAME}
         ${SOURCES}
+        src/kernel/drivers/fs/vfs/vfs.c
+        src/kernel/drivers/fs/vfs/vfs.h
+        src/kernel/drivers/fs/vfs/driver.h
 )
 include_directories(src/kernel)
 include_directories(include)
