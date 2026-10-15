@@ -25,9 +25,12 @@ string(SUBSTRING ${CMAKE_BINARY_DIR} ${LAST_SLASH} -1 CMAKE_BINARY_DIR_NAME)
 string(REGEX REPLACE "^/" "" CMAKE_BINARY_DIR_NAME "${CMAKE_BINARY_DIR_NAME}")
 
 # Run the code at assets/compile_pci_ids.py to generate pci_ids.c
+# (find_package instead of a bare "python3": on Windows that can resolve to MSYS2's
+# python, which can't open C:/ paths)
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
 add_custom_command(
         OUTPUT ${CMAKE_BINARY_DIR}/pci_ids.c
-        COMMAND python3 ${CMAKE_SOURCE_DIR}/assets/compile_pci_ids.py
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/assets/compile_pci_ids.py
         ARGS ${CMAKE_SOURCE_DIR}/assets/pci.ids ${CMAKE_BINARY_DIR}/
         DEPENDS ${CMAKE_SOURCE_DIR}/assets/compile_pci_ids.py
         COMMENT "Generating pci_ids.c"
