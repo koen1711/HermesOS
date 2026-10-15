@@ -9,23 +9,28 @@
 #define VFS_NAME_MAX 16
 #define VFS_PATH_MAX 64
 
+enum seek_origin {
+    SEEK_SET = 0,
+    SEEK_CUR = 1,
+    SEEK_END = 2
+};
 
-typedef struct RegisteredDriver {
+typedef struct registered_driver_s {
     char name[VFS_NAME_MAX];
     int magic_bytes;
-    FileSystemDriver *fsd;
-} RegisteredDriver;
+    file_system_driver_t *fsd;
+} registered_driver_t;
 
-typedef struct MountedFileSystem {
+typedef struct mounted_file_system_s {
     char mount_path[VFS_PATH_MAX];
     size_t mount_path_length;
-    inode* root;
-    RegisteredDriver* driver;
+    struct inode_s* root;
+    registered_driver_t* driver;
     int flags;
     int open_count;
-} MountedFileSystem;
+} mounted_file_system_t;
 
-int  vfs_register_driver(const char *name, FileSystemDriver* fsd);
+int  vfs_register_driver(const char *name, file_system_driver_t* fsd);
 int vfs_mount(const char *mount_path, const char* fs_name, void *blob);
 int vfs_unmount(const char *mount_path);
 int vfs_open(const char *path, int flags);

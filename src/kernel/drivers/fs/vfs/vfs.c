@@ -2,27 +2,33 @@
 #include "drivers/terminal/terminal.h"
 #include "utils/str/str.h"
 
-static file* fd_table[MAX_OPEN_FILES];
-static RegisteredDriver driver_table[MAX_DRIVERS];
-static MountedFileSystem mount_table[MAX_MOUNTED_FILESYSTEMS];
+
+static struct file_s* fd_table[MAX_OPEN_FILES];
+static struct registered_driver_s driver_table[MAX_DRIVERS];
+static struct mounted_file_system_s mount_table[MAX_MOUNTED_FILESYSTEMS];
 
 static int driver_count = 0;
 
-static RegisteredDriver* get_driver(const char* fs_name) {
-    for (int i=0; i<driver_count; i++) {
-        if ((strcmp((driver_table[i].name), fs_name) == 0)) {
+static struct registered_driver_s* get_driver(const char* fs_name)
+{
+    for (int i = 0; i < driver_count; i++)
+    {
+        if ((strcmp((driver_table[i].name), fs_name) == 0))
+        {
             return &driver_table[i];
         }
     }
-    return NULL;
+    return nullptr;
 }
 
-static MountedFileSystem* find_mount(const char* path, const char** rest) {
-    MountedFileSystem* best = NULL;
+static struct mounted_file_system_s* find_mount(const char* path, const char** rest)
+{
+    struct mounted_file_system_s* best = nullptr;
     size_t best_len = 0;
 
-    for (int i = 0; i < MAX_MOUNTED_FILESYSTEMS; i++) {
-        if (mount_table[i].root == NULL) continue;
+    for (int i = 0; i < MAX_MOUNTED_FILESYSTEMS; i++)
+    {
+        if (mount_table[i].root == nullptr) continue;
 
         const size_t len = mount_table[i].mount_path_length;
         if (strncmp(path, mount_table[i].mount_path, len) != 0) { continue; }
@@ -30,43 +36,59 @@ static MountedFileSystem* find_mount(const char* path, const char** rest) {
         const char next = path[len];
         if (next != '\0' && next != '/' && len != 1) { continue; }
 
-        if (best == NULL || len > best_len) {
+        if (best == nullptr || len > best_len)
+        {
             best = &mount_table[i];
             best_len = len;
         }
     }
-    if (best != NULL) *rest = path + best_len;
+    if (best != nullptr) 
+        *rest = path + best_len;
+    
     return best;
 }
 
-int vfs_register_driver(const char* name, FileSystemDriver* fsd) {
-    if (name == NULL || fsd == NULL) {return -1;}
-    if (driver_count >= MAX_DRIVERS) {return -1;}
-    for (int i = 0; i < driver_count; i++) {
-        if (strcmp(name, driver_table[i].name) == 0) {return -1;}
+int vfs_register_driver(const char* name, file_system_driver_t* fsd)
+{
+    if (name == nullptr || fsd == nullptr)
+        return -1;
+    if (driver_count >= MAX_DRIVERS) 
+        return -1;
+    
+    for (int i = 0; i < driver_count; i++)
+    {
+        if (strcmp(name, driver_table[i].name) == 0) 
+            return -1;
     }
     terminal_printf(driver_table[driver_count].name,
-        sizeof(driver_table[driver_count].name), "%s", name);
+                    sizeof(driver_table[driver_count].name), "%s", name);
     driver_table[driver_count].fsd = fsd;
     driver_count++;
     return 0;
 }
 
 
-int vfs_mount(const char* mount_path, const char* fs_name, void*blob) {
-    RegisteredDriver* reg_driver = get_driver(fs_name);
-    if(reg_driver == NULL){ return -1;}
+int vfs_mount(const char* mount_path, const char* fs_name, void* blob)
+{
+    registered_driver_t* reg_driver = get_driver(fs_name);
+    if (reg_driver == nullptr) 
+        return -1;
 
-    for (int i=0; i < MAX_MOUNTED_FILESYSTEMS; i++) {
-        if (mount_table[i].root != NULL &&
-            strcmp(mount_path, mount_table[i].mount_path) == 0) {return -1;}
+    for (int i = 0; i < MAX_MOUNTED_FILESYSTEMS; i++)
+    {
+        if (mount_table[i].root != nullptr &&
+            strcmp(mount_path, mount_table[i].mount_path) == 0) 
+            return -1;
     }
 
-    inode* root_node = reg_driver->fsd->mount(blob);
-    if (root_node == NULL){ return -1;}
+    struct inode_s* root_node = reg_driver->fsd->mount(blob);
+    if (root_node == nullptr) 
+        return -1;
 
-    for (int i=0; i < MAX_MOUNTED_FILESYSTEMS; i++) {
-        if (mount_table[i].root == NULL) {
+    for (int i = 0; i < MAX_MOUNTED_FILESYSTEMS; i++)
+    {
+        if (mount_table[i].root == nullptr)
+        {
             mount_table[i].driver = reg_driver;
             mount_table[i].root = root_node;
             terminal_printf(mount_table[i].mount_path, sizeof(mount_table[i].mount_path), "%s", mount_path);
@@ -77,12 +99,14 @@ int vfs_mount(const char* mount_path, const char* fs_name, void*blob) {
     return -1;
 }
 
-int vfs_unmount(const char* mount_path) {
-      for (int i=0; i < MAX_MOUNTED_FILESYSTEMS; i++) {
-        if (mount_table[i].root != NULL && strcmp(mount_path, mount_table[i].mount_path) == 0){
-            if (mount_table[i].open_count > 0) {
+int vfs_unmount(const char* mount_path)
+{
+    for (int i = 0; i < MAX_MOUNTED_FILESYSTEMS; i++)
+    {
+        if (mount_table[i].root != nullptr && strcmp(mount_path, mount_table[i].mount_path) == 0)
+        {
+            if (mount_table[i].open_count > 0)
                 return -1;
-            }
             mount_table[i].driver->fsd->unmount(mount_table[i].root);
             memset(&mount_table[i], 0, sizeof(mount_table[i]));
             return 0;
@@ -91,47 +115,65 @@ int vfs_unmount(const char* mount_path) {
     return -1;
 }
 
-static file* get_file(int fd) {
-    if (fd < 0 || fd >= MAX_OPEN_FILES) {return NULL;}
-    return fd_table[fd];}
+static struct file_s* get_file(const int fd)
+{
+    if (fd < 0 || fd >= MAX_OPEN_FILES) 
+        return nullptr;
+    
+    return fd_table[fd];
+}
 
 
-int vfs_open(const char* path, int flags) {
+int vfs_open(const char* path, const int flags)
+{
     const char* rest;
-    MountedFileSystem* mount = find_mount(path, &rest);
+    mounted_file_system_t* mount = find_mount(path, &rest);
 
-    if (mount == NULL) {return -1;}
-    inode* current = mount->root;
-    while (*rest != '\0') {
+    if (mount == nullptr)
+        return -1;
+    struct inode_s* current = mount->root;
+    while (*rest != '\0')
+    {
         while (*rest == '/') rest++;
-        if (*rest == '\0') {break;}
+        if (*rest == '\0') { break; }
         size_t n = 0;
         while (rest[n] != '/' && rest[n] != '\0') n++;
 
         char name[MAX_FILE_PATH];
-        if (n >= sizeof(name)) return -1;
+        if (n >= sizeof(name))
+            return -1;
         memcpy(name, rest, n);
         name[n] = '\0';
 
-        if (current->iops == NULL || current->iops->lookup(current,name) == NULL) {return -1;}
-        current = current->iops->lookup(current,name);
-        if (current == NULL) {return -1;}
+        if (current->iops == nullptr || current->iops->lookup(current, name) == nullptr) 
+            return -1;
+        current = current->iops->lookup(current, name);
+        if (current == nullptr)
+            return -1;
 
         rest += n;
     }
-    if (current->fops == NULL || current->fops->open == NULL) {return -1;}
+    if (current->fops == nullptr || current->fops->open == nullptr) 
+        return -1;
 
-    file* f = malloc(sizeof(file));
-    if (f == NULL) {return -1;}
+    struct file_s* f = malloc(sizeof(struct file_s));
+    if (f == nullptr) 
+        return -1;
     memset(f, 0, sizeof(*f));
     f->node = current;
     f->flags = flags;
     f->file_position = 0;
     f->mount = mount;
 
-    if (current->fops->open(current, f) < 0) {free(f); return -1;}
-    for (int i = 0; i < MAX_OPEN_FILES; i++) {
-        if (fd_table[i] == NULL) {
+    if (current->fops->open(current, f) < 0)
+    {
+        free(f);
+        return -1;
+    }
+    for (int i = 0; i < MAX_OPEN_FILES; i++)
+    {
+        if (fd_table[i] == nullptr)
+        {
             f->id = i;
             fd_table[i] = f;
             mount->open_count++;
@@ -144,37 +186,77 @@ int vfs_open(const char* path, int flags) {
     return -1;
 }
 
-ssize_t vfs_read(const int fd, void* buf, size_t len) {
-    file* f = get_file(fd);
-    if (f == NULL) {return -1;}
+ssize_t vfs_read(const int fd, void* buf, const size_t length)
+{
+    struct file_s* f = get_file(fd);
+    if (f == nullptr) 
+        return -1;
 
-    if (!(f->flags & O_RDONLY)) { return -1; }
+    if (!(f->flags & O_RDONLY)) 
+        return -1;
 
-    if (f->node->fops == NULL || f->node->fops->read == NULL) {return -1;    }
-    return f->node->fops->read(f, buf, len);
-
+    if (f->node->fops == nullptr || f->node->fops->read == nullptr) 
+        return -1;
+    
+    return f->node->fops->read(f, buf, length);
 }
-ssize_t vfs_write(const int fd, const void* buf, const size_t length) {
-    file* f = get_file(fd);
-    if (f == NULL) {return -1;}
 
-    if (!(f->flags & O_WRONLY)) { return -1; }
+ssize_t vfs_write(const int fd, const void* buf, const size_t length)
+{
+    struct file_s* f = get_file(fd);
+    if (f == nullptr) 
+        return -1;
 
-    if (f->node->fops == NULL || f->node->fops->read == NULL) {return -1;}
+    if (!(f->flags & O_WRONLY)) 
+        return -1;
+
+    if (f->node->fops == nullptr || f->node->fops->read == nullptr) 
+        return -1;
     return f->node->fops->write(f, buf, length);
 }
 
+int vfs_seek(const int fd, const size_t offset, enum seek_origin origin)
+{
+    struct file_s* f = get_file(fd);
+    if (f == nullptr) 
+        return -1;
 
-int vfs_close(const int fd) {
-    file* f = get_file(fd);
-    if (f == NULL) {return -1;}
-    if (f->node->fops != NULL && f->node->fops->close != 0) {
-        f->node->fops->close(f);
+    switch (origin)
+    {
+        case SEEK_SET:
+            if (offset > f->node->size) 
+                return -1;
+            f->file_position = offset;
+            break;
+        case SEEK_CUR:
+            if (f->file_position + offset > f->node->size) 
+                return -1;
+            f->file_position += offset;
+            break;
+        case SEEK_END:
+            if (offset > f->node->size) 
+                return -1;
+            f->file_position = f->node->size - offset;
+            break;
+        default:
+            return -1;
     }
 
-    f->mount->open_count--;
-    free(f);
-    fd_table[fd] = NULL;
     return 0;
 }
 
+
+int vfs_close(const int fd)
+{
+    struct file_s* f = get_file(fd);
+    if (f == nullptr) 
+        return -1;
+    
+    if (f->node->fops != nullptr && f->node->fops->close != 0)
+        f->node->fops->close(f);
+
+    f->mount->open_count--;
+    free(f);
+    fd_table[fd] = nullptr;
+    return 0;
+}
