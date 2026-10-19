@@ -13,6 +13,6 @@
 // Program channel 0 to fire IRQ 0 at `hz` and register the timer handler
 int pit_initialize(uint32_t hz);
 uint32_t pit_frequency();
-void handle_timer_interrupt(uint8_t irq, void* ctx);
+void handle_timer_interrupt(uint8_t irq, const void* ctx);
 
 #endif //PIT_H
