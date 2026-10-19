@@ -7,6 +7,7 @@
 #define PCI_VENDOR_ID            0x00 // 2
 #define PCI_DEVICE_ID            0x02 // 2
 #define PCI_COMMAND              0x04 // 2
+#define PCI_COMMAND_MASTER       0x04
 #define PCI_STATUS               0x06 // 2
 #define PCI_REVISION_ID          0x08 // 1
 
@@ -82,11 +83,21 @@ static pci_address pci_convert_address(const uint32_t address) {
 }
 
 uint32_t pci_config_read_u32(uint8_t bus, uint8_t slot, uint8_t func, uint8_t offset);
+
 uint16_t pci_config_read_u16(uint8_t bus, uint8_t slot, uint8_t func, uint8_t offset);
 uint8_t pci_config_read_u8(uint8_t bus, uint8_t slot, uint8_t func, uint8_t offset);
+
+void pci_config_write_u32(uint8_t bus, uint8_t slot, uint8_t func, uint8_t offset, uint32_t value);
+void pci_config_write_u16(uint8_t bus, uint8_t slot, uint8_t func, uint8_t offset, uint16_t value);
+void pci_config_write_u8(uint8_t bus, uint8_t slot, uint8_t func, uint8_t offset, uint8_t value);
+
+// Set the bus master bit in PCI_COMMAND so the device can DMA
+void pci_enable_bus_master(const pci_device* device);
 
 // Scan the PCI bus for devices
 scan_result* pci_scan(int type);
 void pci_scan_bus(int type, int bus, scan_result *result);
+
+uint16_t pci_get_bar_type(const pci_device* device, uint8_t bar_index);
 
 #endif //PCI_H

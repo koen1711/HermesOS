@@ -26,10 +26,7 @@ irq_interrupt_syscall:
     # Push error code or syscall number
     pushq $-ENOSYS  # Use immediate value with pushq
 
-    # Call the syscall handler
-    # In 64-bit calling convention, arguments are passed in registers
-    # You might need to set up arguments in %rdi, %rsi, etc.
-    call handle_syscall
+    call handle_syscall // drivers/syscalls/syscalls.c
 
     # Clean up the pushed error code
     addq $8, %rsp   # 8 bytes in 64-bit mode

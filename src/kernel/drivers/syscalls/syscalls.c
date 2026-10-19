@@ -7,7 +7,7 @@ void syscalls_initialize()
     idt_set_entry(SYSCALL_VECTOR, (uintptr_t)irq_interrupt_syscall);
 }
 
-void handle_syscall(interrupt_context* context)
+void handle_syscall(const interrupt_context* context)
 {
     switch (context->rax) {
         case SYSCALL_WRITE:
