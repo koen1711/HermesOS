@@ -30,7 +30,7 @@ static char* strcmp(const char* str1, const char* str2)
     }
     if (str1[i] != str2[i])
         return (char*)(str1 + i);
-    return NULL;
+    return nullptr;
 }
 
 static char* strchr(const char* str, char c)
