@@ -2,8 +2,6 @@
 .equ ENOSYS, 38
 
 .global irq_interrupt_syscall
-.global irq_interrupt_timer
-.global irq_interrupt_keyboard
 
 .extern handle_pic_interrupt
 .extern handle_syscall
@@ -55,72 +53,79 @@ irq_interrupt_syscall:
 
     iretq
 
-irq_interrupt_timer:
-    pushq $0 # Push the interrupt number
+.macro IRQ_STUB n
+.global irq_interrupt_\n
+irq_interrupt_\n:
+    pushq $\n
     jmp irq_interrupt
+.endm
 
-irq_interrupt_keyboard:
-    pushq $1 # Push the interrupt number
-    jmp irq_interrupt
+IRQ_STUB 0
+IRQ_STUB 1
+IRQ_STUB 2
+IRQ_STUB 3
+IRQ_STUB 4
+IRQ_STUB 5
+IRQ_STUB 6
+IRQ_STUB 7
+IRQ_STUB 8
+IRQ_STUB 9
+IRQ_STUB 10
+IRQ_STUB 11
+IRQ_STUB 12
+IRQ_STUB 13
+IRQ_STUB 14
+IRQ_STUB 15
 
 irq_interrupt:
-    # First create space for our InterruptContext structure
-    sub $152, %rsp  # 19 registers * 8 bytes = 152 bytes (including interrupt_number)
+    sub $160, %rsp
 
-    # Save interrupt number (which we pushed at entry)
-    mov 152(%rsp), %rax    # Get the interrupt number we pushed
-    mov %rax, 144(%rsp)    # Save to context.interrupt_number
+    mov %rax, 0(%rsp)
+    mov %rbx, 8(%rsp)
+    mov %rcx, 16(%rsp)
+    mov %rdx, 24(%rsp)
+    mov %rbp, 32(%rsp)
+    mov %rsi, 48(%rsp)
+    mov %rdi, 56(%rsp)
+    mov %r8, 64(%rsp)
+    mov %r9, 72(%rsp)
+    mov %r10, 80(%rsp)
+    mov %r11, 88(%rsp)
+    mov %r12, 96(%rsp)
+    mov %r13, 104(%rsp)
+    mov %r14, 112(%rsp)
+    mov %r15, 120(%rsp)
 
-    # Save rflags (pushed by CPU during interrupt)
-    mov 160(%rsp), %rax    # rflags is at [original_rsp + 8 + 152]
-    mov %rax, 136(%rsp)    # Save to context.rflags
+    mov 160(%rsp), %rax     # irq number pushed by the stub
+    mov %rax, 152(%rsp)
+    mov 168(%rsp), %rax     # rip
+    mov %rax, 128(%rsp)
+    mov 176(%rsp), %rax     # cs
+    mov %rax, 136(%rsp)
+    mov 184(%rsp), %rax     # rflags
+    mov %rax, 144(%rsp)
+    mov 192(%rsp), %rax     # interrupted rsp
+    mov %rax, 40(%rsp)
 
-    # Save cs (pushed by CPU during interrupt)
-    mov 168(%rsp), %rax    # cs is at [original_rsp + 16 + 152]
-    mov %rax, 128(%rsp)    # Save to context.cs
-
-    # Save rip (pushed by CPU during interrupt)
-    mov 176(%rsp), %rax    # rip is at [original_rsp + 24 + 152]
-    mov %rax, 120(%rsp)    # Save to context.rip
-
-    # Save general-purpose registers
-    mov %r15, 112(%rsp)    # context.r15
-    mov %r14, 104(%rsp)    # context.r14
-    mov %r13, 96(%rsp)     # context.r13
-    mov %r12, 88(%rsp)     # context.r12
-    mov %r11, 80(%rsp)     # context.r11
-    mov %r10, 72(%rsp)     # context.r10
-    mov %r9, 64(%rsp)      # context.r9
-    mov %r8, 56(%rsp)      # context.r8
-    mov %rdi, 48(%rsp)     # context.rdi
-    mov %rsi, 40(%rsp)     # context.rsi
-
-    # rsp points to original stack before interrupt
-    lea 160(%rsp), %rax    # 152 + 8 for the interrupt number we pushed
-    mov %rax, 32(%rsp)     # context.rsp
-
-    mov %rbp, 24(%rsp)     # context.rbp
-    mov %rdx, 16(%rsp)     # context.rdx
-    mov %rcx, 8(%rsp)      # context.rcx
-    mov %rbx, (%rsp)       # context.rbx
-
-    # Save rax separately since we've been using it
-    mov %rax, %rbx         # Temporarily store rax value
-    sub $8, %rsp
-    mov %rbx, (%rsp)       # context.rax
-
-    # Now pass the pointer to the structure as the first argument
-    # In x86-64 calling convention, first argument goes in rdi
-    lea 8(%rsp), %rdi      # Point to start of our structure
-
-    # Call the C function
+    mov %rsp, %rdi          # interrupt_context*
+    cld
     call handle_pic_interrupt
 
-    # Restore rax
-    mov (%rsp), %rax
-    add $8, %rsp
+    mov 0(%rsp), %rax
+    mov 8(%rsp), %rbx
+    mov 16(%rsp), %rcx
+    mov 24(%rsp), %rdx
+    mov 32(%rsp), %rbp
+    mov 48(%rsp), %rsi
+    mov 56(%rsp), %rdi
+    mov 64(%rsp), %r8
+    mov 72(%rsp), %r9
+    mov 80(%rsp), %r10
+    mov 88(%rsp), %r11
+    mov 96(%rsp), %r12
+    mov 104(%rsp), %r13
+    mov 112(%rsp), %r14
+    mov 120(%rsp), %r15
 
-    # Restore the rest of the registers (context is now gone)
-    add $152, %rsp         # Skip the InterruptContext structure
-    add $8, %rsp           # Skip the interrupt number we pushed
+    add $168, %rsp          # context + irq number
     iretq

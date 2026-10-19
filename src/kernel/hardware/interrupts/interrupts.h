@@ -5,7 +5,8 @@
 #define IDT_SIZE 		256
 #define IDT_ALIGNMENT 	16
 
-#define IRQ_OFFSET 0x20
+#define IRQ_OFFSET 0x20          // PIC lines 0..15 -> vectors 0x20..0x2F
+#define SYSCALL_VECTOR 0x80
 
 #include <os/stdint.h>
 
@@ -30,5 +31,6 @@ extern idt_entry idt[IDT_SIZE];
 
 
 void idt_initialize();
+void idt_set_entry(uint8_t index, uintptr_t handler);
 
 #endif //INTERRUPTS_H

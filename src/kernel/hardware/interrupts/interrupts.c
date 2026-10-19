@@ -1,16 +1,11 @@
 #include "interrupts.h"
 
-#include <os/stdbool.h>
 #include <os/stdint.h>
 #include <hardware/interrupts/pic.h>
 
-extern void irq_interrupt_timer();
-extern void irq_interrupt_keyboard();
-extern void irq_interrupt_syscall();
+#include <hardware/interrupts/irq.h>
 
 idt_entry idt[IDT_SIZE];
-
-
 
 void idt_set_entry(const uint8_t index, const uintptr_t handler)
 {
@@ -42,46 +37,20 @@ bool are_interrupts_enabled()
     return flags & (1 << 9);
 }
 
-void irq_restore(uint64_t flags)
-{
-    asm ("pushq %0\n\tpopfq" : : "rm"(flags) : "memory","cc");
-}
-
 
 void idt_initialize()
 {
 
-    // Create a proper IDT descriptor structure
     struct {
         uint16_t size;
         uint64_t address;
     } __attribute__((packed)) idtr;
 
-    // Set the size (limit) of the IDT
     idtr.size = IDT_SIZE * IDT_ENTRY_SIZE - 1;
-
-    // Set the base address of the IDT
     idtr.address = (uint64_t)idt;
 
-    // Set up interrupt handler for interrupt 1
-    uintptr_t handler_address = (uintptr_t)handle_interrupt;
-
-    uintptr_t irq_timer_handler_address = (uintptr_t)irq_interrupt_timer;
-    uintptr_t irq_keyboard_handler_address = (uintptr_t)irq_interrupt_keyboard;
-    uintptr_t irq_syscall_handler_address = (uintptr_t)irq_interrupt_syscall;
-
-    // for (int i = 0; i < IRQ_OFFSET; i++)
-    //     idt_set_entry(i, handler_address);
-    idt_set_entry(IRQ_OFFSET, irq_timer_handler_address);
-    idt_set_entry(IRQ_OFFSET + 1, irq_keyboard_handler_address);
-    idt_set_entry(IRQ_OFFSET + 0x80, irq_syscall_handler_address);
-
-
-
-    // Remap the PIC to interrupts 32-47
     pic_remap(IRQ_OFFSET, IRQ_OFFSET + 8);
-    irq_restore(0x200);
 
-    // Load the IDT register with our descriptor
-    asm("lidt %0" : : "m"(idtr));
+    asm volatile("lidt %0" : : "m"(idtr));
+    irq_restore(0x200);
 }
