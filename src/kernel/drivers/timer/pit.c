@@ -1,5 +1,6 @@
 #include "pit.h"
 
+#include <drivers/timer/callout.h>
 #include <hardware/interrupts/irq.h>
 #include <hardware/port/ports.h>
 #include <os/errno.h>
@@ -26,9 +27,9 @@ uint32_t pit_frequency()
     return frequency;
 }
 
-void handle_timer_interrupt(uint8_t irq, void* ctx)
+void handle_timer_interrupt(const uint8_t irq, const void* ctx)
 {
     (void)irq;
     (void)ctx;
-    //TODO: Implement PIT timer interrupt handler (callout_tick)
+    callout_tick();
 }
