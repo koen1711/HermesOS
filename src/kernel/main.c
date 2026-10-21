@@ -1,5 +1,8 @@
 #include <hardware/memory/mmu.h>
 #include <hardware/interrupts/interrupts.h>
+#include <hardware/gdt/tss.h>
+#include <drivers/timer/pit.h>
+#include <scheduler/process.h>
 #include <drivers/drivers.h>
 
 #include "drivers/terminal/terminal.h"
@@ -25,12 +28,16 @@ void kernel_main(void* multiboot_info_ptr)
     ata_initialize();
     
     register_drivers();
+    pit_initialize();
 
+    tss_initialize();
+    ProcInit();
     idt_initialize();
 
     lfb_initialize();
 
     while (1)
     {
+        asm volatile("hlt");
     }
 }

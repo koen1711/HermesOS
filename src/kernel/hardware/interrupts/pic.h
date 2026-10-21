@@ -8,6 +8,9 @@
 #define PIC_SLAVE_COMMAND 0xA0
 #define PIC_SLAVE_DATA 0xA1
 
+#define PIC_EOI      0x20
+#define PIC_READ_ISR 0x0B
+
 void pic_write(uint16_t port, uint8_t data);
 uint8_t pic_read(uint16_t port);
 

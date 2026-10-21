@@ -23,6 +23,15 @@
 # access=GDT_ACCESS_PRESENT | GDT_ACCESS_PRIVILEGE_RING0 | GDT_ACCESS_DESCRIPTOR_DATA | GDT_ACCESS_READABLE_WRITABLE
 .set GDT_ENTRY_DATA, 0x00AF92000000FFFF
 
+# User data entry (selector 0x18):
+# same as kernel data, but access has privilege ring 3 (0x60): 0x92 | 0x60 = 0xF2
+.set GDT_ENTRY_USER_DATA, 0x00AFF2000000FFFF
+
+# User code entry (selector 0x20):
+# same as kernel code, but access has privilege ring 3 (0x60): 0x9A | 0x60 = 0xFA
+# User data comes before user code, the order sysret expects
+.set GDT_ENTRY_USER_CODE, 0x00AFFA000000FFFF
+
 .set GDT_ALIGNMENT, 0x1000
 .set GDT_SIZE, 0x800
 
@@ -81,10 +90,15 @@
 .comm tmp_stack, STACK_SIZE, STACK_ALIGNMENT         /* Temporary Stack */
 
 .data
+.global gdt_start  /* tss_initialize fills in the TSS descriptor */
 gdt_start:
-    .quad GDT_FIRST_ENTRY  /* Unused / Invalid Entry */
-    .quad GDT_ENTRY_CODE   /* Kernel Entry */
+    .quad GDT_FIRST_ENTRY      /* Unused / Invalid Entry */
+    .quad GDT_ENTRY_CODE       /* Kernel Entry */
     .quad GDT_ENTRY_DATA
+    .quad GDT_ENTRY_USER_DATA  /* 0x18 */
+    .quad GDT_ENTRY_USER_CODE  /* 0x20 */
+    .quad 0                    /* 0x28: TSS descriptor (16 bytes), filled in by tss_initialize */
+    .quad 0
 gdt_end:
     .skip (GDT_SIZE - (gdt_end - gdt_start))  /* Empty space for more entries */
 gdt_ptr:  /* LGDT instruction requires a pointer to 2 Byte GDT Size + 4 Byte GDT pointer */

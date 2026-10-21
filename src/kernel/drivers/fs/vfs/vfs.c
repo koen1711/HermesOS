@@ -60,8 +60,7 @@ int vfs_register_driver(const char* name, file_system_driver_t* fsd)
         if (strcmp(name, driver_table[i].name) == 0) 
             return -1;
     }
-    terminal_printf(driver_table[driver_count].name,
-                    sizeof(driver_table[driver_count].name), "%s", name);
+    strncpy(driver_table[driver_count].name, name, VFS_NAME_MAX - 1);
     driver_table[driver_count].fsd = fsd;
     driver_count++;
     return 0;
@@ -91,7 +90,8 @@ int vfs_mount(const char* mount_path, const char* fs_name, void* blob)
         {
             mount_table[i].driver = reg_driver;
             mount_table[i].root = root_node;
-            terminal_printf(mount_table[i].mount_path, sizeof(mount_table[i].mount_path), "%s", mount_path);
+            strncpy(mount_table[i].mount_path, mount_path, VFS_PATH_MAX - 1);
+            mount_table[i].mount_path_length = strlen(mount_table[i].mount_path);
             return 0;
         }
     }
@@ -115,6 +115,14 @@ int vfs_unmount(const char* mount_path)
     return -1;
 }
 
+static void release_node(const mounted_file_system_t* mount, struct inode_s* node)
+{
+    if (node == nullptr || node == mount->root)
+        return;
+    if (node->iops != nullptr && node->iops->release != nullptr)
+        node->iops->release(node);
+}
+
 static struct file_s* get_file(const int fd)
 {
     if (fd < 0 || fd >= MAX_OPEN_FILES) 
@@ -128,7 +136,6 @@ int vfs_open(const char* path, const int flags)
 {
     const char* rest;
     mounted_file_system_t* mount = find_mount(path, &rest);
-
     if (mount == nullptr)
         return -1;
     struct inode_s* current = mount->root;
@@ -140,33 +147,44 @@ int vfs_open(const char* path, const int flags)
         while (rest[n] != '/' && rest[n] != '\0') n++;
 
         char name[MAX_FILE_PATH];
-        if (n >= sizeof(name))
+        if (n >= sizeof(name) || current->iops == nullptr || current->iops->lookup == nullptr)
+        {
+            release_node(mount, current);
             return -1;
+        }
         memcpy(name, rest, n);
         name[n] = '\0';
 
-        if (current->iops == nullptr || current->iops->lookup(current, name) == nullptr) 
-            return -1;
-        current = current->iops->lookup(current, name);
+        struct inode_s* next = current->iops->lookup(current, name);
+        release_node(mount, current);
+        current = next;
         if (current == nullptr)
             return -1;
 
         rest += n;
     }
-    if (current->fops == nullptr || current->fops->open == nullptr) 
+    if (current->fops == nullptr || current->fops->open == nullptr)
+    {
+        release_node(mount, current);
         return -1;
+    }
 
     struct file_s* f = malloc(sizeof(struct file_s));
-    if (f == nullptr) 
+    if (f == nullptr)
+    {
+        release_node(mount, current);
         return -1;
+    }
     memset(f, 0, sizeof(*f));
     f->node = current;
     f->flags = flags;
     f->file_position = 0;
     f->mount = mount;
+    f->ref_count = 1;
 
     if (current->fops->open(current, f) < 0)
     {
+        release_node(mount, current);
         free(f);
         return -1;
     }
@@ -182,6 +200,7 @@ int vfs_open(const char* path, const int flags)
     }
 
     if (current->fops->close) current->fops->close(f);
+    release_node(mount, current);
     free(f);
     return -1;
 }
@@ -210,7 +229,7 @@ ssize_t vfs_write(const int fd, const void* buf, const size_t length)
     if (!(f->flags & O_WRONLY)) 
         return -1;
 
-    if (f->node->fops == nullptr || f->node->fops->read == nullptr) 
+    if (f->node->fops == nullptr || f->node->fops->write == nullptr)
         return -1;
     return f->node->fops->write(f, buf, length);
 }
@@ -246,17 +265,34 @@ int vfs_seek(const int fd, const size_t offset, enum seek_origin origin)
 }
 
 
+int vfs_stat(const int fd, vfs_stat_t* st)
+{
+    struct file_s* f = get_file(fd);
+    if (f == nullptr || st == nullptr)
+        return -1;
+
+    st->size = f->node->size;
+    st->type = f->node->type;
+    return 0;
+}
+
+
 int vfs_close(const int fd)
 {
     struct file_s* f = get_file(fd);
+
     if (f == nullptr) 
         return -1;
-    
-    if (f->node->fops != nullptr && f->node->fops->close != 0)
-        f->node->fops->close(f);
+    f->ref_count--;
 
-    f->mount->open_count--;
-    free(f);
-    fd_table[fd] = nullptr;
+
+    if (f->ref_count == 0) {
+        if (f->node->fops != nullptr && f->node->fops->close != nullptr)
+            f->node->fops->close(f);
+        release_node(f->mount, f->node);
+        f->mount->open_count--;
+        free(f);
+        fd_table[fd] = nullptr;
+    }
     return 0;
 }

@@ -3,14 +3,28 @@
 #include "interrupts.h"
 
 #include "drivers/ps2/keyboard.h"
+#include "drivers/timer/pit.h"
 
 void handle_pic_interrupt(const interrupt_context* context)
 {
-    const uint8_t irq_number = context->interrupt_number;
+    const uint8_t irq_number = context->trapno - IRQ_OFFSET;
+
+    if (irq_number == 7 || irq_number == 15)
+    {
+        const uint16_t command = irq_number == 7 ? PIC_MASTER_COMMAND : PIC_SLAVE_COMMAND;
+        pic_write(command, PIC_READ_ISR);
+        if (!(pic_read(command) & 0x80))
+        {
+            if (irq_number == 15)
+                pic_write(PIC_MASTER_COMMAND, PIC_EOI);
+            return;
+        }
+    }
 
     switch(irq_number)
     {
     case 0:
+        handle_timer_interrupt();
         break;
     case 1:
        ps2_keyboard_interrupt_handler();

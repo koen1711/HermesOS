@@ -15,6 +15,7 @@ enum syscall_numbers {
     SYSCALL_LSEEK = 6,
     SYSCALL_MMAP = 9,
     SYSCALL_MUNMAP = 11,
+    SYSCALL_FORK = 57,
     SYSCALL_CLOCK_GETTIME = 288,
 
 };
