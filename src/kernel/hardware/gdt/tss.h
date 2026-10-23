@@ -22,12 +22,12 @@ typedef struct {
     uint64_t res2;
     uint16_t res3;
     uint16_t iopb;
-}__attribute__((__packed__)) TSS;
+} __attribute__((__packed__)) tss_t;
 
-_Static_assert(sizeof(TSS) == 104, "TSS layout must match the CPU");
+_Static_assert(sizeof(tss_t) == 104, "TSS layout must match the CPU");
 
-extern TSS TaskStateSegment;
+extern tss_t task_state_segment;
 
-void tss_initialize(void);
+void tss_initialize();
 
 #endif //TSS_H

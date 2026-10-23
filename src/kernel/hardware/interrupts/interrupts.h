@@ -5,8 +5,8 @@
 #define IDT_SIZE 		256
 #define IDT_ALIGNMENT 	16
 
-#define IRQ_OFFSET 0x20
-#define SYSCALL_VECTOR (IRQ_OFFSET + 0x80)
+#define IRQ_OFFSET 0x20          // PIC lines 0..15 -> vectors 0x20..0x2F
+#define SYSCALL_VECTOR 0x80
 
 #include <os/stdint.h>
 
@@ -20,31 +20,27 @@ typedef struct {
     uint32_t zero;
 } idt_entry;
 
-
-typedef struct TrapFrame {
+// Built on the stack by every interrupt stub in interrupt.asm
+typedef struct {
     uint64_t r15, r14, r13, r12, r11, r10, r9, r8;
     uint64_t rbp, rdi, rsi, rdx, rcx, rbx, rax;
 
-
-    uint64_t trapno;
-    uint64_t errorcode;
-
+    uint64_t interrupt_number;
+    uint64_t error_code;
 
     uint64_t rip, cs, rflags, rsp, ss;
-} TrapFrame;
+} interrupt_context;
 
-_Static_assert(sizeof(TrapFrame) == 22 * 8, "TrapFrame layout must match interrupt.asm");
-
-typedef TrapFrame interrupt_context;
+_Static_assert(sizeof(interrupt_context) == 22 * 8, "interrupt_context layout must match interrupt.asm");
 
 extern idt_entry idt[IDT_SIZE];
 
 
 void idt_initialize();
+void idt_set_entry(uint8_t index, uintptr_t handler);
 
+void trap_handler(interrupt_context* context);
 
-void trap_handler(TrapFrame* tf);
-
-extern void trap_return(void);
+extern void trap_return();
 
 #endif //INTERRUPTS_H

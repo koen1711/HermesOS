@@ -23,6 +23,7 @@ enum syscall_numbers {
 #endif
 #endif
 
+void syscalls_initialize();
 void handle_syscall(interrupt_context* context);
 
 #endif //OS_SYSCALLS_H

@@ -1,12 +1,11 @@
 #ifndef PROCESS_H
 #define PROCESS_H
 
-#pragma once
 #include <os/stdint.h>
 #include <hardware/memory/mmu.h>
 #include <hardware/interrupts/interrupts.h>
 #include <hardware/gdt/tss.h>
-#include <utils/list/linked_list.h>
+#include <utils/queue/queue.h>
 
 #define STACK_SIZE      PAGE_SIZE
 #define MAXIMUM_NUMBER_OF_PROCESSES 10
@@ -18,50 +17,44 @@
 #define PROC_MAX_FILE_DESCRIPTORS 100
 
 typedef enum {
-    PROC_SL0T_UNUSED = 0,
+    PROC_SLOT_UNUSED = 0,
     PROC_SLOT_INIT,
     PROC_SLOT_READY,
     PROC_SLOT_RUNNING,
     PROC_SLOT_SLEEPING,
     PROC_SLOT_KILLED
-}ProcState;
-
-
-
+} process_state_t;
 
 typedef struct {
-    List *next;
+    struct dlist_node link;     // in one of the scheduler lists
     int pid;
     int wait_id;
-    ProcState state;
+    process_state_t state;
     uint64_t page_map;
-    uint64_t context;
+    uint64_t context;           // kernel stack pointer saved by context_switch
     uint64_t stack;
-    interrupt_context *tf;
+    interrupt_context *frame;   // user registers, restored by trap_return
     struct file_s *file[PROC_MAX_FILE_DESCRIPTORS];
-}Process;
+} process_t;
 
 typedef struct {
-    Process *current_proc;
-    HeadList ready_proc_list;
-    HeadList wait_proc_list;
-    HeadList kill_proc_list;
-} Scheduler;
+    process_t *current;
+    struct dlist ready;
+    struct dlist waiting;
+    struct dlist killed;
+} scheduler_t;
 
-void ProcInit(void);
-void ProcStart(TrapFrame *tf);
-Scheduler *GetScheduler(void);
+void process_initialize();
+scheduler_t *scheduler_get();
 
-void Yield(void);
-void ContextSwitch(uint64_t *old, uint64_t new);
+void process_yield();
+void context_switch(uint64_t *old, uint64_t new);
 
-void Sleep(int wait_id);
-void Wakeup(int wait_id);
-void Exit(void);
-void Wait(int pid);
-int Fork(void);
-int Exec(Process *proc, const char *filename);
+void process_sleep(int wait_id);
+void process_wakeup(int wait_id);
+void process_exit();
+void process_wait(int pid);
+int process_fork();
+int process_exec(process_t *proc, const char *filename);
 
-
-
-#endif //PROCESS_h
+#endif //PROCESS_H

@@ -4,14 +4,14 @@
 
 extern uint64_t gdt_start[];
 
-TSS TaskStateSegment;
+tss_t task_state_segment;
 
-void tss_initialize(void) {
-    const uint64_t base = (uint64_t)&TaskStateSegment;
-    const uint64_t limit = sizeof(TSS) - 1;
+void tss_initialize() {
+    const uint64_t base = (uint64_t)&task_state_segment;
+    const uint64_t limit = sizeof(tss_t) - 1;
 
 
-    TaskStateSegment.iopb = sizeof(TSS);
+    task_state_segment.iopb = sizeof(tss_t);
 
     gdt_start[TSS_GDT_INDEX] = (limit & 0xFFFF)
                              | ((base & 0xFFFFFF) << 16)

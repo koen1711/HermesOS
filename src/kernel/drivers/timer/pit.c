@@ -1,30 +1,35 @@
 #include "pit.h"
 
+#include <drivers/timer/callout.h>
+#include <hardware/interrupts/irq.h>
 #include <hardware/port/ports.h>
+#include <os/errno.h>
 
-#define PIT_BASE_FREQUENCY 1193182
-#define PIT_CHANNEL0_DATA  0x40
-#define PIT_COMMAND        0x43
-#define PIT_CHANNEL0_RATE  0x36
+static uint32_t frequency;
 
-static volatile uint64_t s_ticks = 0;
-
-void pit_initialize(void)
+int pit_initialize(const uint32_t hz)
 {
-    const uint16_t divisor = PIT_BASE_FREQUENCY / PIT_FREQUENCY;
+    if (hz < 19 || hz > PIT_BASE_HZ)
+        return -EINVAL;
 
-    port_write_u8(PIT_COMMAND, PIT_CHANNEL0_RATE);
-    port_write_u8(PIT_CHANNEL0_DATA, divisor & 0xFF);
-    port_write_u8(PIT_CHANNEL0_DATA, divisor >> 8);
+    const uint16_t divisor = PIT_BASE_HZ / hz;
+    frequency = PIT_BASE_HZ / divisor;
+
+    port_write_u8(PIT_COMMAND_PORT, 0x36);
+    port_write_u8(PIT_CHANNEL0_PORT, divisor & 0xFF);
+    port_write_u8(PIT_CHANNEL0_PORT, divisor >> 8);
+
+    return irq_register_handler(PIT_IRQ, handle_timer_interrupt, nullptr);
 }
 
-uint64_t pit_ticks(void)
+uint32_t pit_frequency()
 {
-    return s_ticks;
+    return frequency;
 }
 
-
-void handle_timer_interrupt()
+void handle_timer_interrupt(const uint8_t irq, void* ctx)
 {
-    s_ticks++;
+    (void)irq;
+    (void)ctx;
+    callout_tick();
 }

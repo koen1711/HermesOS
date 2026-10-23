@@ -8,106 +8,84 @@
 #include "utils/str/vsnprintf.h"
 
 
-#define IDLE_PROC_PID 0
 #define INIT_PROC_PATH "/shell"
 
-static Process s_process_manager[MAXIMUM_NUMBER_OF_PROCESSES];
-static int s_pid_num = 1;
-static Scheduler s_scheduler;
+static process_t processes[MAXIMUM_NUMBER_OF_PROCESSES];
+static int next_pid = 1;
+static scheduler_t scheduler;
 
-static Process *FindFreeProcSlot(void);
-static Process *CreateNewProc(void);
+static process_t *find_free_process_slot();
+static process_t *create_process();
 
-static void SetTSS(Process *proc);
-static void Schedule(void);
-static void SwitchProc(Process *prev,Process *new);
+static void set_tss(const process_t *proc);
+static void schedule();
+static void switch_process(process_t *prev, process_t *next);
 
-List *WaitListRemReadyProc(HeadList *list, int wait_id);
-List *RemProcPID(HeadList *list, int pid);
+static process_t *remove_waiting_process(struct dlist *list, int wait_id);
+static process_t *remove_process_by_pid(struct dlist *list, int pid);
 
-static void InitIDLEProc(void);
-static void InitShellProc(void);
+static void init_idle_process();
+static void init_shell_process();
 
-void ProcInit(void) {
-    InitIDLEProc();
-    InitShellProc();
+void process_initialize() {
+    init_idle_process();
+    init_shell_process();
 }
 
-Scheduler *GetScheduler(void) {
-    return &s_scheduler;
+scheduler_t *scheduler_get() {
+    return &scheduler;
 }
 
-void Yield(void) {
-    Process *proc = nullptr;
-    Scheduler *scheduler = GetScheduler();
-    HeadList *list = &scheduler->ready_proc_list;
-
-    if (ListIsEmpty(list)) {
+void process_yield() {
+    if (dlist_empty(&scheduler.ready)) {
         return;
     }
 
-    proc = scheduler->current_proc;
+    process_t *proc = scheduler.current;
     proc->state = PROC_SLOT_READY;
 
     if (proc->pid != IDLE_PROC_PID) {
-        ListPushBack(list, (List*)proc);
+        dlist_insert_tail(&scheduler.ready, &proc->link);
     }
 
-    Schedule();
+    schedule();
 }
 
-void Sleep(int wait_id) {
-    Process *proc = nullptr;
-    Scheduler *scheduler = GetScheduler();
-    HeadList *list = &scheduler->wait_proc_list;
-
-    proc = scheduler->current_proc;
+void process_sleep(const int wait_id) {
+    process_t *proc = scheduler.current;
     proc->state = PROC_SLOT_SLEEPING;
     proc->wait_id = wait_id;
 
-    ListPushBack(list, (List*)proc);
+    dlist_insert_tail(&scheduler.waiting, &proc->link);
 
-    Schedule();
+    schedule();
 }
 
-void Wakeup(int wait_id) {
-    Process *proc = nullptr;
-    Scheduler *scheduler = GetScheduler();
-    HeadList *wait_list = &scheduler->wait_proc_list;
-    HeadList *ready_list = &scheduler->ready_proc_list;
-
-    proc = (Process*)WaitListRemReadyProc(wait_list, wait_id);
+void process_wakeup(const int wait_id) {
+    process_t *proc = remove_waiting_process(&scheduler.waiting, wait_id);
 
     while (proc != nullptr) {
         proc->state = PROC_SLOT_READY;
-        ListPushBack(ready_list, (List*)proc);
+        dlist_insert_tail(&scheduler.ready, &proc->link);
 
-        proc = (Process*)WaitListRemReadyProc(wait_list, wait_id);
+        proc = remove_waiting_process(&scheduler.waiting, wait_id);
     }
 }
 
-void Exit(void) {
-    Process *proc = nullptr;
-    Scheduler *scheduler = GetScheduler();
-    HeadList *list = &scheduler->kill_proc_list;
-
-    proc = scheduler->current_proc;
+void process_exit() {
+    process_t *proc = scheduler.current;
     proc->state = PROC_SLOT_KILLED;
 
-    ListPushBack(list, (List*)proc);
+    dlist_insert_tail(&scheduler.killed, &proc->link);
 
-    Wakeup(INIT_PROC_ID);
-    Schedule();
+    process_wakeup(INIT_PROC_ID);
+    schedule();
 }
 
-void Wait(int pid) {
-    Process *proc = nullptr;
-    Scheduler *scheduler = GetScheduler();
-    HeadList *list = &scheduler->kill_proc_list;
-
+void process_wait(const int pid) {
     while (1) {
-        if (!ListIsEmpty(list)) {
-            proc = (Process*)RemProcPID(list, pid);
+        if (!dlist_empty(&scheduler.killed)) {
+            process_t *proc = remove_process_by_pid(&scheduler.killed, pid);
             if (proc != nullptr) {
                 free_physical_page((void*)proc->stack);
                 free_vm(proc->page_map);
@@ -118,67 +96,62 @@ void Wait(int pid) {
                         proc->file[i] = nullptr;
                     }
                 }
-                memset(proc, 0, sizeof(Process));
+                memset(proc, 0, sizeof(process_t));
                 break;
             }
         }
         else {
-            Sleep(INIT_PROC_ID);
+            process_sleep(INIT_PROC_ID);
         }
     }
 }
 
-int Fork(void) {
-    Process *proc = nullptr;
-    Scheduler *scheduler = GetScheduler();
-    HeadList *list = &scheduler->ready_proc_list;
-    Process *current_proc = scheduler->current_proc;
+int process_fork() {
+    process_t *current = scheduler.current;
 
-    proc = CreateNewProc();
+    process_t *proc = create_process();
     if (proc == nullptr) return -1;
 
-    if (!copy_uvm(proc->page_map, current_proc->page_map)) {
+    if (!copy_uvm(proc->page_map, current->page_map)) {
         free_physical_page((void*)proc->stack);
         free_vm(proc->page_map);
-        memset(proc, 0, sizeof(Process));
+        memset(proc, 0, sizeof(process_t));
         return -1;
     }
 
-    memcpy(proc->file, current_proc->file, sizeof(struct file_s*)*PROC_MAX_FILE_DESCRIPTORS);
+    memcpy(proc->file, current->file, sizeof(struct file_s*)*PROC_MAX_FILE_DESCRIPTORS);
 
     for (int i = 0; i<PROC_MAX_FILE_DESCRIPTORS; i++) {
         if (proc->file[i] != nullptr) {
             proc->file[i]->ref_count++;
         }
     }
-    memcpy(proc->tf, current_proc->tf, sizeof(TrapFrame));
+    memcpy(proc->frame, current->frame, sizeof(interrupt_context));
 
-    proc->tf->rax = 0;
+    proc->frame->rax = 0;
     proc->state = PROC_SLOT_READY;
-    ListPushBack(list, (List*)proc);
+    dlist_insert_tail(&scheduler.ready, &proc->link);
 
     return proc->pid;
 }
 
-int Exec(Process *proc, const char *filename) {
-    int fd = 0;
+int process_exec(process_t *proc, const char *filename) {
     vfs_stat_t stat = {0};
     size_t program_size = 0;
-    ssize_t read_size = 0;
 
-    fd = vfs_open(filename, O_RDONLY);
+    const int fd = vfs_open(filename, O_RDONLY);
     if (fd<0) {
-        Exit();
+        process_exit();
     }
 
     if (vfs_stat(fd, &stat)<0 || stat.type != INODE_FILE || stat.size > USER_MEMORY_SIZE - STACK_SIZE) {
         vfs_close(fd);
-        Exit();
+        process_exit();
     }
 
     memset((void*)USER_VIRTUAL_BASE, 0, USER_MEMORY_SIZE);
     while (program_size < stat.size) {
-        read_size = vfs_read(fd, (void*)(USER_VIRTUAL_BASE + program_size), stat.size - program_size);
+        const ssize_t read_size = vfs_read(fd, (void*)(USER_VIRTUAL_BASE + program_size), stat.size - program_size);
         if (read_size <= 0) {
             break;
         }
@@ -187,143 +160,106 @@ int Exec(Process *proc, const char *filename) {
     vfs_close(fd);
 
     if (program_size != stat.size) {
-        Exit();
+        process_exit();
     }
 
-    memset(proc->tf, 0, sizeof(TrapFrame));
-    proc->tf->cs = 0x20 | 3;
-    proc->tf->rip = USER_VIRTUAL_BASE;
-    proc->tf->ss = 0x18 | 3;
-    proc->tf->rsp = USER_STACK_START;
-    proc->tf->rflags = 0x202;
+    memset(proc->frame, 0, sizeof(interrupt_context));
+    proc->frame->cs = 0x20 | 3;
+    proc->frame->rip = USER_VIRTUAL_BASE;
+    proc->frame->ss = 0x18 | 3;
+    proc->frame->rsp = USER_STACK_START;
+    proc->frame->rflags = 0x202;
 
     return 0;
 
 }
 
-static Process *FindFreeProcSlot(void) {
-    Process *proc = nullptr;
-
+static process_t *find_free_process_slot() {
     for (int i = 0; i<MAXIMUM_NUMBER_OF_PROCESSES; i++) {
-        if (s_process_manager[i].state == PROC_SL0T_UNUSED) {
-            proc = &s_process_manager[i];
-            break;
+        if (processes[i].state == PROC_SLOT_UNUSED) {
+            return &processes[i];
         }
     }
-    return proc;
+    return nullptr;
 }
 
-static void SetTSS(Process *proc) {
-    TaskStateSegment.rsp0 = proc->stack + STACK_SIZE;
+static void set_tss(const process_t *proc) {
+    task_state_segment.rsp0 = proc->stack + STACK_SIZE;
 }
 
-static void Schedule(void) {
-    Process *prev_proc = nullptr;
-    Process *curr_proc = nullptr;
+static void schedule() {
+    process_t *prev = scheduler.current;
+    process_t *next;
 
-    Scheduler *scheduler = GetScheduler();
-    HeadList *list = &scheduler->ready_proc_list;
-    prev_proc = scheduler->current_proc;
-
-    if (ListIsEmpty(list)) {
-        curr_proc = &s_process_manager[IDLE_PROC_PID];
+    if (dlist_empty(&scheduler.ready)) {
+        next = &processes[IDLE_PROC_PID];
     }
     else {
-        curr_proc = (Process*)ListPopFront(list);
+        struct dlist_node *node = dlist_first(&scheduler.ready);
+        dlist_remove(&scheduler.ready, node);
+        next = dlist_entry(node, process_t, link);
     }
 
-    curr_proc->state = PROC_SLOT_RUNNING;
-    scheduler->current_proc = curr_proc;
+    next->state = PROC_SLOT_RUNNING;
+    scheduler.current = next;
 
-    SwitchProc(prev_proc, curr_proc);
+    switch_process(prev, next);
 }
 
-static void SwitchProc(Process *prev, Process *new) {
-    SetTSS(new);
-    switch_vm(new->page_map);
-    ContextSwitch(&prev->context, new->context);
+static void switch_process(process_t *prev, process_t *next) {
+    set_tss(next);
+    switch_vm(next->page_map);
+    context_switch(&prev->context, next->context);
 }
 
-List *WaitListRemReadyProc(HeadList *list, int wait_id) {
-    List *curr = list->next;
-    List *prev = (List*)list;
-    List *item = nullptr;
-
-    while (curr != nullptr) {
-        if (((Process*)curr)->wait_id == wait_id) {
-            prev->next = curr->next;
-            item = curr;
-
-            if (list->next == nullptr) {
-                list->tail = nullptr;
-            }
-            else if (curr->next == nullptr) {
-                list->tail = prev;
-            }
-            break;
+static process_t *remove_waiting_process(struct dlist *list, const int wait_id) {
+    for (struct dlist_node *node = dlist_first(list); node; node = dlist_next(node)) {
+        process_t *proc = dlist_entry(node, process_t, link);
+        if (proc->wait_id == wait_id) {
+            dlist_remove(list, node);
+            return proc;
         }
-        prev = curr;
-        curr = curr->next;
     }
-    return item;
+    return nullptr;
 }
 
-List *RemProcPID(HeadList *list, int pid) {
-    List *curr = list->next;
-    List *prev = (List*)list;
-    List *item = nullptr;
-
-    while (curr != nullptr) {
-        if (((Process*)curr)->pid == pid) {
-            prev->next = curr->next;
-            item = curr;
-
-            if (list->next == nullptr) {
-                list->tail = nullptr;
-            }
-            else if (curr->next == nullptr) {
-                list->tail = prev;
-            }
-            break;
+static process_t *remove_process_by_pid(struct dlist *list, const int pid) {
+    for (struct dlist_node *node = dlist_first(list); node; node = dlist_next(node)) {
+        process_t *proc = dlist_entry(node, process_t, link);
+        if (proc->pid == pid) {
+            dlist_remove(list, node);
+            return proc;
         }
-        prev = curr;
-        curr = curr->next;
     }
-    return item;
+    return nullptr;
 }
 
-static void InitIDLEProc(void) {
-    Process *proc;
-    proc = FindFreeProcSlot();
+static void init_idle_process() {
+    process_t *proc = find_free_process_slot();
     proc->pid = IDLE_PROC_PID;
     proc->page_map = read_cr3();
     proc->state = PROC_SLOT_RUNNING;
-    GetScheduler()->current_proc = proc;
+    scheduler.current = proc;
 }
 
-static void InitShellProc(void){
-    Scheduler *scheduler = GetScheduler();
-    HeadList *list = &scheduler->ready_proc_list;
-
+static void init_shell_process() {
     vfs_stat_t stat = {0};
     size_t program_size = 0;
-    ssize_t read_size = 0;
     uint8_t *program = nullptr;
-    int fd = 0;
 
-    Process *proc = CreateNewProc();
+    process_t *proc = create_process();
     if (proc == nullptr) {
-        terminal_printf("InitShellProc: cannot create process\n");
+        terminal_printf("init_shell_process: cannot create process\n");
         return;
     }
 
 
-    fd = vfs_open(INIT_PROC_PATH, O_RDONLY);
+    const int fd = vfs_open(INIT_PROC_PATH, O_RDONLY);
     if (fd>=0 && vfs_stat(fd, &stat)==0 && stat.type == INODE_FILE && stat.size <= USER_MEMORY_SIZE - STACK_SIZE) {
         program = malloc(stat.size);
     }
     while (program != nullptr && program_size < stat.size) {
-        read_size = vfs_read(fd, program + program_size, stat.size - program_size);
+        const ssize_t read_size = vfs_read(fd, program + program_size, stat.size - program_size);
         if (read_size <= 0) {
             break;
         }
@@ -334,22 +270,21 @@ static void InitShellProc(void){
     }
 
     if (program == nullptr || program_size != stat.size || !setup_uvm(proc->page_map, (uint64_t)program, program_size)) {
-        terminal_printf("InitShellProc: cannot load %s\n", INIT_PROC_PATH);
+        terminal_printf("init_shell_process: cannot load %s\n", INIT_PROC_PATH);
         free(program);
         free_physical_page((void*)proc->stack);
         free_vm(proc->page_map);
-        memset(proc, 0, sizeof(Process));
+        memset(proc, 0, sizeof(process_t));
         return;
     }
     free(program);
 
     proc->state = PROC_SLOT_READY;
-    ListPushBack(list, (List*)proc);
+    dlist_insert_tail(&scheduler.ready, &proc->link);
 }
 
-Process *CreateNewProc(void) {
-    uint64_t stack_top = 0;
-    Process *proc = FindFreeProcSlot();
+static process_t *create_process() {
+    process_t *proc = find_free_process_slot();
 
     if (proc == nullptr) {
         return nullptr;
@@ -360,27 +295,27 @@ Process *CreateNewProc(void) {
     }
 
     proc->state = PROC_SLOT_INIT;
-    proc->pid = s_pid_num++;
+    proc->pid = next_pid++;
     proc->wait_id = 0;
 
     memset((void*)proc->stack, 0, STACK_SIZE);
-    stack_top = proc->stack + STACK_SIZE;
+    const uint64_t stack_top = proc->stack + STACK_SIZE;
 
-    proc->context = stack_top - sizeof(TrapFrame) - 7*8;
+    proc->context = stack_top - sizeof(interrupt_context) - 7*8;
     *(uint64_t*)(proc->context + 6*8) = (uint64_t)trap_return;
 
-    proc->tf = (TrapFrame*)(stack_top - sizeof(TrapFrame));
+    proc->frame = (interrupt_context*)(stack_top - sizeof(interrupt_context));
 
-    proc->tf->cs = 0x20 | 3;
-    proc->tf->rip = USER_VIRTUAL_BASE;
-    proc->tf->ss = 0x18 | 3;
-    proc->tf->rsp = USER_STACK_START;
-    proc->tf->rflags = 0x202;
+    proc->frame->cs = 0x20 | 3;
+    proc->frame->rip = USER_VIRTUAL_BASE;
+    proc->frame->ss = 0x18 | 3;
+    proc->frame->rsp = USER_STACK_START;
+    proc->frame->rflags = 0x202;
 
     proc->page_map = setup_kvm();
     if (proc->page_map == 0) {
         free_vm(proc->page_map);
-        memset(proc, 0, sizeof(Process));
+        memset(proc, 0, sizeof(process_t));
         return nullptr;
     }
     return proc;

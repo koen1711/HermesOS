@@ -3,18 +3,18 @@
 #include <os/stdbool.h>
 #include <os/stdint.h>
 #include <hardware/interrupts/pic.h>
+#include <hardware/interrupts/irq.h>
 #include <drivers/syscalls/syscalls.h>
 #include <drivers/terminal/terminal.h>
-#include <scheduler/process.h> // Timer: Yield, exceptions: Exit
+#include <drivers/timer/pit.h>
+#include <scheduler/process.h> // timer: process_yield, exceptions: process_exit
 
 #define EXCEPTION_COUNT   32
-#define TRAP_STUB_COUNT   (IRQ_OFFSET + 16) // exceptions 0-31 and IRQs 0-15
 #define PAGE_FAULT_VECTOR 14
 
 void handle_pic_interrupt(const interrupt_context* context);
 
-extern uint64_t trap_stub_table[TRAP_STUB_COUNT]; // interrupt.asm
-extern void irq_interrupt_syscall();
+extern uint64_t exception_stub_table[EXCEPTION_COUNT]; // interrupt.asm
 
 static const char* exception_names[EXCEPTION_COUNT] = {
     "divide error", "debug", "NMI", "breakpoint", "overflow", "bound range",
@@ -27,8 +27,6 @@ static const char* exception_names[EXCEPTION_COUNT] = {
 };
 
 idt_entry idt[IDT_SIZE];
-
-
 
 void idt_set_entry(const uint8_t index, const uintptr_t handler)
 {
@@ -44,27 +42,27 @@ void idt_set_entry(const uint8_t index, const uintptr_t handler)
     idt[index] = entry;
 }
 
-static bool from_user_mode(const TrapFrame* tf)
+static bool from_user_mode(const interrupt_context* context)
 {
-    return (tf->cs & 3) == 3;
+    return (context->cs & 3) == 3;
 }
 
-
-static void handle_exception(const TrapFrame* tf)
+static void handle_exception(const interrupt_context* context)
 {
     uint64_t cr2 = 0;
     asm volatile("mov %%cr2, %0" : "=r"(cr2));
 
     terminal_printf("\nException %d (%s), error code 0x%lx\n",
-                    (int)tf->trapno, exception_names[tf->trapno], tf->errorcode);
+                    (int)context->interrupt_number, exception_names[context->interrupt_number],
+                    context->error_code);
     terminal_printf("rip 0x%lx  cs 0x%lx  rsp 0x%lx  rflags 0x%lx\n",
-                    tf->rip, tf->cs, tf->rsp, tf->rflags);
-    if (tf->trapno == PAGE_FAULT_VECTOR)
+                    context->rip, context->cs, context->rsp, context->rflags);
+    if (context->interrupt_number == PAGE_FAULT_VECTOR)
         terminal_printf("page fault address (cr2) 0x%lx\n", cr2);
 
-    if (from_user_mode(tf)) {
-        terminal_printf("killing process %d\n", GetScheduler()->current_proc->pid);
-        Exit();
+    if (from_user_mode(context)) {
+        terminal_printf("killing process %d\n", scheduler_get()->current->pid);
+        process_exit();
     }
 
     terminal_printf("kernel halted\n");
@@ -72,26 +70,25 @@ static void handle_exception(const TrapFrame* tf)
         asm volatile("cli; hlt");
 }
 
-
-static bool should_preempt(const TrapFrame* tf)
+static bool should_preempt(const interrupt_context* context)
 {
-    const Process* current = GetScheduler()->current_proc;
-    if (current == nullptr) // ProcInit has not run yet
+    const process_t* current = scheduler_get()->current;
+    if (current == nullptr) // process_initialize has not run yet
         return false;
-    return from_user_mode(tf) || current->pid == IDLE_PROC_PID;
+    return from_user_mode(context) || current->pid == IDLE_PROC_PID;
 }
 
-void trap_handler(TrapFrame* tf)
+void trap_handler(interrupt_context* context)
 {
-    if (tf->trapno < EXCEPTION_COUNT)
-        handle_exception(tf);
-    else if (tf->trapno == SYSCALL_VECTOR)
-        handle_syscall(tf);
-    else if (tf->trapno >= IRQ_OFFSET && tf->trapno < IRQ_OFFSET + 16) {
-        handle_pic_interrupt(tf); // sends the EOI, so the PIC keeps sending timer ticks after a switch
+    if (context->interrupt_number < EXCEPTION_COUNT)
+        handle_exception(context);
+    else if (context->interrupt_number == SYSCALL_VECTOR)
+        handle_syscall(context);
+    else if (context->interrupt_number >= IRQ_OFFSET && context->interrupt_number < IRQ_OFFSET + IRQ_MAX_LINES) {
+        handle_pic_interrupt(context); // sends the EOI, so the PIC keeps sending timer ticks after a switch
 
-        if (tf->trapno == IRQ_OFFSET && should_preempt(tf))
-            Yield();
+        if (context->interrupt_number == IRQ_OFFSET + PIT_IRQ && should_preempt(context))
+            process_yield();
     }
 }
 
@@ -106,11 +103,6 @@ bool are_interrupts_enabled()
     return flags & (1 << 9);
 }
 
-void irq_restore(uint64_t flags)
-{
-    asm ("pushq %0\n\tpopfq" : : "rm"(flags) : "memory","cc");
-}
-
 
 void idt_initialize()
 {
@@ -121,18 +113,10 @@ void idt_initialize()
     } __attribute__((packed)) idtr;
 
     idtr.size = IDT_SIZE * IDT_ENTRY_SIZE - 1;
-
     idtr.address = (uint64_t)idt;
 
-    for (int i = 0; i < TRAP_STUB_COUNT; i++)
-        idt_set_entry(i, trap_stub_table[i]);
-
-    uintptr_t irq_syscall_handler_address = (uintptr_t)irq_interrupt_syscall;
-    idt_set_entry(SYSCALL_VECTOR, irq_syscall_handler_address);
-    idt[SYSCALL_VECTOR].type_attr = 0xEE;
-
-
-
+    for (int i = 0; i < EXCEPTION_COUNT; i++)
+        idt_set_entry(i, exception_stub_table[i]);
 
     pic_remap(IRQ_OFFSET, IRQ_OFFSET + 8);
 

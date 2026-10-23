@@ -8,13 +8,12 @@
 #define PIC_SLAVE_COMMAND 0xA0
 #define PIC_SLAVE_DATA 0xA1
 
-#define PIC_EOI      0x20
-#define PIC_READ_ISR 0x0B
-
 void pic_write(uint16_t port, uint8_t data);
 uint8_t pic_read(uint16_t port);
 
 void pic_remap(uint8_t master_offset, uint8_t slave_offset);
 void pic_eoi(uint8_t irq);
+void pic_mask(uint8_t irq);
+void pic_unmask(uint8_t irq);
 
 #endif //PIC_H

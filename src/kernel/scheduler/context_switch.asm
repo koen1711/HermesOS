@@ -1,8 +1,8 @@
 .code64
 .section .text
 
-.global ContextSwitch
-ContextSwitch:
+.global context_switch
+context_switch:
     pushq %rbx
     pushq %rbp
     pushq %r12

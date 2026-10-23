@@ -2,6 +2,7 @@
 
 #include <os/stdbool.h>
 #include <hardware/port/ports.h>
+#include <hardware/interrupts/irq.h>
 #include "codes.h"
 #include "drivers/terminal/terminal.h"
 
@@ -19,10 +20,12 @@ int ps2_keyboard_initialize() {
     if (port_read_u8(DATA_PORT) != 0x55)
         return -1;
 
-    return 0;
+    return irq_register_handler(PS2_KEYBOARD_IRQ, ps2_keyboard_interrupt_handler, nullptr);
 }
 
-void ps2_keyboard_interrupt_handler() {
+void ps2_keyboard_interrupt_handler(uint8_t irq, void* ctx) {
+    (void)irq;
+    (void)ctx;
     char charKey = '\0';
     key_code key = port_read_u8(DATA_PORT);
     const bool keyUp = key & 0x80;
