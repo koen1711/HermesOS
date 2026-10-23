@@ -5,13 +5,6 @@
 #include <utils/str/str.h>
 
 #include <drivers/fs/vfs/vfs.h>
-#include <drivers/fs/vfs/vfs_type.h>
-
-/* ── mode bits (Linux-compatible) ─────────────────────────────── */
-
-#define S_IFMT   0170000
-#define S_IFDIR  0040000
-#define S_IFREG  0100000
 
 /* FAT attribute bits */
 #define FAT_ATTR_READ_ONLY  0x01
@@ -24,11 +17,10 @@
 
 /* ── forward declarations ─────────────────────────────────────── */
 
-static const struct inode_operations fat32_dir_inode_ops;
-static const struct inode_operations fat32_file_inode_ops;
-static const struct file_operations  fat32_dir_fops;
-static const struct file_operations  fat32_file_fops;
-static const struct super_operations fat32_sops;
+static inode_operations_t fat32_dir_iops;
+static inode_operations_t fat32_file_iops;
+static file_operations_t  fat32_dir_fops;
+static file_operations_t  fat32_file_fops;
 
 /* ── block device I/O helper ──────────────────────────────────── */
 
@@ -134,149 +126,67 @@ static void fat32_short_name(const fat32_directory_entry *de,
 
 /* ── inode creation ───────────────────────────────────────────── */
 
-static ino_t fat32_ino_from_cluster(uint32_t cluster)
+static inode_t *fat32_make_inode(fat32_sb_info *sbi,
+                                 const char *name,
+                                 uint32_t cluster,
+                                 uint32_t size,
+                                 uint8_t attr,
+                                 uint32_t parent_cluster,
+                                 uint32_t dirent_off)
 {
-    return (ino_t)cluster;
-}
-
-static struct inode *fat32_make_inode(struct super_block *sb,
-                                     uint32_t cluster,
-                                     uint32_t size,
-                                     uint8_t attr,
-                                     uint32_t parent_cluster,
-                                     uint32_t dirent_off)
-{
-    struct inode *inode = malloc(sizeof(struct inode));
+    inode_t *inode = malloc(sizeof(inode_t));
     if (!inode) return NULL;
     memset(inode, 0, sizeof(*inode));
 
     fat32_inode_info *fi = malloc(sizeof(fat32_inode_info));
     if (!fi) { free(inode); return NULL; }
+    memset(fi, 0, sizeof(*fi));
 
-    fi->first_cluster     = cluster;
-    fi->size              = size;
-    fi->attr              = attr;
+    fi->sbi                = sbi;
+    fi->first_cluster      = cluster;
+    fi->size               = size;
+    fi->attr               = attr;
     fi->parent_dir_cluster = parent_cluster;
-    fi->dirent_offset     = dirent_off;
+    fi->dirent_offset      = dirent_off;
 
-    inode->i_ino     = fat32_ino_from_cluster(cluster);
-    inode->i_sb      = sb;
-    inode->i_size    = size;
-    inode->i_private = fi;
+    inode->id           = cluster;
+    inode->size         = size;
+    inode->private_data = fi;
+    strncpy(inode->path, name, MAX_FILE_PATH - 1);
 
     if (attr & FAT_ATTR_DIRECTORY) {
-        inode->i_mode = S_IFDIR | 0755;
-        inode->i_op   = &fat32_dir_inode_ops;
-        inode->i_fop  = &fat32_dir_fops;
+        inode->type = INODE_DIR;
+        inode->iops = &fat32_dir_iops;
+        inode->fops = &fat32_dir_fops;
     } else {
-        inode->i_mode = S_IFREG | 0644;
-        inode->i_op   = &fat32_file_inode_ops;
-        inode->i_fop  = &fat32_file_fops;
+        inode->type = INODE_FILE;
+        inode->iops = &fat32_file_iops;
+        inode->fops = &fat32_file_fops;
     }
 
     return inode;
 }
 
-/* ── directory iteration (VFS callback) ───────────────────────── */
-
-static int fat32_iterate_shared(struct file *file, struct dir_context *ctx)
+static void fat32_free_inode(inode_t *inode)
 {
-    struct inode *dir_inode = file->f_path.dentry->inode;
-    fat32_sb_info  *sbi = dir_inode->i_sb->s_fs_info;
-    fat32_inode_info *fi = dir_inode->i_private;
-
-    uint32_t clus = fi->first_cluster;
-    uint32_t clus_size = cluster_byte_size(sbi);
-    uint8_t *buffer = malloc(clus_size);
-    if (!buffer) return -1;
-
-    u64 pos = 0;  /* linear position across all clusters */
-
-    while (!is_eof_cluster(clus)) {
-        if (bdev_read(sbi, cluster_to_byte(sbi, clus), clus_size, buffer) != 0) {
-            free(buffer);
-            return -1;
-        }
-
-        uint32_t off = 0;
-        while (off < clus_size) {
-            const fat32_directory_entry *de =
-                (const fat32_directory_entry *)(buffer + off);
-
-            if (de->filename[0] == 0x00) goto out;       /* end of dir */
-            if ((uint8_t)de->filename[0] == 0xE5) {      /* deleted */
-                off += sizeof(fat32_directory_entry);
-                pos++;
-                continue;
-            }
-            if (de->attributes == FAT_ATTR_VOLUME_ID) {  /* volume label */
-                off += sizeof(fat32_directory_entry);
-                pos++;
-                continue;
-            }
-
-            char name[256] = {0};
-            bool has_lfn = false;
-
-            if ((de->attributes & FAT_ATTR_LFN) == FAT_ATTR_LFN) {
-                has_lfn = true;
-                uint32_t lfn_bytes = fat32_extract_lfn(de, name, sizeof(name));
-                off += lfn_bytes;
-                de = (const fat32_directory_entry *)(buffer + off);
-            }
-
-            if (!has_lfn)
-                fat32_short_name(de, name, sizeof(name));
-
-            /* Skip . and .. */
-            if (name[0] == '.' && (name[1] == '\0' ||
-                (name[1] == '.' && name[2] == '\0'))) {
-                off += sizeof(fat32_directory_entry);
-                pos++;
-                continue;
-            }
-
-            uint32_t entry_cluster = ((uint32_t)de->cluster_high << 16)
-                                   | de->cluster_low;
-
-            /* Only emit entries at or past ctx->pos */
-            if (pos >= ctx->pos) {
-                unsigned dtype = (de->attributes & FAT_ATTR_DIRECTORY)
-                               ? VFS_DT_DIR : VFS_DT_REG;
-                if (!ctx->actor(ctx, name, strlen(name),
-                                fat32_ino_from_cluster(entry_cluster), dtype)) {
-                    free(buffer);
-                    return 0;  /* caller's buffer full */
-                }
-                ctx->pos = pos + 1;
-            }
-
-            off += sizeof(fat32_directory_entry);
-            pos++;
-        }
-
-        clus = fat32_next_cluster(sbi, clus);
-    }
-
-out:
-    free(buffer);
-    return 0;
+    if (!inode) return;
+    free(inode->private_data);
+    free(inode);
 }
 
 /* ── lookup (find a name inside a directory) ──────────────────── */
 
-static struct dentry *fat32_lookup(struct inode *dir, struct dentry *dentry)
+static inode_t *fat32_lookup(inode_t *dir, const char *target)
 {
-    fat32_sb_info  *sbi = dir->i_sb->s_fs_info;
-    fat32_inode_info *fi = dir->i_private;
+    fat32_inode_info *fi = dir->private_data;
+    fat32_sb_info  *sbi = fi->sbi;
 
     uint32_t clus = fi->first_cluster;
     uint32_t clus_size = cluster_byte_size(sbi);
     uint8_t *buffer = malloc(clus_size);
     if (!buffer) return NULL;
 
-    const char *target = dentry->name.name;
-    uint32_t    target_len = dentry->name.len;
+    uint32_t target_len = strlen(target);
 
     while (!is_eof_cluster(clus)) {
         if (bdev_read(sbi, cluster_to_byte(sbi, clus), clus_size, buffer) != 0)
@@ -315,13 +225,12 @@ static struct dentry *fat32_lookup(struct inode *dir, struct dentry *dentry)
             /* Found it */
             uint32_t entry_cluster = ((uint32_t)de->cluster_high << 16)
                                    | de->cluster_low;
-            struct inode *inode = fat32_make_inode(
-                dir->i_sb, entry_cluster, de->file_size, de->attributes,
+            inode_t *inode = fat32_make_inode(
+                sbi, name, entry_cluster, de->file_size, de->attributes,
                 fi->first_cluster, dirent_off);
 
-            dentry->inode = inode;
             free(buffer);
-            return dentry;
+            return inode;
         }
 
         clus = fat32_next_cluster(sbi, clus);
@@ -329,23 +238,21 @@ static struct dentry *fat32_lookup(struct inode *dir, struct dentry *dentry)
 
 not_found:
     free(buffer);
-    dentry->inode = NULL;
     return NULL;
 }
 
 /* ── file read (follows FAT chain) ────────────────────────────── */
 
-static ssize_t fat32_file_read(struct file *file, void *user_buf,
-                               size_t len, loff_t *pos)
+static ssize_t fat32_file_read(file_t *file, void *user_buf, size_t len)
 {
-    struct inode *inode = file->f_path.dentry->inode;
-    fat32_sb_info  *sbi = inode->i_sb->s_fs_info;
-    fat32_inode_info *fi = inode->i_private;
+    fat32_inode_info *fi = file->node->private_data;
+    fat32_sb_info  *sbi = fi->sbi;
+    size_t pos = file->file_position;
 
-    if (*pos >= (loff_t)fi->size)
+    if (pos >= fi->size)
         return 0;
-    if (*pos + (loff_t)len > (loff_t)fi->size)
-        len = fi->size - *pos;
+    if (pos + len > fi->size)
+        len = fi->size - pos;
     if (len == 0)
         return 0;
 
@@ -353,9 +260,9 @@ static ssize_t fat32_file_read(struct file *file, void *user_buf,
     uint8_t *clus_buf = malloc(clus_size);
     if (!clus_buf) return -1;
 
-    /* Walk the FAT chain to the cluster containing *pos */
+    /* Walk the FAT chain to the cluster containing pos */
     uint32_t clus = fi->first_cluster;
-    uint64_t skip = (uint64_t)*pos;
+    uint64_t skip = (uint64_t)pos;
 
     while (skip >= clus_size) {
         clus = fat32_next_cluster(sbi, clus);
@@ -381,90 +288,60 @@ static ssize_t fat32_file_read(struct file *file, void *user_buf,
     }
 
     free(clus_buf);
-    *pos += copied;
+    file->file_position += copied;
     return (ssize_t)copied;
 }
 
-/* ── file open / release (no-op for FAT32) ────────────────────── */
+/* ── file open / close ────────────────────────────────────────── */
 
-static int fat32_file_open(struct inode *inode, struct file *file)
+static int fat32_file_open(inode_t *inode, file_t *file)
 {
-    file->private_data = NULL;
     return 0;
 }
 
-static int fat32_file_release(struct inode *inode, struct file *file)
+static int fat32_file_close(file_t *file)
 {
     return 0;
+}
+
+/* The VFS releases every inode lookup made (after the last close, or right away for a
+ * directory it only passed through). The root inode is freed by unmount instead. */
+static void fat32_release(inode_t *inode)
+{
+    fat32_inode_info *fi = inode->private_data;
+    if (!fi->is_root)
+        fat32_free_inode(inode);
 }
 
 /* ── operations tables ────────────────────────────────────────── */
 
-static const struct file_operations fat32_dir_fops = {
-    .iterate_shared = fat32_iterate_shared,
-    .open           = fat32_file_open,
-    .release        = fat32_file_release,
+static file_operations_t fat32_dir_fops = {
+    .open  = fat32_file_open,
+    .close = fat32_file_close,
 };
 
-static const struct file_operations fat32_file_fops = {
-    .read    = fat32_file_read,
-    .open    = fat32_file_open,
-    .release = fat32_file_release,
+static file_operations_t fat32_file_fops = {
+    .read  = fat32_file_read,
+    .open  = fat32_file_open,
+    .close = fat32_file_close,
 };
 
-static const struct inode_operations fat32_dir_inode_ops = {
-    .lookup = fat32_lookup,
+static inode_operations_t fat32_dir_iops = {
+    .lookup  = fat32_lookup,
+    .release = fat32_release,
 };
 
-static const struct inode_operations fat32_file_inode_ops = {
-    /* no special ops for regular files yet */
+/* a file has nothing to look up */
+static inode_operations_t fat32_file_iops = {
+    .release = fat32_release,
 };
 
-/* ── super_block operations ───────────────────────────────────── */
+/* ── mount / unmount ──────────────────────────────────────────── */
 
-static void fat32_put_super(struct super_block *sb)
+static inode_t *fat32_mount(void *blob)
 {
-    fat32_sb_info *sbi = sb->s_fs_info;
-    if (sbi) {
-        if (sbi->bdev)
-            free(sbi->bdev);
-        free(sbi);
-    }
-    sb->s_fs_info = NULL;
-}
-
-static struct inode *fat32_sops_alloc_inode(struct super_block *sb)
-{
-    struct inode *inode = malloc(sizeof(struct inode));
-    if (inode) memset(inode, 0, sizeof(*inode));
-    return inode;
-}
-
-static void fat32_sops_destroy_inode(struct inode *inode)
-{
-    if (inode->i_private)
-        free(inode->i_private);
-    free(inode);
-}
-
-static const struct super_operations fat32_sops = {
-    .put_super     = fat32_put_super,
-    .alloc_inode   = fat32_sops_alloc_inode,
-    .destroy_inode = fat32_sops_destroy_inode,
-};
-
-/* ── mount ────────────────────────────────────────────────────── */
-
-struct super_block *fat32_mount(struct file_system_type *fs_type,
-                                uint32_t mount_flags,
-                                const char *dev_name,
-                                void *data)
-{
-    /*
-     * Caller passes a struct block_device* via `data`.
-     * In the future this could be looked up by dev_name instead.
-     */
-    struct block_device *bdev = (struct block_device *)data;
+    /* The caller passes a struct block_device* as the blob */
+    struct block_device *bdev = (struct block_device *)blob;
     if (!bdev) {
         terminal_printf("fat32: no block device\n");
         return NULL;
@@ -493,74 +370,47 @@ struct super_block *fat32_mount(struct file_system_type *fs_type,
     if (!sbi) return NULL;
     memset(sbi, 0, sizeof(*sbi));
 
-    sbi->bdev               = bdev;
-    sbi->bs                 = bs;
-    sbi->fsinfo             = fsi;
-    sbi->bytes_per_sector   = bs.bytes_per_sector;
+    sbi->bdev                = bdev;
+    sbi->bs                  = bs;
+    sbi->fsinfo              = fsi;
+    sbi->bytes_per_sector    = bs.bytes_per_sector;
     sbi->sectors_per_cluster = bs.sectors_per_cluster;
-    sbi->sectors_per_fat    = bs.sectors_per_fat32;
-    sbi->root_cluster       = bs.root_cluster;
-    sbi->fat_begin_lba      = bs.reserved_sectors;
-    sbi->data_begin_lba     = bs.reserved_sectors +
-                              bs.number_of_fats * bs.sectors_per_fat32;
-
-    /* Allocate super_block */
-    struct super_block *sb = malloc(sizeof(struct super_block));
-    if (!sb) { free(sbi); return NULL; }
-    memset(sb, 0, sizeof(*sb));
-
-    sb->s_magic     = 0x46415433; /* "FAT3" */
-    sb->s_blocksize = cluster_byte_size(sbi);
-    sb->s_op        = &fat32_sops;
-    sb->s_fs_info   = sbi;
+    sbi->sectors_per_fat     = bs.sectors_per_fat32;
+    sbi->root_cluster        = bs.root_cluster;
+    sbi->fat_begin_lba       = bs.reserved_sectors;
+    sbi->data_begin_lba      = bs.reserved_sectors +
+                               bs.number_of_fats * bs.sectors_per_fat32;
 
     /* Root inode */
-    struct inode *root_inode = fat32_make_inode(
-        sb, sbi->root_cluster, 0, FAT_ATTR_DIRECTORY, 0, 0);
-    if (!root_inode) {
-        free(sb);
+    inode_t *root = fat32_make_inode(
+        sbi, "/", sbi->root_cluster, 0, FAT_ATTR_DIRECTORY, 0, 0);
+    if (!root) {
         free(sbi);
         return NULL;
     }
+    ((fat32_inode_info *)root->private_data)->is_root = true;
 
-    /* Root dentry */
-    struct dentry *root_dentry = malloc(sizeof(struct dentry));
-    if (!root_dentry) {
-        free(root_inode->i_private);
-        free(root_inode);
-        free(sb);
-        free(sbi);
-        return NULL;
-    }
-    memset(root_dentry, 0, sizeof(*root_dentry));
-    root_dentry->name.name = "/";
-    root_dentry->name.len  = 1;
-    root_dentry->inode     = root_inode;
-    root_dentry->parent    = root_dentry;
-    root_dentry->refcnt    = 1;
-
-    sb->s_root = root_dentry;
-
-    return sb;
+    return root;
 }
 
-/* ── kill_sb ──────────────────────────────────────────────────── */
-
-void fat32_kill_sb(struct super_block *sb)
+static void fat32_unmount(inode_t *root)
 {
-    if (!sb) return;
-    if (sb->s_op && sb->s_op->put_super)
-        sb->s_op->put_super(sb);
-    /* TODO: walk and free dentry/inode tree */
-    free(sb);
+    if (!root) return;
+    fat32_inode_info *fi = root->private_data;
+    fat32_sb_info *sbi = fi->sbi;
+
+    if (sbi) {
+        free(sbi->bdev);
+        free(sbi);
+    }
+    fat32_free_inode(root);
 }
 
-/* ── file_system_type registration ────────────────────────────── */
+/* ── driver registration ──────────────────────────────────────── */
 
-struct file_system_type fat32_fs_type = {
-    .name    = "fat32",
+file_system_driver_t fat32_driver = {
     .mount   = fat32_mount,
-    .kill_sb = fat32_kill_sb,
+    .unmount = fat32_unmount,
 };
 
 /* ── block_device helper ──────────────────────────────────────── */

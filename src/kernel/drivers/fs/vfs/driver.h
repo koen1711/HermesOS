@@ -22,6 +22,7 @@ typedef struct file_system_driver_ts {
 
 typedef struct inode_operations_s {
     struct inode_s* (*lookup)(struct inode_s* dir, const char* name);
+    void (*release)(struct inode_s* node);
 } inode_operations_t;
 
 typedef struct file_operations_s {
@@ -49,6 +50,7 @@ typedef struct file_s {
     size_t file_position; //how far are we in a file
     int flags;
     struct mounted_file_system_s* mount;
+    int ref_count;
 } file_t;
 
 #endif //OS_DRIVER_H

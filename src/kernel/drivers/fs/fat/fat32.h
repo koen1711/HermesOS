@@ -1,8 +1,9 @@
 #ifndef FAT32_H
 #define FAT32_H
 
-#include <drivers/fs/vfs/vfs_type.h>
+#include <drivers/fs/vfs/driver.h>
 #include <os/stdint.h>
+#include <os/stdbool.h>
 
 /* ── block device abstraction ─────────────────────────────────── */
 
@@ -92,7 +93,7 @@ typedef struct {
     uint16_t name3[2];
 } __attribute__((packed)) fat32_long_filename_entry;
 
-/* ── in-memory VFS info ───────────────────────────────────────── */
+/* ── in-memory driver info ────────────────────────────────────── */
 
 typedef struct fat32_sb_info {
     struct block_device *bdev;
@@ -107,10 +108,13 @@ typedef struct fat32_sb_info {
     uint32_t bytes_per_sector;
 } fat32_sb_info;
 
+/* inode_t.private_data of every FAT32 inode */
 typedef struct fat32_inode_info {
+    fat32_sb_info *sbi;     /* filesystem the inode belongs to */
     uint32_t first_cluster;
     uint32_t size;
     uint8_t  attr;
+    bool     is_root;       /* the root inode lives until unmount, others until close */
 
     uint32_t parent_dir_cluster;
     uint32_t dirent_offset;
@@ -118,15 +122,11 @@ typedef struct fat32_inode_info {
 
 /* ── VFS interface ────────────────────────────────────────────── */
 
-extern struct file_system_type fat32_fs_type;
+/* Register with vfs_register_driver("fat32", &fat32_driver).
+ * vfs_mount passes a struct block_device* as the blob. */
+extern file_system_driver_t fat32_driver;
 
-struct super_block *fat32_mount(struct file_system_type *fs_type,
-                                uint32_t mount_flags,
-                                const char *dev_name,
-                                void *data);
-void fat32_kill_sb(struct super_block *sb);
-
-/* Helper: create a block_device suitable for fat32_mount(data=bdev) */
+/* Helper: create a block_device suitable for vfs_mount(..., "fat32", bdev) */
 struct block_device *fat32_create_bdev(uint32_t unique_id,
                                        uint64_t part_offset_bytes,
                                        uint64_t part_length_bytes,

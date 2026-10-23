@@ -1,12 +1,108 @@
 .code64
-.equ ENOSYS, 38
 
-.global irq_interrupt_syscall
+# Every interrupt stub builds an interrupt_context (see interrupts.h) on the stack:
+#
+#   CPU:            ss, rsp, rflags, cs, rip  (+ error code for some exceptions)
+#   vector stub:    error code (0 if the CPU didn't push one), vector number
+#   trap_common:    rax, rbx, rcx, rdx, rsi, rdi, rbp, r8 - r15
+#
+# After that %rsp points at the interrupt_context, which is passed to trap_handler.
+# trap_return then restores every register from the frame and does iretq.
+#
+# The CPU aligns %rsp to 16 bytes before pushing its frame. The full interrupt_context
+# is 22 * 8 = 176 bytes, a multiple of 16, so %rsp is still 16-byte aligned at the
+# call to trap_handler, as the SysV ABI requires.
 
-.extern handle_pic_interrupt
-.extern handle_syscall
+.global trap_return
 
-irq_interrupt_syscall:
+.extern trap_handler
+
+# Stub for a vector where the CPU does not push an error code
+.macro TRAP_NOERR name, vector
+.global \name
+\name:
+    pushq $0            # dummy error code, keeps the frame layout the same
+    pushq $\vector
+    jmp trap_common
+.endm
+
+# Stub for a vector where the CPU pushes an error code (8, 10-14, 17, 21, 29, 30)
+.macro TRAP_ERR name, vector
+.global \name
+\name:
+    pushq $\vector
+    jmp trap_common
+.endm
+
+# CPU exceptions 0-31
+TRAP_NOERR exception_0,  0      # divide error
+TRAP_NOERR exception_1,  1      # debug
+TRAP_NOERR exception_2,  2      # NMI
+TRAP_NOERR exception_3,  3      # breakpoint
+TRAP_NOERR exception_4,  4      # overflow
+TRAP_NOERR exception_5,  5      # bound range
+TRAP_NOERR exception_6,  6      # invalid opcode
+TRAP_NOERR exception_7,  7      # device not available
+TRAP_ERR   exception_8,  8      # double fault
+TRAP_NOERR exception_9,  9      # coprocessor segment overrun
+TRAP_ERR   exception_10, 10     # invalid TSS
+TRAP_ERR   exception_11, 11     # segment not present
+TRAP_ERR   exception_12, 12     # stack fault
+TRAP_ERR   exception_13, 13     # general protection
+TRAP_ERR   exception_14, 14     # page fault
+TRAP_NOERR exception_15, 15     # reserved
+TRAP_NOERR exception_16, 16     # x87 floating point
+TRAP_ERR   exception_17, 17     # alignment check
+TRAP_NOERR exception_18, 18     # machine check
+TRAP_NOERR exception_19, 19     # SIMD floating point
+TRAP_NOERR exception_20, 20     # virtualization
+TRAP_ERR   exception_21, 21     # control protection
+TRAP_NOERR exception_22, 22     # reserved
+TRAP_NOERR exception_23, 23
+TRAP_NOERR exception_24, 24
+TRAP_NOERR exception_25, 25
+TRAP_NOERR exception_26, 26
+TRAP_NOERR exception_27, 27
+TRAP_NOERR exception_28, 28
+TRAP_ERR   exception_29, 29     # VMM communication
+TRAP_ERR   exception_30, 30     # security
+TRAP_NOERR exception_31, 31     # reserved
+
+# PIC IRQs 0-15 (IRQ_OFFSET + n), irq_register_handler puts them in the IDT
+TRAP_NOERR irq_interrupt_0,  0x20      # PIT
+TRAP_NOERR irq_interrupt_1,  0x21      # PS/2 keyboard
+TRAP_NOERR irq_interrupt_2,  0x22      # cascade (never raised)
+TRAP_NOERR irq_interrupt_3,  0x23
+TRAP_NOERR irq_interrupt_4,  0x24
+TRAP_NOERR irq_interrupt_5,  0x25
+TRAP_NOERR irq_interrupt_6,  0x26
+TRAP_NOERR irq_interrupt_7,  0x27      # also the master's spurious IRQ
+TRAP_NOERR irq_interrupt_8,  0x28
+TRAP_NOERR irq_interrupt_9,  0x29
+TRAP_NOERR irq_interrupt_10, 0x2a
+TRAP_NOERR irq_interrupt_11, 0x2b
+TRAP_NOERR irq_interrupt_12, 0x2c
+TRAP_NOERR irq_interrupt_13, 0x2d
+TRAP_NOERR irq_interrupt_14, 0x2e      # primary ATA
+TRAP_NOERR irq_interrupt_15, 0x2f      # secondary ATA, also the slave's spurious IRQ
+
+TRAP_NOERR irq_interrupt_syscall, 0x80 # SYSCALL_VECTOR, syscalls_initialize puts it in the IDT
+
+# Stub address for every exception 0-31, idt_initialize puts them in the IDT
+.section .data
+.global exception_stub_table
+exception_stub_table:
+    .quad exception_0,  exception_1,  exception_2,  exception_3
+    .quad exception_4,  exception_5,  exception_6,  exception_7
+    .quad exception_8,  exception_9,  exception_10, exception_11
+    .quad exception_12, exception_13, exception_14, exception_15
+    .quad exception_16, exception_17, exception_18, exception_19
+    .quad exception_20, exception_21, exception_22, exception_23
+    .quad exception_24, exception_25, exception_26, exception_27
+    .quad exception_28, exception_29, exception_30, exception_31
+.section .text
+
+trap_common:
     pushq %rax
     pushq %rbx
     pushq %rcx
@@ -23,15 +119,11 @@ irq_interrupt_syscall:
     pushq %r14
     pushq %r15
 
-    # Push error code or syscall number
-    pushq $-ENOSYS  # Use immediate value with pushq
+    cld                 # the SysV ABI requires the direction flag clear on calls
+    movq %rsp, %rdi     # first argument: interrupt_context*
+    call trap_handler
 
-    call handle_syscall // drivers/syscalls/syscalls.c
-
-    # Clean up the pushed error code
-    addq $8, %rsp   # 8 bytes in 64-bit mode
-
-    # Restore all registers in reverse order
+trap_return:
     popq %r15
     popq %r14
     popq %r13
@@ -48,81 +140,5 @@ irq_interrupt_syscall:
     popq %rbx
     popq %rax
 
-    iretq
-
-.macro IRQ_STUB n
-.global irq_interrupt_\n
-irq_interrupt_\n:
-    pushq $\n
-    jmp irq_interrupt
-.endm
-
-IRQ_STUB 0
-IRQ_STUB 1
-IRQ_STUB 2
-IRQ_STUB 3
-IRQ_STUB 4
-IRQ_STUB 5
-IRQ_STUB 6
-IRQ_STUB 7
-IRQ_STUB 8
-IRQ_STUB 9
-IRQ_STUB 10
-IRQ_STUB 11
-IRQ_STUB 12
-IRQ_STUB 13
-IRQ_STUB 14
-IRQ_STUB 15
-
-irq_interrupt:
-    sub $160, %rsp
-
-    mov %rax, 0(%rsp)
-    mov %rbx, 8(%rsp)
-    mov %rcx, 16(%rsp)
-    mov %rdx, 24(%rsp)
-    mov %rbp, 32(%rsp)
-    mov %rsi, 48(%rsp)
-    mov %rdi, 56(%rsp)
-    mov %r8, 64(%rsp)
-    mov %r9, 72(%rsp)
-    mov %r10, 80(%rsp)
-    mov %r11, 88(%rsp)
-    mov %r12, 96(%rsp)
-    mov %r13, 104(%rsp)
-    mov %r14, 112(%rsp)
-    mov %r15, 120(%rsp)
-
-    mov 160(%rsp), %rax     # irq number pushed by the stub
-    mov %rax, 152(%rsp)
-    mov 168(%rsp), %rax     # rip
-    mov %rax, 128(%rsp)
-    mov 176(%rsp), %rax     # cs
-    mov %rax, 136(%rsp)
-    mov 184(%rsp), %rax     # rflags
-    mov %rax, 144(%rsp)
-    mov 192(%rsp), %rax     # interrupted rsp
-    mov %rax, 40(%rsp)
-
-    mov %rsp, %rdi          # interrupt_context*
-    cld
-    call handle_pic_interrupt
-
-    mov 0(%rsp), %rax
-    mov 8(%rsp), %rbx
-    mov 16(%rsp), %rcx
-    mov 24(%rsp), %rdx
-    mov 32(%rsp), %rbp
-    mov 48(%rsp), %rsi
-    mov 56(%rsp), %rdi
-    mov 64(%rsp), %r8
-    mov 72(%rsp), %r9
-    mov 80(%rsp), %r10
-    mov 88(%rsp), %r11
-    mov 96(%rsp), %r12
-    mov 104(%rsp), %r13
-    mov 112(%rsp), %r14
-    mov 120(%rsp), %r15
-
-    add $168, %rsp          # context + irq number
+    addq $16, %rsp      # skip vector number and error code
     iretq

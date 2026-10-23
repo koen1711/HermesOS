@@ -15,6 +15,7 @@ enum syscall_numbers {
     SYSCALL_LSEEK = 6,
     SYSCALL_MMAP = 9,
     SYSCALL_MUNMAP = 11,
+    SYSCALL_FORK = 57,
     SYSCALL_CLOCK_GETTIME = 288,
 
 };
@@ -23,6 +24,6 @@ enum syscall_numbers {
 #endif
 
 void syscalls_initialize();
-void handle_syscall(const interrupt_context* context);
+void handle_syscall(interrupt_context* context);
 
 #endif //OS_SYSCALLS_H

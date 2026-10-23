@@ -27,7 +27,7 @@ uint32_t pit_frequency()
     return frequency;
 }
 
-void handle_timer_interrupt(const uint8_t irq, const void* ctx)
+void handle_timer_interrupt(const uint8_t irq, void* ctx)
 {
     (void)irq;
     (void)ctx;

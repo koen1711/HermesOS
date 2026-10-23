@@ -25,7 +25,7 @@ static bool pic_is_spurious(const uint8_t irq)
 
 void handle_pic_interrupt(const interrupt_context* context)
 {
-    const uint8_t irq_number = context->interrupt_number;
+    const uint8_t irq_number = context->interrupt_number - IRQ_OFFSET;
 
     if (pic_is_spurious(irq_number))
         return;

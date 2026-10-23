@@ -3,6 +3,7 @@
 
 #include <os/stdint.h>
 #include <os/stddef.h>
+#include <os/stdbool.h> // Process VM: bool for setup_uvm / copy_uvm
 
 // Flags for page table entries
 #define MMU_PRESENT       0x001
@@ -12,6 +13,10 @@
 #define MMU_CACHE_DISABLE 0x010
 
 #define TWO_MEGABYTES     0x200000
+
+#define PAGE_SIZE         0x1000
+#define USER_VIRTUAL_BASE 0x8000000000ULL
+#define USER_MEMORY_SIZE  (16 * PAGE_SIZE) // 64KB per process: code, data and stack
 
 typedef struct {
     uint64_t* pml4;
@@ -29,8 +34,16 @@ int  map_page(uint64_t virtual_addr, uint64_t physical_addr, uint64_t flags);
 void unmap_page(uint64_t virtual_addr);
 void* vmalloc(size_t size);
 void  vfree(void* ptr);
+void  free_vm(uint64_t pml4_addr);
 
-// Internal helpers (can be static in mmu.c or exposed if needed)
+
+int      map_page_in(uint64_t pml4_addr, uint64_t virtual_addr, uint64_t physical_addr, uint64_t flags);
+uint64_t setup_kvm(void);
+bool     setup_uvm(uint64_t pml4_addr, uint64_t start_location, size_t size);
+bool     copy_uvm(uint64_t new_pml4, uint64_t current_pml4);
+void     switch_vm(uint64_t pml4_addr);
+uint64_t read_cr3(void);
+
 void setup_kernel_mapping(const mmu_context_t* mmu);
 void setup_identity_mapping(const mmu_context_t* mmu);
 void setup_device_mappings(mmu_context_t* mmu);

@@ -20,17 +20,27 @@ typedef struct {
     uint32_t zero;
 } idt_entry;
 
+// Built on the stack by every interrupt stub in interrupt.asm
 typedef struct {
-    uint64_t rax, rbx, rcx, rdx, rbp, rsp, rsi, rdi;
-    uint64_t r8, r9, r10, r11, r12, r13, r14, r15;
-    uint64_t rip, cs, rflags;
+    uint64_t r15, r14, r13, r12, r11, r10, r9, r8;
+    uint64_t rbp, rdi, rsi, rdx, rcx, rbx, rax;
+
     uint64_t interrupt_number;
+    uint64_t error_code;
+
+    uint64_t rip, cs, rflags, rsp, ss;
 } interrupt_context;
+
+_Static_assert(sizeof(interrupt_context) == 22 * 8, "interrupt_context layout must match interrupt.asm");
 
 extern idt_entry idt[IDT_SIZE];
 
 
 void idt_initialize();
 void idt_set_entry(uint8_t index, uintptr_t handler);
+
+void trap_handler(interrupt_context* context);
+
+extern void trap_return();
 
 #endif //INTERRUPTS_H
