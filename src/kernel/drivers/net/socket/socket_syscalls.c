@@ -3,6 +3,7 @@
 #include <drivers/net/socket/socket.h>
 #include <drivers/net/socket/socket_file.h>
 #include <drivers/net/socket/protosw.h>
+#include <drivers/net/unix/unix.h>
 #include <drivers/syscalls/fd.h>
 #include <drivers/syscalls/uaccess.h>
 #include <hardware/memory/alloc.h>
@@ -51,7 +52,20 @@ static long addr_room(const struct sockaddr* uaddr, const socklen_t* ulen)
         return -EFAULT;
     if ((int32_t)room < 0)
         return -EINVAL;
-    return uaccess_ok(uaddr, room) ? 0 : -EFAULT;
+    return uaccess_ok_write(uaddr, room) ? 0 : -EFAULT;
+}
+
+static int sock_install(struct socket* so, const int tflags)
+{
+    const int fd = socket_file_alloc_fd(so);
+    if (fd < 0) {
+        sock_close(so);
+        return fd;
+    }
+    if (tflags & SOCK_NONBLOCK)
+        socket_file_set_nonblock(fd_get(fd), true);
+    fd_set_cloexec(fd, tflags & SOCK_CLOEXEC);
+    return fd;
 }
 
 long sys_socket(const int domain, int type, const int protocol)
@@ -63,14 +77,35 @@ long sys_socket(const int domain, int type, const int protocol)
     const int err = sock_create(domain, type, protocol, &so);
     if (err)
         return err;
-    if (tflags & SOCK_NONBLOCK)
-        so->state |= SS_NBIO;
-    // TODO: SOCK_CLOEXEC once exec closes marked descriptors
+    return sock_install(so, tflags);
+}
 
-    const int fd = socket_file_alloc_fd(so);
-    if (fd < 0)
-        sock_close(so);
-    return fd;
+long sys_socketpair(const int domain, int type, const int protocol, int* sv)
+{
+    const int tflags = type & (SOCK_NONBLOCK | SOCK_CLOEXEC);
+    type &= ~(SOCK_NONBLOCK | SOCK_CLOEXEC);
+    if (domain != AF_UNIX)
+        return -EAFNOSUPPORT;
+    if (!uaccess_ok_write(sv, 2 * sizeof(int)))
+        return -EFAULT;
+
+    struct socket* a;
+    struct socket* b;
+    const int err = unix_socketpair(type, protocol, &a, &b);
+    if (err)
+        return err;
+    const int fa = sock_install(a, tflags);
+    if (fa < 0) {
+        sock_close(b);
+        return fa;
+    }
+    const int fb = sock_install(b, tflags);
+    if (fb < 0) {
+        fd_close(fa);
+        return fb;
+    }
+    const int fds[2] = { fa, fb };
+    return copy_to_user(sv, fds, sizeof(fds));
 }
 
 long sys_bind(const int fd, const struct sockaddr* addr, const socklen_t len)
@@ -102,6 +137,13 @@ long sys_connect(const int fd, const struct sockaddr* addr, const socklen_t len)
 
 long sys_accept(const int fd, struct sockaddr* addr, socklen_t* len)
 {
+    return sys_accept4(fd, addr, len, 0);
+}
+
+long sys_accept4(const int fd, struct sockaddr* addr, socklen_t* len, const int flags)
+{
+    if (flags & ~(SOCK_NONBLOCK | SOCK_CLOEXEC))
+        return -EINVAL;
     struct socket* so;
     long err = sock_lookup(fd, &so);
     if (err || (err = addr_room(addr, len)))
@@ -114,11 +156,9 @@ long sys_accept(const int fd, struct sockaddr* addr, socklen_t* len)
     err = sock_accept(so, &conn, (struct sockaddr*)&ss, &klen);
     if (err)
         return err;
-    const int nfd = socket_file_alloc_fd(conn);
-    if (nfd < 0) {
-        sock_close(conn);
+    const int nfd = sock_install(conn, flags);
+    if (nfd < 0)
         return nfd;
-    }
     if (addr && addr_out(&ss, klen, addr, len) < 0) {
         fd_close(nfd);
         return -EFAULT;
@@ -148,7 +188,7 @@ long sys_recvfrom(const int fd, void* buf, const size_t len, const int flags, st
     long err = sock_lookup(fd, &so);
     if (err || (err = addr_room(src, src_len)))
         return err;
-    if (!uaccess_ok(buf, len))
+    if (!uaccess_ok_write(buf, len))
         return -EFAULT;
 
     struct sockaddr_storage ss;
@@ -160,7 +200,8 @@ long sys_recvfrom(const int fd, void* buf, const size_t len, const int flags, st
     return n;
 }
 
-static long msg_in(const struct msghdr_s* umsg, struct msghdr_s* msg, struct iovec_s** iov, size_t* total)
+static long msg_in(const struct msghdr_s* umsg, struct msghdr_s* msg, struct iovec_s** iov, size_t* total,
+                   const bool write)
 {
     *iov = nullptr;
     if (copy_from_user(msg, umsg, sizeof(*msg)) < 0)
@@ -176,7 +217,9 @@ static long msg_in(const struct msghdr_s* umsg, struct msghdr_s* msg, struct iov
     }
     *total = 0;
     for (size_t i = 0; i < msg->msg_iovlen; i++) {
-        if (!uaccess_ok((*iov)[i].iov_base, (*iov)[i].iov_len) || (*iov)[i].iov_len > SOCKET_SSIZE_MAX - *total)
+        const bool ok = write ? uaccess_ok_write((*iov)[i].iov_base, (*iov)[i].iov_len)
+                              : uaccess_ok((*iov)[i].iov_base, (*iov)[i].iov_len);
+        if (!ok || (*iov)[i].iov_len > SOCKET_SSIZE_MAX - *total)
             return -EINVAL;
         *total += (*iov)[i].iov_len;
     }
@@ -234,7 +277,7 @@ long sys_sendmsg(const int fd, const struct msghdr_s* umsg, const int flags)
     struct iovec_s* iov;
     size_t total;
     struct sockaddr_storage ss;
-    if ((err = msg_in(umsg, &msg, &iov, &total)) == 0 && msg.msg_name)
+    if ((err = msg_in(umsg, &msg, &iov, &total, false)) == 0 && msg.msg_name)
         err = addr_in(&ss, msg.msg_name, msg.msg_namelen);
     if (err == 0) {
         // TODO: ancillary data (msg_control) is ignored
@@ -292,11 +335,11 @@ long sys_recvmsg(const int fd, struct msghdr_s* umsg, const int flags)
     struct msghdr_s msg;
     struct iovec_s* iov;
     size_t total;
-    if ((err = msg_in(umsg, &msg, &iov, &total)) != 0) {
+    if ((err = msg_in(umsg, &msg, &iov, &total, true)) != 0) {
         free(iov);
         return err;
     }
-    if (msg.msg_name && !uaccess_ok(msg.msg_name, msg.msg_namelen)) {
+    if (msg.msg_name && !uaccess_ok_write(msg.msg_name, msg.msg_namelen)) {
         free(iov);
         return -EFAULT;
     }

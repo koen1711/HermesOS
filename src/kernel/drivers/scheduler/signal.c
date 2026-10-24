@@ -4,6 +4,7 @@
 #include <drivers/syscalls/uaccess.h>
 #include <hardware/interrupts/irq.h>
 #include <hardware/memory/alloc.h>
+#include <drivers/timer/clock.h>
 #include <os/errno.h>
 
 #define USER_CS 0x23
@@ -73,7 +74,7 @@ static int signal_post(const int pid, const int sig, const struct signal_info in
     if (sig != 0 && !signal_ignored(proc, sig)) {
         proc->sig_pending |= signal_bit(sig);
         proc->sig_info[sig - 1] = info;
-        if (!(proc->sig_blocked & signal_bit(sig)))
+        if (!(proc->sig_blocked & signal_bit(sig)) || (proc->sig_waiting & signal_bit(sig)))
             process_interrupt(proc);
     }
     irq_restore(flags);
@@ -85,12 +86,49 @@ int signal_send(const int pid, const int sig)
     return signal_post(pid, sig, (struct signal_info){ .code = SI_KERNEL });
 }
 
-long sys_kill(const int pid, const int sig)
+long sys_kill(int pid, const int sig)
 {
-    if (pid <= 0)
-        return -EINVAL;   // TODO: process groups (0, -pgid) and -1 (everyone)
     const process_t* current = signal_current_user();
-    return signal_post(pid, sig, (struct signal_info){ .code = SI_USER, .pid = current ? current->pid : 0 });
+    if (pid == 0 && current)
+        pid = current->tgid;   // TODO: process groups (0, -pgid) and -1 (everyone)
+    if (pid <= 0)
+        return -EINVAL;
+    return signal_post(pid, sig, (struct signal_info){ .code = SI_USER, .pid = current ? current->tgid : 0 });
+}
+
+long sys_tgkill(const int tgid, const int tid, const int sig)
+{
+    const process_t* target = process_find(tid);
+    if (target == nullptr || (tgid > 0 && target->tgid != tgid))
+        return -ESRCH;
+    const process_t* current = signal_current_user();
+    return signal_post(tid, sig, (struct signal_info){ .code = SI_USER, .pid = current ? current->tgid : 0 });
+}
+
+void signal_kill_thread(process_t* proc)
+{
+    proc->sig_pending |= signal_bit(SIGKILL);
+    proc->sig_info[SIGKILL - 1] = (struct signal_info){ .code = SI_KERNEL };
+    process_interrupt(proc);
+}
+
+int signal_for_exception(const uint64_t vector)
+{
+    switch (vector) {
+    case 0:     // divide error
+    case 16:    // x87
+    case 19:    // SIMD
+        return SIGFPE;
+    case 1:
+    case 3:
+        return SIGTRAP;
+    case 6:
+        return SIGILL;
+    case 17:
+        return SIGBUS;
+    default:
+        return SIGSEGV;
+    }
 }
 
 bool signal_fault(const interrupt_context* context, const uint64_t cr2)
@@ -98,33 +136,26 @@ bool signal_fault(const interrupt_context* context, const uint64_t cr2)
     process_t* current = signal_current_user();
     if (current == nullptr)
         return false;
-    int sig = SIGSEGV;
+    const int sig = signal_for_exception(context->interrupt_number);
     struct signal_info info = { .code = SI_KERNEL, .addr = context->rip };
-    switch (context->interrupt_number) {
-    case 0:     // divide error
-    case 16:    // x87
-    case 19:    // SIMD
-        sig = SIGFPE;
+    switch (sig) {
+    case SIGFPE:
         info.code = FPE_INTDIV;
         break;
-    case 1:
-    case 3:
-        sig = SIGTRAP;
+    case SIGTRAP:
         info.code = TRAP_BRKPT;
         break;
-    case 6:
-        sig = SIGILL;
+    case SIGILL:
         info.code = ILL_ILLOPN;
         break;
-    case 17:
-        sig = SIGBUS;
+    case SIGBUS:
         info.code = BUS_ADRALN;
         break;
-    case 14:
-        info.code = context->error_code & 1 ? SEGV_ACCERR : SEGV_MAPERR;
-        info.addr = cr2;
-        break;
     default:
+        if (context->interrupt_number == 14) {
+            info.code = context->error_code & 1 ? SEGV_ACCERR : SEGV_MAPERR;
+            info.addr = cr2;
+        }
         break;
     }
 
@@ -225,8 +256,11 @@ static bool signal_setup_frame(interrupt_context* context, process_t* current, c
     struct signal_frame frame = {0};
     frame.uc.uc_stack = signal_altstack_get(current, context->rsp);
     signal_save_context(context, &frame.uc.uc_mcontext);
-    frame.uc.uc_mcontext.oldmask = current->sig_blocked;
-    frame.uc.uc_sigmask = current->sig_blocked;
+
+    const uint64_t return_mask = current->sig_restore_mask ? current->sig_saved_blocked : current->sig_blocked;
+    current->sig_restore_mask = false;
+    frame.uc.uc_mcontext.oldmask = return_mask;
+    frame.uc.uc_sigmask = return_mask;
     frame.info.si_signo = sig;
     frame.info.si_code = current->sig_info[sig - 1].code;
     if (frame.info.si_code == SI_USER || frame.info.si_code == SI_KERNEL)
@@ -281,6 +315,10 @@ void signal_deliver(interrupt_context* context)
         if (!deliverable) {
             if (restartable)
                 signal_restart(context, current);
+            if (current->sig_restore_mask) {
+                current->sig_blocked = current->sig_saved_blocked;
+                current->sig_restore_mask = false;
+            }
             return;
         }
         const int sig = __builtin_ctzll(deliverable) + 1;
@@ -291,7 +329,10 @@ void signal_deliver(interrupt_context* context)
         if (current->sig_actions[sig - 1].handler == SIG_DFL) {
             // TODO: core dumps, stop/continue
             current->sig_pending = 0;
-            process_exit();
+            if (current->group_exit)
+                process_exit();
+            else
+                process_exit_group(sig);
             return;
         }
 
@@ -302,7 +343,7 @@ void signal_deliver(interrupt_context* context)
                 context->rax = (uint64_t)-EINTR;
         }
         if (!signal_setup_frame(context, current, sig)) {
-            process_exit();
+            process_exit_group(SIGSEGV);
         }
         return;
     }
@@ -379,12 +420,12 @@ void sys_rt_sigreturn(interrupt_context* context)
 
     struct ucontext_s uc;
     if (copy_from_user(&uc, (const void*)context->rsp, sizeof(uc)) < 0) {
-        process_exit();
+        process_exit_group(SIGSEGV);
         return;
     }
     const struct sigcontext_s* m = &uc.uc_mcontext;
     if (m->rip >= USER_ADDR_LIMIT || m->rsp >= USER_ADDR_LIMIT) {
-        process_exit();
+        process_exit_group(SIGSEGV);
         return;
     }
     context->r8 = m->r8;
@@ -430,4 +471,98 @@ long sys_sigaltstack(const struct sigaltstack_s* ss, struct sigaltstack_s* oss, 
     if (oss && copy_to_user(oss, &old, sizeof(old)) < 0)
         return -EFAULT;
     return 0;
+}
+
+long sys_rt_sigsuspend(const uint64_t* mask, const size_t sigsetsize)
+{
+    process_t* current = signal_current_user();
+    if (current == nullptr)
+        return -ESRCH;
+    if (sigsetsize != sizeof(uint64_t))
+        return -EINVAL;
+    uint64_t m;
+    if (copy_from_user(&m, mask, sizeof(m)) < 0)
+        return -EFAULT;
+    current->sig_saved_blocked = current->sig_blocked;
+    current->sig_restore_mask = true;
+    current->sig_blocked = m & ~unblockable;
+    int err;
+    do {
+        err = process_sleep_interruptible(WAIT_CHANNEL_TIMER | current->pid);
+    } while (err == 0);
+    return -EINTR;
+}
+
+long sys_pause()
+{
+    process_t* current = signal_current_user();
+    if (current == nullptr)
+        return -ESRCH;
+    int err;
+    do {
+        err = process_sleep_interruptible(WAIT_CHANNEL_TIMER | current->pid);
+    } while (err == 0);
+    return -EINTR;
+}
+
+long sys_rt_sigpending(uint64_t* set, const size_t sigsetsize)
+{
+    const process_t* current = signal_current_user();
+    if (current == nullptr)
+        return -ESRCH;
+    if (sigsetsize != sizeof(uint64_t))
+        return -EINVAL;
+    const uint64_t pending = current->sig_pending & current->sig_blocked;
+    return copy_to_user(set, &pending, sizeof(pending));
+}
+
+long sys_rt_sigtimedwait(const uint64_t* uset, struct siginfo_s* uinfo, const void* timeout, const size_t sigsetsize)
+{
+    process_t* current = signal_current_user();
+    if (current == nullptr)
+        return -ESRCH;
+    if (sigsetsize != sizeof(uint64_t))
+        return -EINVAL;
+    uint64_t set;
+    if (copy_from_user(&set, uset, sizeof(set)) < 0)
+        return -EFAULT;
+    set &= ~unblockable;
+
+    uint64_t ticks = 0;
+    bool poll_only = false;
+    if (timeout) {
+        struct timespec_k ts;
+        if (copy_from_user(&ts, timeout, sizeof(ts)) < 0)
+            return -EFAULT;
+        if (ts.tv_nsec < 0 || ts.tv_nsec >= 1000000000 || ts.tv_sec < 0)
+            return -EINVAL;
+        poll_only = ts.tv_sec == 0 && ts.tv_nsec == 0;
+        ticks = poll_only ? 0 : clock_ticks_from_timespec(&ts);
+    }
+
+    for (;;) {
+        const uint64_t ready = current->sig_pending & set;
+        if (ready) {
+            const int sig = __builtin_ctzll(ready) + 1;
+            current->sig_pending &= ~signal_bit(sig);
+            if (uinfo) {
+                struct siginfo_s info = {0};
+                info.si_signo = sig;
+                info.si_code = current->sig_info[sig - 1].code;
+                info.kill.si_pid = current->sig_info[sig - 1].pid;
+                if (copy_to_user(uinfo, &info, sizeof(info)) < 0)
+                    return -EFAULT;
+            }
+            return sig;
+        }
+        if (poll_only)
+            return -EAGAIN;
+        current->sig_waiting = set;
+        const int err = process_sleep_timeout(WAIT_CHANNEL_TIMER | current->pid, ticks);
+        current->sig_waiting = 0;
+        if (err == -ETIMEDOUT)
+            return -EAGAIN;
+        if (err && !(current->sig_pending & set))
+            return -EINTR;
+    }
 }

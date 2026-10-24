@@ -108,7 +108,6 @@ struct sigcontext_s {
     uint64_t reserved[8];
 };
 
-// Linux stack_t
 struct sigaltstack_s {
     uint64_t ss_sp;
     int32_t ss_flags;
@@ -140,10 +139,16 @@ struct signal_info {
 };
 
 int signal_send(int pid, int sig);
+int signal_for_exception(uint64_t vector);
 bool signal_fault(const interrupt_context* context, uint64_t cr2);
 void signal_deliver(interrupt_context* context);
 
 long sys_kill(int pid, int sig);
+long sys_tgkill(int tgid, int tid, int sig);
+long sys_rt_sigsuspend(const uint64_t* mask, size_t sigsetsize);
+long sys_rt_sigpending(uint64_t* set, size_t sigsetsize);
+long sys_rt_sigtimedwait(const uint64_t* set, struct siginfo_s* info, const void* timeout, size_t sigsetsize);
+long sys_pause();
 long sys_rt_sigaction(int sig, const struct k_sigaction* act, struct k_sigaction* oact, size_t sigsetsize);
 long sys_rt_sigprocmask(int how, const uint64_t* set, uint64_t* oset, size_t sigsetsize);
 

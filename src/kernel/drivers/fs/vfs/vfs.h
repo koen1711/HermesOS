@@ -3,11 +3,11 @@
 
 #include <drivers/fs/vfs/driver.h>
 
-#define MAX_OPEN_FILES 256
+#define MAX_OPEN_FILES 1024
 #define MAX_MOUNTED_FILESYSTEMS 10
 #define MAX_DRIVERS 8
 #define VFS_NAME_MAX 16
-#define VFS_PATH_MAX 64
+#define VFS_PATH_MAX MAX_PATH_LENGTH
 
 enum seek_origin {
     SEEK_SET = 0,
@@ -16,8 +16,9 @@ enum seek_origin {
 };
 
 typedef struct vfs_stat_s {
-    size_t size; //file size in bytes
-    size_t type; //INODE_FILE or INODE_DIR
+    size_t size;
+    size_t type;
+    uint64_t ino;
 } vfs_stat_t;
 
 typedef struct registered_driver_s {
@@ -42,7 +43,10 @@ int vfs_open(const char *path, int flags);
 ssize_t vfs_read(int fd, void *buf, size_t length);
 ssize_t vfs_write(int fd, const void *buf, size_t length);
 int vfs_close(int fd);
+int64_t vfs_seek(int fd, int64_t offset, enum seek_origin origin);
+int vfs_readdir(int fd, struct vfs_dirent *out);
 int vfs_stat(int fd, vfs_stat_t *st);
+int vfs_normalize_path(const char *base, const char *path, char *out);
 struct file_s* vfs_get_file(int fd);
 int vfs_install(struct file_s* f);
 

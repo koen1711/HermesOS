@@ -1,6 +1,7 @@
 #include "vfs.h"
 #include "drivers/terminal/terminal.h"
 #include "utils/str/str.h"
+#include <os/errno.h>
 
 
 static struct file_s* fd_table[MAX_OPEN_FILES];
@@ -156,7 +157,7 @@ int vfs_open(const char* path, const int flags)
     const char* rest;
     mounted_file_system_t* mount = find_mount(path, &rest);
     if (mount == nullptr)
-        return -1;
+        return -ENOENT;
     struct inode_s* current = mount->root;
     while (*rest != '\0')
     {
@@ -168,8 +169,9 @@ int vfs_open(const char* path, const int flags)
         char name[MAX_FILE_PATH];
         if (n >= sizeof(name) || current->iops == nullptr || current->iops->lookup == nullptr)
         {
+            const int err = n >= sizeof(name) ? -ENAMETOOLONG : -ENOTDIR;
             release_node(mount, current);
-            return -1;
+            return err;
         }
         memcpy(name, rest, n);
         name[n] = '\0';
@@ -178,21 +180,21 @@ int vfs_open(const char* path, const int flags)
         release_node(mount, current);
         current = next;
         if (current == nullptr)
-            return -1;
+            return -ENOENT;
 
         rest += n;
     }
     if (current->fops == nullptr || current->fops->open == nullptr)
     {
         release_node(mount, current);
-        return -1;
+        return -EACCES;
     }
 
     struct file_s* f = malloc(sizeof(struct file_s));
     if (f == nullptr)
     {
         release_node(mount, current);
-        return -1;
+        return -ENOMEM;
     }
     memset(f, 0, sizeof(*f));
     f->node = current;
@@ -201,11 +203,13 @@ int vfs_open(const char* path, const int flags)
     f->mount = mount;
     f->ref_count = 1;
 
+    strncpy(f->filename, path, sizeof(f->filename) - 1);
+
     if (current->fops->open(current, f) < 0)
     {
         release_node(mount, current);
         free(f);
-        return -1;
+        return -EACCES;
     }
     for (int i = 0; i < MAX_OPEN_FILES; i++)
     {
@@ -221,20 +225,22 @@ int vfs_open(const char* path, const int flags)
     if (current->fops->close) current->fops->close(f);
     release_node(mount, current);
     free(f);
-    return -1;
+    return -ENFILE;
 }
 
 ssize_t vfs_read(const int fd, void* buf, const size_t length)
 {
     struct file_s* f = get_file(fd);
     if (f == nullptr) 
-        return -1;
+        return -EBADF;
 
     if (!(f->flags & O_RDONLY)) 
-        return -1;
+        return -EBADF;
 
+    if (f->node->type == INODE_DIR)
+        return -EISDIR;
     if (f->node->fops == nullptr || f->node->fops->read == nullptr) 
-        return -1;
+        return -EINVAL;
     
     return f->node->fops->read(f, buf, length);
 }
@@ -243,44 +249,61 @@ ssize_t vfs_write(const int fd, const void* buf, const size_t length)
 {
     struct file_s* f = get_file(fd);
     if (f == nullptr) 
-        return -1;
+        return -EBADF;
 
     if (!(f->flags & O_WRONLY)) 
-        return -1;
+        return -EBADF;
 
+    if (f->node->type == INODE_DIR)
+        return -EISDIR;
     if (f->node->fops == nullptr || f->node->fops->write == nullptr)
-        return -1;
+        return -EROFS;
     return f->node->fops->write(f, buf, length);
 }
 
-int vfs_seek(const int fd, const size_t offset, enum seek_origin origin)
+int64_t vfs_seek(const int fd, const int64_t offset, const enum seek_origin origin)
 {
     struct file_s* f = get_file(fd);
     if (f == nullptr) 
-        return -1;
+        return -EBADF;
+    if (f->node->type != INODE_FILE && f->node->type != INODE_DIR)
+        return -ESPIPE;
 
+    int64_t base;
     switch (origin)
     {
         case SEEK_SET:
-            if (offset > f->node->size) 
-                return -1;
-            f->file_position = offset;
+            base = 0;
             break;
         case SEEK_CUR:
-            if (f->file_position + offset > f->node->size) 
-                return -1;
-            f->file_position += offset;
+            base = (int64_t)f->file_position;
             break;
         case SEEK_END:
-            if (offset > f->node->size) 
-                return -1;
-            f->file_position = f->node->size - offset;
+            base = (int64_t)f->node->size;
             break;
         default:
-            return -1;
+            return -EINVAL;
     }
+    if (offset < 0 && base + offset < 0)
+        return -EINVAL;
 
-    return 0;
+    if (f->node->type == INODE_DIR && (origin != SEEK_SET || offset != 0))
+        return -EINVAL;
+
+    f->file_position = (size_t)(base + offset);
+    return (int64_t)f->file_position;
+}
+
+int vfs_readdir(const int fd, struct vfs_dirent* out)
+{
+    struct file_s* f = get_file(fd);
+    if (f == nullptr)
+        return -EBADF;
+    if (f->node->type != INODE_DIR)
+        return -ENOTDIR;
+    if (f->node->fops == nullptr || f->node->fops->readdir == nullptr)
+        return -EINVAL;
+    return f->node->fops->readdir(f, out);
 }
 
 
@@ -292,6 +315,39 @@ int vfs_stat(const int fd, vfs_stat_t* st)
 
     st->size = f->node->size;
     st->type = f->node->type;
+    st->ino = f->node->id;
+    return 0;
+}
+
+int vfs_normalize_path(const char* base, const char* path, char* out)
+{
+    size_t len = 0;
+    out[len++] = '/';
+
+    for (int pass = path[0] == '/' ? 1 : 0; pass < 2; pass++)
+    {
+        const char* p = pass == 0 ? base : path;
+        while (*p != '\0')
+        {
+            while (*p == '/') p++;
+            if (*p == '\0') break;
+            size_t n = 0;
+            while (p[n] != '/' && p[n] != '\0') n++;
+
+            if (n == 2 && p[0] == '.' && p[1] == '.') {
+                while (len > 1 && out[len - 1] != '/') len--;
+                if (len > 1) len--;
+            } else if (n != 1 || p[0] != '.') {
+                if (len + (len > 1) + n >= VFS_PATH_MAX)
+                    return -ENAMETOOLONG;
+                if (len > 1) out[len++] = '/';
+                memcpy(out + len, p, n);
+                len += n;
+            }
+            p += n;
+        }
+    }
+    out[len] = '\0';
     return 0;
 }
 

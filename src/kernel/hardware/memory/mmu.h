@@ -3,9 +3,8 @@
 
 #include <os/stdint.h>
 #include <os/stddef.h>
-#include <os/stdbool.h> // Process VM: bool for setup_uvm / copy_uvm
+#include <os/stdbool.h>
 
-// Flags for page table entries
 #define MMU_PRESENT       0x001
 #define MMU_WRITABLE      0x002
 #define MMU_USER          0x004
@@ -16,7 +15,7 @@
 
 #define PAGE_SIZE         0x1000
 #define USER_VIRTUAL_BASE 0x8000000000ULL
-#define USER_MEMORY_SIZE  (16 * PAGE_SIZE) // 64KB per process: code, data and stack
+#define USER_MEMORY_SIZE  (16 * PAGE_SIZE)
 
 typedef struct {
     uint64_t* pml4;
@@ -28,7 +27,6 @@ typedef struct {
     size_t num_pt;
 } mmu_context_t;
 
-// External interface
 void mmu_initialize(void);
 int  map_page(uint64_t virtual_addr, uint64_t physical_addr, uint64_t flags);
 void unmap_page(uint64_t virtual_addr);
@@ -39,8 +37,8 @@ void  free_vm(uint64_t pml4_addr);
 
 int      map_page_in(uint64_t pml4_addr, uint64_t virtual_addr, uint64_t physical_addr, uint64_t flags);
 uint64_t setup_kvm(void);
-bool     setup_uvm(uint64_t pml4_addr, uint64_t start_location, size_t size);
-bool     copy_uvm(uint64_t new_pml4, uint64_t current_pml4);
+uint64_t mmu_kernel_page_map(void);
+uint64_t* mmu_find_pte(uint64_t pml4_addr, uint64_t virtual_addr);
 void     switch_vm(uint64_t pml4_addr);
 uint64_t read_cr3(void);
 

@@ -5,12 +5,14 @@
 #include <drivers/timer/rtc.h>
 #include <drivers/timer/pit.h>
 #include <drivers/syscalls/syscalls.h>
+#include <drivers/net/socket/protosw.h>
 
 #include "video/LFB.h"
 
 static void register_drivers()
 {
     syscalls_initialize();
+    protosw_initialize();
     pit_initialize(PIT_DEFAULT_HZ);
     ps2_keyboard_initialize();
     rtc_initialize();

@@ -9,6 +9,7 @@ typedef uint32_t socklen_t;
 enum address_family
 {
     AF_UNSPEC = 0,
+    AF_UNIX = 1,
     AF_INET = 2,
     AF_INET6 = 10
 };

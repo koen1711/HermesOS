@@ -89,3 +89,17 @@ void free_physical_pages(void* first, const size_t count) {
         free_physical_page((uint8_t*)first + i * 0x1000);
     }
 }
+
+size_t pmm_total_pages() {
+    return total_pages;
+}
+
+size_t pmm_free_pages() {
+    size_t free = 0;
+    for (size_t page = 0; page < total_pages; page++) {
+        if (!TEST_BIT(physical_pages, page)) {
+            free++;
+        }
+    }
+    return free;
+}

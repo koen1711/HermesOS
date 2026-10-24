@@ -5,6 +5,7 @@
 #include <hardware/interrupts/irq.h>
 #include "codes.h"
 #include "drivers/terminal/terminal.h"
+#include "drivers/terminal/tty.h"
 
 int ps2_keyboard_initialize() {
     port_clear_read_buffer(COMMAND_PORT, DATA_PORT);
@@ -34,7 +35,6 @@ void ps2_keyboard_interrupt_handler(uint8_t irq, void* ctx) {
     static uint8_t shift = 0;
     static uint8_t alt = 0;
 
-    // Check if modifiers changed.
     switch(key) {
         case SC_RELEASE | SC_LSHIFT: shift = 0; break;
         case SC_RELEASE | SC_RSHIFT: shift = 0; break;
@@ -48,11 +48,9 @@ void ps2_keyboard_interrupt_handler(uint8_t irq, void* ctx) {
         case SC_LALT: alt = 0xFF; break;
     }
 
-    // Press or release handler and fix scan code
     if(key & SC_RELEASE)
         key &= ~SC_RELEASE;
 
-    // Virtual Key Code Mapping
     if(key == SC_ESCAPE_CODE) {
         escape = 0xFF;
     }
@@ -146,7 +144,9 @@ void ps2_keyboard_interrupt_handler(uint8_t irq, void* ctx) {
     escape = 0;
 
     if (charKey != '\0' && !keyUp) {
-        terminal_printf("%c", charKey);
+        if (ctrl && charKey >= 'a' && charKey <= 'z')
+            charKey &= 0x1F;
+        tty_input(charKey);
     }
 
 }

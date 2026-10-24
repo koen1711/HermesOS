@@ -52,7 +52,7 @@ static void sock_free(struct socket* so)
 int sock_create(const int domain, const int type, const int protocol, struct socket** out)
 {
     *out = nullptr;
-    if (domain != AF_INET && domain != AF_INET6)
+    if (domain != AF_INET && domain != AF_INET6 && domain != AF_UNIX)
         return -EAFNOSUPPORT;
     struct protosw* pr = protosw_find(domain, type, protocol);
     if (!pr)
@@ -149,7 +149,7 @@ int sock_connect(struct socket* so, const struct sockaddr* addr, const socklen_t
         const uint64_t start = ticks_get();
         while ((so->state & SS_ISCONNECTING) && !so->error) {
             const int werr = sock_wait(&so->rcv, so->snd_timeo, start);
-            // a restart would find the handshake running and say EALREADY: POSIX wants EINTR
+
             if (werr)
                 return werr == -EAGAIN ? -EINPROGRESS : werr == -ERESTARTSYS ? -EINTR : werr;
         }

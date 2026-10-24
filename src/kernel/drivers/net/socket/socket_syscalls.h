@@ -21,6 +21,7 @@ enum socket_syscall_numbers {
     SYSCALL_SOCKETPAIR = 53,
     SYSCALL_SETSOCKOPT = 54,
     SYSCALL_GETSOCKOPT = 55,
+    SYSCALL_ACCEPT4 = 288,
 };
 
 enum socket_type_flags {
@@ -50,6 +51,8 @@ long sys_bind(int fd, const struct sockaddr* addr, socklen_t len);
 long sys_listen(int fd, int backlog);
 long sys_connect(int fd, const struct sockaddr* addr, socklen_t len);
 long sys_accept(int fd, struct sockaddr* addr, socklen_t* len);
+long sys_accept4(int fd, struct sockaddr* addr, socklen_t* len, int flags);
+long sys_socketpair(int domain, int type, int protocol, int* sv);
 long sys_sendto(int fd, const void* buf, size_t len, int flags, const struct sockaddr* dst, socklen_t dst_len);
 long sys_recvfrom(int fd, void* buf, size_t len, int flags, struct sockaddr* src, socklen_t* src_len);
 long sys_sendmsg(int fd, const struct msghdr_s* msg, int flags);

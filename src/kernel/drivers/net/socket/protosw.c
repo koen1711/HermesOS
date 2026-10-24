@@ -3,6 +3,7 @@
 #include <drivers/net/ipv4/ipv4.h>
 #include <drivers/net/udp/udp.h>
 #include <drivers/net/tcp/tcp_usrreq.h>
+#include <drivers/net/unix/unix.h>
 #include <os/errno.h>
 
 #define PROTOSW_MAX_DOMAINS 4
@@ -13,21 +14,26 @@ static uint32_t domain_count;
 
 static struct protosw inet_protos[PROTOSW_MAX_PER_DOMAIN];
 static struct protosw inet6_protos[PROTOSW_MAX_PER_DOMAIN];
+static struct protosw unix_protos[PROTOSW_MAX_PER_DOMAIN];
 static struct domain inet_domain = { .family = AF_INET, .name = "inet", .protosw = inet_protos };
 static struct domain inet6_domain = { .family = AF_INET6, .name = "inet6", .protosw = inet6_protos };
+static struct domain unix_domain = { .family = AF_UNIX, .name = "unix", .protosw = unix_protos };
 
 void protosw_initialize()
 {
     domain_count = 0;
     inet_domain.protosw_count = 0;
     inet6_domain.protosw_count = 0;
+    unix_domain.protosw_count = 0;
     domain_register(&inet_domain);
     domain_register(&inet6_domain);
+    domain_register(&unix_domain);
 
     protosw_register(&inet_domain, &tcp_protosw4);
     protosw_register(&inet_domain, &udp_protosw4);
     protosw_register(&inet6_domain, &tcp_protosw6);
     protosw_register(&inet6_domain, &udp_protosw6);
+    protosw_register(&unix_domain, &unix_stream_protosw);
 }
 
 int domain_register(struct domain* dom)

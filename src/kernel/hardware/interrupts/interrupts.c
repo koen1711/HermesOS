@@ -9,6 +9,7 @@
 #include <drivers/timer/pit.h>
 #include <drivers/scheduler/process.h> // timer: process_yield, exceptions: process_exit
 #include <drivers/scheduler/signal.h>
+#include <hardware/memory/vm.h>
 
 #define EXCEPTION_COUNT   32
 #define PAGE_FAULT_VECTOR 14
@@ -53,7 +54,11 @@ static void handle_exception(const interrupt_context* context)
     uint64_t cr2 = 0;
     asm volatile("mov %%cr2, %0" : "=r"(cr2));
 
-    // a user fault the process has a handler for: trap_handler delivers it on the way out
+    const process_t* current = scheduler_get()->current;
+    if (context->interrupt_number == PAGE_FAULT_VECTOR && current != nullptr && current->vm != nullptr
+        && vm_fault(current->vm, cr2, context->error_code & 2))
+        return;
+
     if (from_user_mode(context) && signal_fault(context, cr2))
         return;
 
@@ -67,7 +72,7 @@ static void handle_exception(const interrupt_context* context)
 
     if (from_user_mode(context)) {
         terminal_printf("killing process %d\n", scheduler_get()->current->pid);
-        process_exit();
+        process_exit_group(signal_for_exception(context->interrupt_number));
     }
 
     terminal_printf("kernel halted\n");
@@ -78,7 +83,7 @@ static void handle_exception(const interrupt_context* context)
 static bool should_preempt(const interrupt_context* context)
 {
     const process_t* current = scheduler_get()->current;
-    if (current == nullptr) // process_initialize has not run yet
+    if (current == nullptr)
         return false;
     return from_user_mode(context) || current->pid == IDLE_PROC_PID;
 }
@@ -90,7 +95,7 @@ void trap_handler(interrupt_context* context)
     else if (context->interrupt_number == SYSCALL_VECTOR)
         handle_syscall(context);
     else if (context->interrupt_number >= IRQ_OFFSET && context->interrupt_number < IRQ_OFFSET + IRQ_MAX_LINES) {
-        handle_pic_interrupt(context); // sends the EOI, so the PIC keeps sending timer ticks after a switch
+        handle_pic_interrupt(context);
 
         if (context->interrupt_number == IRQ_OFFSET + PIT_IRQ && should_preempt(context))
             process_yield();

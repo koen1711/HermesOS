@@ -236,7 +236,7 @@ int sockbuf_timedwait(struct sockbuf* sb, const uint64_t timeout)
     const int err = process_sleep_interruptible(sockbuf_wait_id(sb));
     callout_stop(&timer);
     irq_restore(flags);
-    // like Linux sock_intr_errno: a wait without timeout is restartable, a timed one is not
+
     return err == -EINTR && !timeout ? -ERESTARTSYS : err;
 }
 
@@ -247,6 +247,7 @@ int sockbuf_wait(struct sockbuf* sb)
 
 void sockbuf_wakeup(struct sockbuf* sb)
 {
+    process_wakeup(WAIT_CHANNEL_POLL);
     if (!(sb->flags & SB_WAIT))
         return;
     sb->flags &= ~SB_WAIT;
