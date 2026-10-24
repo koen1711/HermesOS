@@ -74,17 +74,18 @@ bool netisr_pending()
     return false;
 }
 
-void netisr_poll()
+static bool netisr_drain()
 {
     static bool running;
     const uint64_t flags = irq_save();
     if (running) {
         irq_restore(flags);
-        return;
+        return false;
     }
     running = true;
     irq_restore(flags);
 
+    bool did = false;
     bool more = true;
     while (more) {
         more = false;
@@ -99,8 +100,20 @@ void netisr_poll()
                 else
                     netbuf_free_chain(nb);
                 more = true;
+                did = true;
             }
         }
     }
     running = false;
+    return did;
+}
+
+void netisr_poll()
+{
+    netisr_drain();
+}
+
+bool netisr_poll_pending()
+{
+    return netisr_pending() && netisr_drain();
 }

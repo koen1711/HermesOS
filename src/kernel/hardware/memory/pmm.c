@@ -67,3 +67,25 @@ void free_physical_page(void* page) {
         CLEAR_BIT(physical_pages, addr);
     }
 }
+
+void* alloc_physical_pages(const size_t count) {
+    if (count == 0) return NULL;
+    size_t run = 0;
+    for (size_t page = 0; page < total_pages; page++) {
+        run = TEST_BIT(physical_pages, page) ? 0 : run + 1;
+        if (run == count) {
+            const size_t first = page + 1 - count;
+            for (size_t i = first; i <= page; i++) {
+                SET_BIT(physical_pages, i);
+            }
+            return (void*)(physical_base + (first * 0x1000));
+        }
+    }
+    return NULL;
+}
+
+void free_physical_pages(void* first, const size_t count) {
+    for (size_t i = 0; i < count; i++) {
+        free_physical_page((uint8_t*)first + i * 0x1000);
+    }
+}

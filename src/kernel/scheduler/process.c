@@ -5,7 +5,6 @@
 #include <hardware/memory/alloc.h>
 
 #include "drivers/terminal/terminal.h"
-#include "utils/str/vsnprintf.h"
 
 
 #define INIT_PROC_PATH "/shell"
@@ -281,6 +280,25 @@ static void init_shell_process() {
 
     proc->state = PROC_SLOT_READY;
     dlist_insert_tail(&scheduler.ready, &proc->link);
+}
+
+process_t *process_spawn(const void *program, const size_t size) {
+    if (size > USER_MEMORY_SIZE - STACK_SIZE) {
+        return nullptr;
+    }
+    process_t *proc = create_process();
+    if (proc == nullptr) {
+        return nullptr;
+    }
+    if (!setup_uvm(proc->page_map, (uint64_t)program, size)) {
+        free_physical_page((void*)proc->stack);
+        free_vm(proc->page_map);
+        memset(proc, 0, sizeof(process_t));
+        return nullptr;
+    }
+    proc->state = PROC_SLOT_READY;
+    dlist_insert_tail(&scheduler.ready, &proc->link);
+    return proc;
 }
 
 static process_t *create_process() {

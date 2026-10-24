@@ -144,14 +144,17 @@ void mmu_initialize(void) {
 
 void* vmalloc(size_t size) {
     if (size == 0) return NULL;
-    size = (size + 0xFFF) & ~0xFFF; // Align to page size
-    void* addr = alloc_physical_page();
+    size = (size + 0xFFF) & ~0xFFF;
+    void* addr = alloc_physical_pages(size / 0x1000);
 
     if (!addr) return NULL;
 
     for (size_t i = 0; i < size; i += 0x1000) {
         if (map_page((uintptr_t)addr + i, (uintptr_t)addr + i, MMU_PRESENT | MMU_WRITABLE | MMU_CACHE_DISABLE) < 0) {
-            vfree(addr);
+            for (size_t j = 0; j < i; j += 0x1000) {
+                unmap_page((uintptr_t)addr + j);
+            }
+            free_physical_pages(addr, size / 0x1000);
             return NULL;
         }
     }

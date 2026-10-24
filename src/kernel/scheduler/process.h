@@ -56,5 +56,6 @@ void process_exit();
 void process_wait(int pid);
 int process_fork();
 int process_exec(process_t *proc, const char *filename);
+process_t *process_spawn(const void *program, size_t size);
 
 #endif //PROCESS_H
