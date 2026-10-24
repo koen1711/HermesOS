@@ -44,6 +44,7 @@ size_t sockbuf_space(const struct sockbuf* sb);
 void sockbuf_copy(const struct sockbuf* sb, size_t offset, size_t len, void* out);
 
 int sockbuf_wait(struct sockbuf* sb);
+int sockbuf_timedwait(struct sockbuf* sb, uint64_t timeout);
 void sockbuf_wakeup(struct sockbuf* sb);
 
 #endif //NET_SOCKET_SOCKBUF_H
