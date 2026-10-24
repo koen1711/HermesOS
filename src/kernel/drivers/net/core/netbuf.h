@@ -10,15 +10,21 @@
 #define NETBUF_CLUSTER_SIZE 2048
 #define NETBUF_HEADROOM     64
 
-#define NETBUF_PKTHDR   0x0001
-#define NETBUF_EXT      0x0002
-#define NETBUF_BCAST    0x0004
-#define NETBUF_MCAST    0x0008
+enum netbuf_flags
+{
+    NETBUF_PKTHDR = 0x0001,
+    NETBUF_EXT = 0x0002,
+    NETBUF_BCAST = 0x0004,
+    NETBUF_MCAST = 0x0008
+};
 
-#define NETBUF_CSUM_IP_VALID  0x0001
-#define NETBUF_CSUM_L4_VALID  0x0002
-#define NETBUF_CSUM_IP_TX     0x0100
-#define NETBUF_CSUM_L4_TX     0x0200
+enum netbuf_csum_flags
+{
+    NETBUF_CSUM_IP_VALID = 0x0001,
+    NETBUF_CSUM_L4_VALID = 0x0002,
+    NETBUF_CSUM_IP_TX = 0x0100,
+    NETBUF_CSUM_L4_TX = 0x0200
+};
 
 struct netif;
 

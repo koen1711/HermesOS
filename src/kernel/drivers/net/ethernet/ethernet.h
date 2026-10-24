@@ -10,10 +10,13 @@
 #define ETH_MAX_LEN     1514    // without FCS
 #define ETH_MTU         1500
 
-#define ETHERTYPE_IPV4  0x0800
-#define ETHERTYPE_ARP   0x0806
-#define ETHERTYPE_VLAN  0x8100
-#define ETHERTYPE_IPV6  0x86DD
+enum eth_type
+{
+    ETHERTYPE_IPV4 = 0x0800,
+    ETHERTYPE_ARP = 0x0806,
+    ETHERTYPE_VLAN = 0x8100,
+    ETHERTYPE_IPV6 = 0x86DD
+};
 
 struct eth_header {
     uint8_t dst[ETH_ADDR_LEN];
@@ -26,12 +29,12 @@ extern const uint8_t eth_broadcast_addr[ETH_ADDR_LEN];
 struct netif;
 struct netbuf;
 
-void eth_ifattach(struct netif* nif, const uint8_t* hwaddr);
+void eth_ifattach(struct netif* nif, const uint8_t* hw_addr);
 void eth_ifdetach(struct netif* nif);
 
 void eth_input(struct netif* nif, struct netbuf* nb);
 
-int eth_output_frame(struct netif* nif, struct netbuf* nb, const uint8_t* dst_hw, uint16_t ethertype);
+int eth_output_frame(struct netif* nif, struct netbuf* nb, const uint8_t* dst_hw, uint16_t type);
 int eth_output(struct netif* nif, struct netbuf* nb, const void* dst, uint16_t family);
 
 bool eth_addr_is_broadcast(const uint8_t* addr);

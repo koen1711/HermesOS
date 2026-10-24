@@ -203,13 +203,13 @@ int netif_set_mtu(struct netif* nif, const uint32_t mtu)
     return 0;
 }
 
-int netif_set_hwaddr(struct netif* nif, const uint8_t* hwaddr, const uint8_t len)
+int netif_set_hw_addr(struct netif* nif, const uint8_t* hwaddr, const uint8_t len)
 {
     if (len > NETIF_HWADDR_LEN)
         return -EINVAL;
 
-    memcpy(nif->hwaddr, hwaddr, len);
-    nif->hwaddr_len = len;
+    memcpy(nif->hw_addr, hwaddr, len);
+    nif->hw_addr_len = len;
     return 0;
 }
 

@@ -9,25 +9,37 @@
 #define NETIF_NAME_LEN   16
 #define NETIF_HWADDR_LEN 6
 
-#define NETIF_UP        0x0001
-#define NETIF_RUNNING   0x0002
-#define NETIF_BROADCAST 0x0004
-#define NETIF_LOOPBACK  0x0008
-#define NETIF_MULTICAST 0x0010
-#define NETIF_PROMISC   0x0020
+enum netif_flags
+{
+    NETIF_UP = 0x0001,
+    NETIF_RUNNING = 0x0002,
+    NETIF_BROADCAST = 0x0004,
+    NETIF_LOOPBACK = 0x0008,
+    NETIF_MULTICAST = 0x0010,
+    NETIF_PROMISC = 0x0020
+};
 
-#define NETIF_LINK_UNKNOWN 0
-#define NETIF_LINK_DOWN    1
-#define NETIF_LINK_UP      2
+enum netif_link_state
+{
+    NETIF_LINK_UNKNOWN = 0,
+    NETIF_LINK_DOWN = 1,
+    NETIF_LINK_UP = 2
+};
 
-#define NETIF_TYPE_ETHERNET 1
-#define NETIF_TYPE_LOOPBACK 2
+enum netif_type
+{
+    NETIF_TYPE_ETHERNET = 1,
+    NETIF_TYPE_LOOPBACK = 2
+};
 
-#define NETIF_IOCTL_SET_FLAGS  1
-#define NETIF_IOCTL_SET_MTU    2
-#define NETIF_IOCTL_ADD_MULTI  3
-#define NETIF_IOCTL_DEL_MULTI  4
-#define NETIF_IOCTL_GET_MEDIA  5
+enum netif_ioctl_cmd
+{
+    NETIF_IOCTL_SET_FLAGS = 1,
+    NETIF_IOCTL_SET_MTU = 2,
+    NETIF_IOCTL_ADD_MULTI = 3,
+    NETIF_IOCTL_DEL_MULTI = 4,
+    NETIF_IOCTL_GET_MEDIA = 5
+};
 
 struct netif;
 struct netbuf;
@@ -55,8 +67,8 @@ struct netif {
     uint32_t flags;
     uint32_t link_state;
     uint32_t mtu;
-    uint8_t hwaddr[NETIF_HWADDR_LEN];
-    uint8_t hwaddr_len;
+    uint8_t hw_addr[NETIF_HWADDR_LEN];
+    uint8_t hw_addr_len;
 
     const struct netif_ops* ops;
     void* softc;
@@ -94,7 +106,7 @@ struct netif* netif_next(const struct netif* nif);
 int netif_up(struct netif* nif);
 int netif_down(struct netif* nif);
 int netif_set_mtu(struct netif* nif, uint32_t mtu);
-int netif_set_hwaddr(struct netif* nif, const uint8_t* hwaddr, uint8_t len);
+int netif_set_hw_addr(struct netif* nif, const uint8_t* hwaddr, uint8_t len);
 int netif_ioctl(struct netif* nif, uint32_t cmd, void* arg);
 void netif_link_state_change(struct netif* nif, uint32_t link_state);
 

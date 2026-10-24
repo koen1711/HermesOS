@@ -11,22 +11,31 @@
 #define IPV4_MAX_HEADER_LEN 60
 #define IPV4_DEFAULT_TTL    64
 
-#define IPPROTO_IP      0
-#define IPPROTO_ICMP    1
-#define IPPROTO_TCP     6
-#define IPPROTO_UDP     17
-#define IPPROTO_IPV6    41
-#define IPPROTO_ICMPV6  58
-#define IPPROTO_RAW     255
+enum ip_protocol
+{
+    IPPROTO_IP = 0,
+    IPPROTO_ICMP = 1,
+    IPPROTO_TCP = 6,
+    IPPROTO_UDP = 17,
+    IPPROTO_IPV6 = 41,
+    IPPROTO_ICMPV6 = 58,
+    IPPROTO_RAW = 255
+};
 
-#define IPV4_RF      0x8000
-#define IPV4_DF      0x4000
-#define IPV4_MF      0x2000
-#define IPV4_OFFMASK 0x1fff
+enum ipv4_frag_flags
+{
+    IPV4_RF = 0x8000,
+    IPV4_DF = 0x4000,
+    IPV4_MF = 0x2000,
+    IPV4_OFFMASK = 0x1fff
+};
 
-#define IPV4_OUTPUT_FORWARDING  0x01
-#define IPV4_OUTPUT_RAW         0x02
-#define IPV4_OUTPUT_ALLOW_BCAST 0x04
+enum ipv4_output_flags
+{
+    IPV4_OUTPUT_FORWARDING = 0x01,
+    IPV4_OUTPUT_RAW = 0x02,
+    IPV4_OUTPUT_ALLOW_BCAST = 0x04
+};
 
 #define INADDR_ANY       0x00000000
 #define INADDR_BROADCAST 0xffffffff

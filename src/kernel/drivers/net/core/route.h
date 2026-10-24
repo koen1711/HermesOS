@@ -6,11 +6,14 @@
 #include <drivers/net/ipv4/ipv4.h>
 #include <drivers/net/ipv6/ipv6.h>
 
-#define ROUTE_UP      0x01
-#define ROUTE_GATEWAY 0x02
-#define ROUTE_HOST    0x04
-#define ROUTE_STATIC  0x08
-#define ROUTE_DYNAMIC 0x10
+enum route_flags
+{
+    ROUTE_UP = 0x01,
+    ROUTE_GATEWAY = 0x02,
+    ROUTE_HOST = 0x04,
+    ROUTE_STATIC = 0x08,
+    ROUTE_DYNAMIC = 0x10
+};
 
 struct netif;
 
@@ -50,7 +53,7 @@ int route_del6(const struct in6_addr* dst, uint8_t prefix_len);
 const struct route_nexthop* route_lookup6(const struct in6_addr* dst);
 int route_set_default6(const struct in6_addr* gw, struct netif* nif);
 
-void route_flush_netif(struct netif* nif);
+void route_flush_netif(const struct netif* nif);
 
 void route_timer();
 

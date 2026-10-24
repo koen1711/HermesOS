@@ -19,16 +19,15 @@ static bool eth_addr_eq(const uint8_t* a, const uint8_t* b)
     return true;
 }
 
-void eth_ifattach(struct netif* nif, const uint8_t* hwaddr)
+void eth_ifattach(struct netif* nif, const uint8_t* hw_addr)
 {
-    if (hwaddr)
-        memcpy(nif->hwaddr, hwaddr, ETH_ADDR_LEN);
+    if (hw_addr)
+        memcpy(nif->hw_addr, hw_addr, ETH_ADDR_LEN);
     else
-        memset(nif->hwaddr, 0, ETH_ADDR_LEN);
+        memset(nif->hw_addr, 0, ETH_ADDR_LEN);
 
-    // everything set up before the interface becomes visible in the list
     nif->mtu = ETH_MTU;
-    nif->hwaddr_len = ETH_ADDR_LEN;
+    nif->hw_addr_len = ETH_ADDR_LEN;
     nif->flags |= NETIF_BROADCAST | NETIF_MULTICAST;
     nif->input = eth_input;
     nif->output = eth_output;
@@ -43,8 +42,6 @@ void eth_ifdetach(struct netif* nif)
     arp_ifdetach(nif);
 }
 
-// Frame from the driver: check the destination, strip the header and hand the payload
-// to the protocol through netisr (FreeBSD ether_input / ether_demux)
 void eth_input(struct netif* nif, struct netbuf* nb)
 {
     nb = netbuf_pullup(nb, ETH_HEADER_LEN);
@@ -52,23 +49,23 @@ void eth_input(struct netif* nif, struct netbuf* nb)
         nif->stats.rx_errors++;
         return;
     }
-    const struct eth_header* eh = (const struct eth_header*)nb->data;
+    const auto eh = (const struct eth_header*)nb->data;
 
     if (eth_addr_is_broadcast(eh->dst)) {
         nb->flags |= NETBUF_BCAST;
     } else if (eth_addr_is_multicast(eh->dst)) {
         nb->flags |= NETBUF_MCAST;
-    } else if (!eth_addr_eq(eh->dst, nif->hwaddr) && !(nif->flags & NETIF_PROMISC)) {
+    } else if (!eth_addr_eq(eh->dst, nif->hw_addr) && !(nif->flags & NETIF_PROMISC)) {
         nif->stats.rx_dropped++;
         netbuf_free_chain(nb);
         return;
     }
 
-    const uint16_t ethertype = ntohs(eh->ethertype);
+    const uint16_t type = ntohs(eh->ethertype);
     netbuf_adj(nb, ETH_HEADER_LEN);
     nb->l3_offset = 0;
 
-    switch (ethertype) {
+    switch (type) {
     case ETHERTYPE_IPV4:
         netisr_queue(NETISR_IP, nb);
         break;
@@ -85,24 +82,20 @@ void eth_input(struct netif* nif, struct netbuf* nb)
     }
 }
 
-// Put an Ethernet header in front of nb and send it. Takes ownership of nb.
-int eth_output_frame(struct netif* nif, struct netbuf* nb, const uint8_t* dst_hw, const uint16_t ethertype)
+int eth_output_frame(struct netif* nif, struct netbuf* nb, const uint8_t* dst_hw, const uint16_t type)
 {
     nb = netbuf_prepend(nb, ETH_HEADER_LEN);
     if (!nb) {
         nif->stats.tx_errors++;
         return -ENOBUFS;
     }
-    struct eth_header* eh = (struct eth_header*)nb->data;
+    const auto eh = (struct eth_header*)nb->data;
     memcpy(eh->dst, dst_hw, ETH_ADDR_LEN);
-    memcpy(eh->src, nif->hwaddr, ETH_ADDR_LEN);
-    eh->ethertype = htons(ethertype);
-    // frames under 60 bytes are padded by the NIC (e1000 TCTL.PSP)
+    memcpy(eh->src, nif->hw_addr, ETH_ADDR_LEN);
+    eh->ethertype = htons(type);
     return netif_output(nif, nb);
 }
 
-// nif->output: dst is the next hop (struct in_addr* for AF_INET). Resolves the link-layer
-// address first; while ARP is pending it keeps nb and sends it once the reply arrives.
 int eth_output(struct netif* nif, struct netbuf* nb, const void* dst, const uint16_t family)
 {
     uint8_t hw[ETH_ADDR_LEN];
@@ -111,9 +104,9 @@ int eth_output(struct netif* nif, struct netbuf* nb, const void* dst, const uint
     case AF_INET: {
         const int rc = arp_resolve(nif, *(const struct in_addr*)dst, nb, hw);
         if (rc == -EINPROGRESS)
-            return 0;   // queued in the ARP entry
+            return 0;
         if (rc < 0)
-            return rc;  // arp_resolve freed nb
+            return rc;
         return eth_output_frame(nif, nb, hw, ETHERTYPE_IPV4);
     }
     default:
@@ -130,10 +123,9 @@ bool eth_addr_is_broadcast(const uint8_t* addr)
 
 bool eth_addr_is_multicast(const uint8_t* addr)
 {
-    return addr[0] & 0x01;  // I/G bit; broadcast has it set too
+    return addr[0] & 0x01;
 }
 
-// RFC 1112 6.4: 01:00:5e + low 23 bits of the group address
 void eth_map_multicast4(const void* in_addr, uint8_t* out_hw)
 {
     const uint8_t* ip = in_addr;
@@ -145,7 +137,6 @@ void eth_map_multicast4(const void* in_addr, uint8_t* out_hw)
     out_hw[5] = ip[3];
 }
 
-// RFC 2464 7: 33:33 + last 32 bits of the group address
 void eth_map_multicast6(const void* in6_addr, uint8_t* out_hw)
 {
     const uint8_t* ip = in6_addr;
@@ -154,10 +145,9 @@ void eth_map_multicast6(const void* in6_addr, uint8_t* out_hw)
     memcpy(out_hw + 2, ip + 12, 4);
 }
 
-// "aa:bb:cc:dd:ee:ff", out must hold 18 bytes
 void eth_addr_to_str(const uint8_t* addr, char* out)
 {
-    static const char hex[] = "0123456789abcdef";
+    static constexpr char hex[] = "0123456789abcdef";
     for (int i = 0; i < ETH_ADDR_LEN; i++) {
         *out++ = hex[addr[i] >> 4];
         *out++ = hex[addr[i] & 0xf];

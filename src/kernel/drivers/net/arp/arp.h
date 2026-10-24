@@ -7,8 +7,11 @@
 #include <drivers/net/ipv4/ipv4.h>
 
 #define ARP_HTYPE_ETHERNET 1
-#define ARP_OP_REQUEST     1
-#define ARP_OP_REPLY       2
+enum arp_op
+{
+    ARP_OP_REQUEST = 1,
+    ARP_OP_REPLY = 2
+};
 
 #define ARP_MAX_PENDING    4
 #define ARP_MAX_TRIES      5
@@ -64,6 +67,6 @@ struct arp_entry* arp_cache_lookup(struct netif* nif, struct in_addr ip);
 void arp_cache_remove(struct netif* nif, struct in_addr ip);
 void arp_cache_flush(const struct netif* nif);
 
-void arp_timer(const void* arg);
+void arp_timer(void* arg);
 
 #endif //NET_ARP_ARP_H

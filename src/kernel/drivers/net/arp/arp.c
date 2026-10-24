@@ -74,7 +74,7 @@ static int arp_send(struct netif* nif, const uint16_t op, const struct in_addr s
     ah.hardware_len = ETH_ADDR_LEN;
     ah.protocol_len = sizeof(struct in_addr);
     ah.op = htons(op);
-    memcpy(ah.sha, nif->hwaddr, ETH_ADDR_LEN);
+    memcpy(ah.sha, nif->hw_addr, ETH_ADDR_LEN);
     ah.spa = spa;
     if (tha)
         memcpy(ah.tha, tha, ETH_ADDR_LEN);
@@ -177,7 +177,7 @@ void arp_input(struct netbuf* nb)
     if (op != ARP_OP_REQUEST && op != ARP_OP_REPLY)
         return;
 
-    if (arp_hw_eq(ah.sha, nif->hwaddr) || eth_addr_is_multicast(ah.sha))
+    if (arp_hw_eq(ah.sha, nif->hw_addr) || eth_addr_is_multicast(ah.sha))
         return;
 
     const bool for_us = arp_is_ours(nif, ah.tpa);
@@ -371,7 +371,7 @@ void arp_cache_flush(const struct netif* nif)
     spinlock_release_irqrestore(&arp_lock, flags);
 }
 
-void arp_timer(const void* arg)
+void arp_timer(void* arg)
 {
     (void)arg;
     const uint64_t now = ticks_get();
