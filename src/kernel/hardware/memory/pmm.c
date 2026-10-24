@@ -7,7 +7,7 @@
 
 extern void* _kernel_virtual_end;
 
-#define MAX_PHYSICAL_PAGES 65536 // Support up to 256MB (65536 * 4K)
+#define MAX_PHYSICAL_PAGES 65536
 
 static uint64_t physical_pages[MAX_PHYSICAL_PAGES / 64]; // Bitmap
 static uint16_t shared_refs[MAX_PHYSICAL_PAGES];
@@ -23,22 +23,20 @@ static size_t total_pages = 0;
 
 void pmm_initialize(const multiboot_info_t mb_info) {
     for (size_t i = 0; i < MAX_PHYSICAL_PAGES / 64; i++) {
-        physical_pages[i] = ~0ULL; // Mark all as used
+        physical_pages[i] = ~0ULL;
     }
 
-    const uintptr_t kernel_end = (uintptr_t)&_kernel_virtual_end + 2048; // Assuming kernel occupies 2048 bytes after _kernel_virtual_end
+    const uintptr_t kernel_end = (uintptr_t)&_kernel_virtual_end + 2048;
 
     for (size_t i = 0; i < mb_info.region_count && i < MAX_MEMORY_REGIONS; i++) {
         const memory_region_t* mmap = &mb_info.regions[i];
-        if (mmap->type != 1) continue; // Skip non-available regions
+        if (mmap->type != 1) continue;
 
         const uintptr_t start = mmap->addr;
-        uintptr_t end = start + mmap->length;
-
-        if (end > 0x100000000ULL) end = 0x100000000ULL; // Cap at 4GB for now
+        const uintptr_t end = start + mmap->length;
 
         for (uintptr_t addr = start; addr + 0x1000 <= end; addr += 0x1000) {
-            if (addr < kernel_end) continue; // Skip kernel occupied
+            if (addr < kernel_end) continue;
 
             const size_t page = (addr - physical_base) / 0x1000;
             if (page >= MAX_PHYSICAL_PAGES) continue;
@@ -56,7 +54,7 @@ void* alloc_physical_page() {
             return (void*)(physical_base + (page * 0x1000));
         }
     }
-    return NULL; // Out of memory
+    return NULL;
 }
 
 void free_physical_page(void* page) {

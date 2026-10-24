@@ -2,8 +2,7 @@
 
 #include "mmu.h"
 #include "pmm.h"
-#include "drivers/terminal/terminal.h"
-#include "hardware/interrupts/panic.h"
+#include <hardware/interrupts/panic.h>
 
 #define DEFAULT_BLOCK_SIZE 4096
 #define BLOCKS 8192
@@ -18,7 +17,7 @@ struct memory_block_s
 
 typedef struct memory_block_s memory_block_t;
 
-memory_block_t* first_free_block = NULL;  // Pointer to the first free memory block
+memory_block_t* first_free_block = nullptr;
 
 void memory_initialize(const multiboot_info_t mb_info) {
     pmm_initialize(mb_info);
@@ -26,54 +25,43 @@ void memory_initialize(const multiboot_info_t mb_info) {
 
     first_free_block = (memory_block_t*)vmalloc(DEFAULT_BLOCK_SIZE * BLOCKS);
 
-    if (first_free_block == NULL) {
+    if (first_free_block == nullptr) {
         panic("Failed to allocate initial memory block", __FILE__, __LINE__);
         return;
     }
 
     first_free_block->size = DEFAULT_BLOCK_SIZE * BLOCKS;
-    first_free_block->next = NULL;
+    first_free_block->next = nullptr;
 }
 
 uint64_t get_amount_of_free_memory() {
     uint64_t total_free = 0;
-    for (const memory_block_t* current = first_free_block; current != NULL; current = current->next) {
+    for (const memory_block_t* current = first_free_block; current != nullptr; current = current->next) {
         total_free += current->size;
     }
     return total_free;
 }
 
-void get_memory_overview() {
-    // Print debug info about memory
-    const uint64_t total_size = get_amount_of_free_memory();
-    terminal_printf("Memory Overview:\n");
-    terminal_printf("Total Memory: %lu bytes\n", total_size);
-    terminal_printf("Free Blocks:\n");
-    for (const memory_block_t* current = first_free_block; current != NULL; current = current->next) {
-        terminal_printf(" - Block at %p: %lu bytes\n", (void*)current, current->size);
-    }
-}
-
 void* malloc(const uintptr_t size) {
-    if (size == 0) return NULL;
+    if (size == 0) return nullptr;
 
     const uintptr_t aligned_size = (size + 7) & ~7;
 
-    if (first_free_block == NULL) {
+    if (first_free_block == nullptr) {
         panic("No free memory blocks available", __FILE__, __LINE__);
-        return NULL;
+        return nullptr;
     }
 
     memory_block_t* current = first_free_block;
-    memory_block_t* previous = NULL;
+    memory_block_t* previous = nullptr;
 
-    while (current != NULL) {
+    while (current != nullptr) {
         if (current->size >= aligned_size) {
             const uintptr_t total_needed = aligned_size + sizeof(memory_block_t);
 
             if (current->size >= total_needed + 8) {
                 uint8_t* split_addr = (uint8_t*)current + sizeof(memory_block_t) + aligned_size;
-                memory_block_t* split_block = (memory_block_t*)split_addr;
+                const auto split_block = (memory_block_t*)split_addr;
 
                 split_block->size = current->size - total_needed;
                 split_block->next = current->next;
@@ -82,14 +70,14 @@ void* malloc(const uintptr_t size) {
 
 
 
-                if (previous != NULL)
+                if (previous != nullptr)
                 {
                     previous->next = split_block;
                 } else
                     first_free_block = split_block;
 
             } else {
-                if (previous != NULL)
+                if (previous != nullptr)
                     previous->next = current->next;
                 else
                     first_free_block = current->next;
@@ -104,30 +92,17 @@ void* malloc(const uintptr_t size) {
         current = current->next;
     }
 
-    // Out of memory
-    terminal_printf("malloc: Out of memory! Requested size: %lu bytes\n", aligned_size);
-    if (previous != NULL)
-    {
-        terminal_printf("First free block size: %lu bytes at address %p\n", first_free_block->size, (void*)first_free_block);
-        terminal_printf("Last free block size: %lu bytes at address %p\n", previous->size, (void*)previous);
-        get_memory_overview();
-    }
-    else
-        terminal_printf("No free blocks available.\n");
-
-    panic("Out of memory in malloc!", __FILE__, __LINE__);
-    return NULL;
+    return nullptr;
 }
 
 static void coalesce_free_blocks() {
     memory_block_t* current = first_free_block;
 
-    while (current != NULL && current->next != NULL) {
+    while (current != nullptr && current->next != nullptr) {
         const uint8_t* current_end = (uint8_t*)current + sizeof(memory_block_t) + current->size;
         const uint8_t* next_start = (uint8_t*)current->next;
 
         if (current_end == next_start) {
-            // Blocks are adjacent, coalesce them
             const memory_block_t* next_block = current->next;
             current->size += sizeof(memory_block_t) + next_block->size;
             current->next = next_block->next;
@@ -138,9 +113,9 @@ static void coalesce_free_blocks() {
 }
 
 void free(void* ptr) {
-    if (ptr == NULL) return;
+    if (ptr == nullptr) return;
 
-    memory_block_t* block_to_free = (memory_block_t*)((uint8_t*)ptr - sizeof(memory_block_t));
+    const auto block_to_free = (memory_block_t*)((uint8_t*)ptr - sizeof(memory_block_t));
 
     if (!first_free_block || block_to_free < first_free_block) {
         block_to_free->next = first_free_block;
@@ -158,9 +133,10 @@ void free(void* ptr) {
 }
 
 void memcpy(void* dest, const void* src, const uintptr_t size) {
-    for (uintptr_t i = 0; i < size; i++) {
-        ((uint8_t*)dest)[i] = ((uint8_t*)src)[i];
-    }
+    uintptr_t qwords = size / 8;
+    uintptr_t bytes = size % 8;
+    asm volatile("rep movsq" : "+D"(dest), "+S"(src), "+c"(qwords) : : "memory");
+    asm volatile("rep movsb" : "+D"(dest), "+S"(src), "+c"(bytes) : : "memory");
 }
 
 bool memcmp(void* v1, void* v2, const uintptr_t size) {
@@ -173,29 +149,27 @@ bool memcmp(void* v1, void* v2, const uintptr_t size) {
 }
 
 void* memset(void* dest, const int value, const uintptr_t size) {
-    for (uintptr_t i = 0; i < size; i++) {
-        ((uint8_t*)dest)[i] = (uint8_t)value;
-    }
+    void* d = dest;
+    const uint64_t pattern = 0x0101010101010101ULL * (uint8_t)value;
+    uintptr_t qwords = size / 8;
+    uintptr_t bytes = size % 8;
+    asm volatile("rep stosq" : "+D"(d), "+c"(qwords) : "a"(pattern) : "memory");
+    asm volatile("rep stosb" : "+D"(d), "+c"(bytes) : "a"(pattern) : "memory");
     return dest;
 }
 
 void* calloc(const uintptr_t num, const uintptr_t size) {
-    void* result = malloc(num * size);
-    if (result) {
-        for (uintptr_t i = 0; i < num * size; i++) {
-            ((uint8_t*)result)[i] = 0;
-        }
-    }
-    return result;
+    return malloc(num * size);
 }
 
 void* memmove(void* dest, const void* src, const uintptr_t size) {
-    if (dest < src) {
+    if (dest <= src || (const uint8_t*)src + size <= (uint8_t*)dest) {
         memcpy(dest, src, size);
-    } else {
-        for (uintptr_t i = size; i > 0; i--) {
-            ((uint8_t*)dest)[i - 1] = ((uint8_t*)src)[i - 1];
-        }
+    } else if (size) {
+        void* d = (uint8_t*)dest + size - 1;
+        const void* s = (const uint8_t*)src + size - 1;
+        uintptr_t n = size;
+        asm volatile("std\n\trep movsb\n\tcld" : "+D"(d), "+S"(s), "+c"(n) : : "memory");
     }
     return dest;
 }
@@ -208,12 +182,12 @@ void strncpy(char* dest, const char* src, const size_t n) {
 }
 
 void* realloc(void* ptr, const uintptr_t size) {
-    if (ptr == NULL) {
+    if (ptr == nullptr) {
         return malloc(size);
     }
     if (size == 0) {
         free(ptr);
-        return NULL;
+        return nullptr;
     }
     void* new_ptr = malloc(size);
     if (new_ptr) {

@@ -83,6 +83,7 @@ typedef struct {
     uint32_t bar4;
     uint32_t atapi_lba;
     uint32_t atapi_sector_size;
+    uint8_t bounce[ATA_SECTOR_SIZE];
 } ata_device;
 
 static ata_device ata_primary_master   = {.io_base = 0x1F0, .control = 0x3F6, .slave = 0};

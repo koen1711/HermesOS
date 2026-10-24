@@ -135,7 +135,6 @@ static void fsinfo_sync(fat32_sb_info *sbi)
     sbi->fsinfo_dirty = false;
 }
 
-/* a zeroed cluster, linked after prev when there is one; 0 when the disk is full */
 static uint32_t alloc_cluster(fat32_sb_info *sbi, const uint32_t prev)
 {
     const uint32_t total = sbi->total_clusters;
@@ -177,9 +176,6 @@ static void free_chain(fat32_sb_info *sbi, uint32_t c)
     }
 }
 
-/* ── cluster chains of open files ────────────────────────────────── */
-
-/* the cluster holding byte pos of the file; grow allocates the clusters up to it */
 static int chain_seek(fat32_inode_info *fi, const uint64_t pos, const bool grow, uint32_t *out)
 {
     fat32_sb_info *sbi = fi->sbi;
@@ -217,8 +213,6 @@ static int chain_seek(fat32_inode_info *fi, const uint64_t pos, const bool grow,
     *out = c;
     return 0;
 }
-
-/* ── directory entries ───────────────────────────────────────────── */
 
 static uint16_t fat_date()
 {
@@ -265,7 +259,6 @@ static char fat32_upper(const char c)
     return c >= 'a' && c <= 'z' ? (char)(c - 'a' + 'A') : c;
 }
 
-/* the NT reserved byte marks an all-lowercase base name or extension */
 static void fat32_short_name(const fat32_directory_entry *de,
                              char *out, uint32_t out_size)
 {
@@ -291,10 +284,10 @@ static void fat32_short_name(const fat32_directory_entry *de,
 
 struct dir_iter {
     fat32_sb_info *sbi;
-    uint32_t cluster;       /* holds pos */
+    uint32_t cluster;
     uint32_t last_cluster;
     uint32_t pos;
-    uint32_t end_pos;       /* where the 0x00 end marker was found */
+    uint32_t end_pos;
     bool loaded;
     uint8_t *buf;
 };
@@ -329,7 +322,6 @@ static void iter_done(struct dir_iter *it)
     it->buf = nullptr;
 }
 
-/* 1 with the raw entry at it->pos, 0 at the end of the chain */
 static int iter_read(struct dir_iter *it, fat32_directory_entry *raw)
 {
     const uint32_t cs = cluster_byte_size(it->sbi);
@@ -350,7 +342,6 @@ static int iter_read(struct dir_iter *it, fat32_directory_entry *raw)
     return 1;
 }
 
-/* the next live entry with its long name, 0 at the end of the directory */
 static int iter_next(struct dir_iter *it, struct dir_found *f)
 {
     bool lfn_valid = false;
@@ -463,7 +454,6 @@ static bool short_char_ok(const char c)
     return strchr("$%'-_@~`!(){}^#&", c) != nullptr;
 }
 
-/* 0 when the part is not all one case: 1 lowercase (or no letters), 2 uppercase */
 static int part_case(const char *s, const size_t n)
 {
     bool lower = false, upper = false;
@@ -474,7 +464,6 @@ static int part_case(const char *s, const size_t n)
     return lower && upper ? 0 : upper ? 2 : 1;
 }
 
-/* the 8.3 alias; *lfn is false when the name fits 8.3 exactly (case kept in the NT byte) */
 static int make_short_name(fat32_sb_info *sbi, const uint32_t dir_first, const char *name, uint8_t raw[11],
                            uint8_t *nt, bool *lfn)
 {
@@ -552,7 +541,6 @@ static int make_short_name(fat32_sb_info *sbi, const uint32_t dir_first, const c
     return -EEXIST;
 }
 
-/* count free entry slots in a row, extending the directory when it runs out */
 static int dir_alloc_slots(fat32_sb_info *sbi, const uint32_t dir_first, const uint32_t count, uint32_t *pos_out)
 {
     struct dir_iter it;
@@ -667,8 +655,6 @@ static void set_entry_cluster(fat32_directory_entry *de, const uint32_t c)
     de->cluster_high = (uint16_t)(c >> 16);
     de->cluster_low = (uint16_t)c;
 }
-
-/* ── inodes ──────────────────────────────────────────────────────── */
 
 static fat32_inode_info *registry_find(const fat32_sb_info *sbi, const uint32_t dir_cluster, const uint32_t pos)
 {
@@ -796,8 +782,6 @@ static void fat32_release(inode_t *inode)
     free(inode);
 }
 
-/* ── file data ───────────────────────────────────────────────────── */
-
 static ssize_t fat32_file_read(file_t *file, void *user_buf, size_t len)
 {
     fat32_inode_info *fi = file->node->private_data;
@@ -819,13 +803,23 @@ static ssize_t fat32_file_read(file_t *file, void *user_buf, size_t len)
     size_t copied = 0;
     uint32_t in = (uint32_t)(pos % cs);
     while (copied < len && valid_cluster(sbi, clus)) {
-        const uint32_t n = len - copied < cs - in ? (uint32_t)(len - copied) : cs - in;
-        if (bdev_read(sbi, cluster_to_byte(sbi, clus) + in, n, (uint8_t *)user_buf + copied) != 0)
+        const uint32_t run_start = clus;
+        uint32_t n = len - copied < cs - in ? (uint32_t)(len - copied) : cs - in;
+        uint32_t next = 0;
+        while (copied + n < len) {
+            next = fat32_next_cluster(sbi, clus);
+            if (next != clus + 1 || !valid_cluster(sbi, next))
+                break;
+            fi->cache_index++;
+            fi->cache_cluster = next;
+            clus = next;
+            n += len - copied - n < cs ? (uint32_t)(len - copied - n) : cs;
+        }
+        if (bdev_read(sbi, cluster_to_byte(sbi, run_start) + in, n, (uint8_t *)user_buf + copied) != 0)
             break;
         copied += n;
         in = 0;
         if (copied < len) {
-            const uint32_t next = fat32_next_cluster(sbi, clus);
             fi->cache_index++;
             fi->cache_cluster = next;
             clus = next;
@@ -838,7 +832,6 @@ static ssize_t fat32_file_read(file_t *file, void *user_buf, size_t len)
     return copied ? (ssize_t)copied : -EIO;
 }
 
-/* src NULL writes zeroes */
 static ssize_t write_at(fat32_inode_info *fi, const uint64_t pos, const void *src, const size_t len)
 {
     fat32_sb_info *sbi = fi->sbi;
@@ -929,11 +922,9 @@ static int fat32_truncate(file_t *file, const size_t size)
     return dirent_update(fi);
 }
 
-/* ── directories ─────────────────────────────────────────────────── */
-
 static int fat32_readdir(file_t *file, struct vfs_dirent *out)
 {
-    fat32_inode_info *fi = file->node->private_data;
+    const fat32_inode_info *fi = file->node->private_data;
     struct dir_iter it;
     int r = iter_init(&it, fi->sbi, dir_first_cluster(fi), (uint32_t)file->file_position);
     if (r)
@@ -1059,7 +1050,6 @@ static int fat32_create(inode_t *dir, const char *name, const bool directory)
     return err;
 }
 
-/* drop a found entry; an open file keeps its clusters until the last close */
 static int remove_entry(fat32_sb_info *sbi, const uint32_t dir_first, const struct dir_found *f)
 {
     const int err = delete_slots(sbi, dir_first, f->lfn_pos, f->pos);
@@ -1076,7 +1066,7 @@ static int remove_entry(fat32_sb_info *sbi, const uint32_t dir_first, const stru
 
 static int fat32_unlink(inode_t *dir, const char *name, const bool directory)
 {
-    fat32_inode_info *di = dir->private_data;
+    const fat32_inode_info *di = dir->private_data;
     fat32_sb_info *sbi = di->sbi;
     const uint32_t dir_first = dir_first_cluster(di);
 

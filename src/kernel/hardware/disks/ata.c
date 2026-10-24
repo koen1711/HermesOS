@@ -68,34 +68,8 @@ int ata_status_wait(const ata_device * dev, const int timeout) {
     return status;
 }
 
-int ata_read_sector(const ata_device * dev, const uint32_t lba, uint16_t * buffer)
-{
-    if (buffer == NULL) return -1;
-
-    port_write_u8(dev->io_base + ATA_REG_HDDEVSEL, 0xE0 | (dev->slave << 4) | ((lba >> 24) & 0x0F));
-    port_io_wait();
-
-    port_write_u8(dev->io_base + ATA_REG_SECCOUNT0, 1);
-    port_write_u8(dev->io_base + ATA_REG_LBA0, lba & 0xFF);
-    port_write_u8(dev->io_base + ATA_REG_LBA1, (lba >> 8) & 0xFF);
-    port_write_u8(dev->io_base + ATA_REG_LBA2, (lba >> 16) & 0xFF);
-    port_write_u8(dev->io_base + ATA_REG_COMMAND, ATA_CMD_READ_PIO);
-
-    while (1) {
-        const uint8_t status = port_read_u8(dev->io_base + ATA_REG_STATUS);
-        if (status & ATA_SR_ERR) return -2;
-        if (!(status & ATA_SR_BSY) && (status & ATA_SR_DRQ)) break;
-    }
-
-    asm volatile("rep insw" : "+D"(buffer), "+c"((uint64_t){256}) : "d"((uint16_t)(dev->io_base + ATA_REG_DATA)) : "memory");
-
-    const uint8_t status = port_read_u8(dev->io_base + ATA_REG_STATUS);
-    if (status & ATA_SR_ERR) return -4;
-
-    return 0;
-}
-
 #define ATA_CMD_CACHE_FLUSH 0xE7
+#define ATA_MAX_SECTORS_PER_CMD 256
 
 static int ata_wait_ready(const ata_device * dev, const bool need_drq)
 {
@@ -106,23 +80,54 @@ static int ata_wait_ready(const ata_device * dev, const bool need_drq)
     }
 }
 
-int ata_write_sector(const ata_device * dev, const uint32_t lba, const uint16_t * buffer)
+static bool ata_supports_lba48(const ata_device * dev)
 {
-    if (buffer == NULL) return -1;
+    return ((const uint16_t *)&dev->identity)[83] & (1 << 10);
+}
 
-    port_write_u8(dev->io_base + ATA_REG_HDDEVSEL, 0xE0 | (dev->slave << 4) | ((lba >> 24) & 0x0F));
-    port_io_wait();
+static int ata_pio_transfer(const ata_device * dev, const uint64_t lba, const uint32_t count, uint8_t * buffer, const bool write)
+{
+    if (buffer == NULL || count == 0 || count > ATA_MAX_SECTORS_PER_CMD) return -1;
 
-    port_write_u8(dev->io_base + ATA_REG_SECCOUNT0, 1);
+    const bool lba48 = ata_supports_lba48(dev);
+    if (!lba48 && lba + count > 0x10000000ULL) return -3;
+
+    if (lba48) {
+        port_write_u8(dev->io_base + ATA_REG_HDDEVSEL, 0x40 | (dev->slave << 4));
+        port_io_wait();
+        port_write_u8(dev->io_base + ATA_REG_SECCOUNT0, (count >> 8) & 0xFF);
+        port_write_u8(dev->io_base + ATA_REG_LBA0, (lba >> 24) & 0xFF);
+        port_write_u8(dev->io_base + ATA_REG_LBA1, (lba >> 32) & 0xFF);
+        port_write_u8(dev->io_base + ATA_REG_LBA2, (lba >> 40) & 0xFF);
+    } else {
+        port_write_u8(dev->io_base + ATA_REG_HDDEVSEL, 0xE0 | (dev->slave << 4) | ((lba >> 24) & 0x0F));
+        port_io_wait();
+    }
+
+    port_write_u8(dev->io_base + ATA_REG_SECCOUNT0, count & 0xFF);
     port_write_u8(dev->io_base + ATA_REG_LBA0, lba & 0xFF);
     port_write_u8(dev->io_base + ATA_REG_LBA1, (lba >> 8) & 0xFF);
     port_write_u8(dev->io_base + ATA_REG_LBA2, (lba >> 16) & 0xFF);
-    port_write_u8(dev->io_base + ATA_REG_COMMAND, ATA_CMD_WRITE_PIO);
 
-    if (ata_wait_ready(dev, true) != 0) return -2;
-    asm volatile("rep outsw" : "+S"(buffer), "+c"((uint64_t){256}) : "d"((uint16_t)(dev->io_base + ATA_REG_DATA)) : "memory");
+    if (write) port_write_u8(dev->io_base + ATA_REG_COMMAND, lba48 ? ATA_CMD_WRITE_PIO_EXT : ATA_CMD_WRITE_PIO);
+    else port_write_u8(dev->io_base + ATA_REG_COMMAND, lba48 ? ATA_CMD_READ_PIO_EXT : ATA_CMD_READ_PIO);
+    ata_io_wait(dev);
+
+    const uint16_t data_port = dev->io_base + ATA_REG_DATA;
+    for (uint32_t i = 0; i < count; i++) {
+        if (ata_wait_ready(dev, true) != 0) return -2;
+        uint8_t * sector = buffer + i * ATA_SECTOR_SIZE;
+        uint64_t words = ATA_SECTOR_SIZE / 2;
+        if (write) asm volatile("rep outsw" : "+S"(sector), "+c"(words) : "d"(data_port) : "memory");
+        else asm volatile("rep insw" : "+D"(sector), "+c"(words) : "d"(data_port) : "memory");
+    }
 
     return ata_wait_ready(dev, false) == 0 ? 0 : -4;
+}
+
+int ata_read_sector(const ata_device * dev, const uint32_t lba, uint16_t * buffer)
+{
+    return ata_pio_transfer(dev, lba, 1, (uint8_t *)buffer, false);
 }
 
 static int ata_flush(const ata_device * dev)
@@ -133,125 +138,81 @@ static int ata_flush(const ata_device * dev)
     return ata_wait_ready(dev, false);
 }
 
-int ata_read_until(const ata_device * dev, const uint32_t lba, const uint32_t n_bytes, uint8_t *buffer)
+static uint32_t ata_full_sectors(const uint64_t pos, const uint64_t left)
 {
-    uint16_t* full_sector = malloc(ATA_SECTOR_SIZE);
-    if (full_sector == NULL) return -1;
+    if (pos % ATA_SECTOR_SIZE != 0 || left < ATA_SECTOR_SIZE) return 0;
+    const uint64_t sectors = left / ATA_SECTOR_SIZE;
+    return sectors > ATA_MAX_SECTORS_PER_CMD ? ATA_MAX_SECTORS_PER_CMD : (uint32_t)sectors;
+}
 
-    const uint8_t sectors_to_read = (n_bytes % ATA_SECTOR_SIZE != 0 ? 1 : 0);
+static int ata_read_bytes(ata_device * dev, const uint64_t begin_byte, const uint64_t end_byte, uint8_t * buffer)
+{
+    for (uint64_t pos = begin_byte; pos < end_byte;) {
+        const uint64_t lba = pos / ATA_SECTOR_SIZE;
+        uint8_t * out = buffer + (pos - begin_byte);
+        const uint32_t sectors = ata_full_sectors(pos, end_byte - pos);
 
-    for (uint32_t i = 0; i < sectors_to_read; i++) {
-        const uint32_t current_lba = lba + i;
-        const int result = ata_read_sector(dev, current_lba, full_sector);
-        if (result != 0) {
-            free(full_sector);
-            return result;
+        if (sectors) {
+            const int result = ata_pio_transfer(dev, lba, sectors, out, false);
+            if (result != 0) return result;
+            pos += (uint64_t)sectors * ATA_SECTOR_SIZE;
+            continue;
         }
 
-        const size_t copy_offset = i * ATA_SECTOR_SIZE;
-        size_t copy_size = ATA_SECTOR_SIZE;
-
-        if (i == sectors_to_read - 1) {
-            const size_t last_byte_offset = (n_bytes - 1) % ATA_SECTOR_SIZE;
-
-            if (i == 0) copy_size = last_byte_offset - lba % ATA_SECTOR_SIZE + 1;
-            else copy_size = last_byte_offset + 1;
-        }
-
-        memcpy(buffer + (i * ATA_SECTOR_SIZE), full_sector + copy_offset, copy_size);
+        const uint32_t in = pos % ATA_SECTOR_SIZE;
+        const uint64_t n = end_byte - pos < ATA_SECTOR_SIZE - in ? end_byte - pos : ATA_SECTOR_SIZE - in;
+        const int result = ata_pio_transfer(dev, lba, 1, dev->bounce, false);
+        if (result != 0) return result;
+        memcpy(out, dev->bounce + in, n);
+        pos += n;
     }
-
     return 0;
+}
+
+static int ata_write_bytes(ata_device * dev, const uint64_t begin_byte, const uint64_t end_byte, const uint8_t * buffer)
+{
+    for (uint64_t pos = begin_byte; pos < end_byte;) {
+        const uint64_t lba = pos / ATA_SECTOR_SIZE;
+        const uint8_t * src = buffer + (pos - begin_byte);
+        const uint32_t sectors = ata_full_sectors(pos, end_byte - pos);
+
+        if (sectors) {
+            const int result = ata_pio_transfer(dev, lba, sectors, (uint8_t *)src, true);
+            if (result != 0) return result;
+            pos += (uint64_t)sectors * ATA_SECTOR_SIZE;
+            continue;
+        }
+
+        const uint32_t in = pos % ATA_SECTOR_SIZE;
+        const uint64_t n = end_byte - pos < ATA_SECTOR_SIZE - in ? end_byte - pos : ATA_SECTOR_SIZE - in;
+        int result = ata_pio_transfer(dev, lba, 1, dev->bounce, false);
+        if (result != 0) return result;
+        memcpy(dev->bounce + in, src, n);
+        result = ata_pio_transfer(dev, lba, 1, dev->bounce, true);
+        if (result != 0) return result;
+        pos += n;
+    }
+    return 0;
+}
+
+int ata_read_until(ata_device * dev, const uint32_t lba, const uint32_t n_bytes, uint8_t *buffer)
+{
+    const uint64_t begin = (uint64_t)lba * ATA_SECTOR_SIZE;
+    return ata_read_bytes(dev, begin, begin + n_bytes, buffer);
 }
 
 int ata_read(const uint32_t unique_id, const uint64_t begin_byte, const uint64_t end_byte, uint8_t* buffer)
 {
-    const ata_device* dev = map_get(ata_disk_registry, (void*)unique_id);
+    ata_device* dev = map_get(ata_disk_registry, (void*)(uintptr_t)unique_id);
     if (dev == NULL) return -2;
-
-    if (begin_byte >= end_byte) return 0;
-
-    const uint64_t start_lba = begin_byte / ATA_SECTOR_SIZE;
-    const uint64_t end_lba = (end_byte - 1) / ATA_SECTOR_SIZE;
-    const uint64_t n_sectors = end_lba - start_lba + 1;
-
-    size_t buffer_pos = 0;
-
-    uint8_t* temp_buffer = malloc(ATA_SECTOR_SIZE);
-    if (temp_buffer == NULL) return -1;
-
-    for (uint64_t i = 0; i < n_sectors; i++) {
-        const uint64_t sector_start = (start_lba + i) * ATA_SECTOR_SIZE;
-        if (sector_start >= begin_byte && sector_start + ATA_SECTOR_SIZE <= end_byte) {
-            const int result = ata_read_sector(dev, start_lba + i, (uint16_t*)(buffer + buffer_pos));
-            if (result != 0) {
-                free(temp_buffer);
-                return result;
-            }
-            buffer_pos += ATA_SECTOR_SIZE;
-            continue;
-        }
-
-        const int result = ata_read_sector(dev, start_lba + i, (uint16_t*)temp_buffer);
-        if (result != 0) {
-            free(temp_buffer);
-            return result;
-        }
-
-        size_t copy_offset = 0;
-        size_t copy_size = ATA_SECTOR_SIZE;
-
-        if (i == 0) {
-            copy_offset = begin_byte % ATA_SECTOR_SIZE;
-            copy_size = ATA_SECTOR_SIZE - copy_offset;
-        }
-
-        if (i == n_sectors - 1) {
-            const size_t last_byte_offset = (end_byte - 1) % ATA_SECTOR_SIZE;
-
-            if (i == 0) {
-                copy_size = last_byte_offset - begin_byte % ATA_SECTOR_SIZE + 1;
-            } else {
-                copy_size = last_byte_offset + 1;
-            }
-        }
-
-        if (buffer_pos + copy_size > (end_byte - begin_byte)) {
-            copy_size = (end_byte - begin_byte) - buffer_pos;
-        }
-
-        memcpy(buffer + buffer_pos, temp_buffer + copy_offset, copy_size);
-        buffer_pos += copy_size;
-    }
-
-    free(temp_buffer);
-    return 0;
+    return ata_read_bytes(dev, begin_byte, end_byte, buffer);
 }
 
 int ata_write(const uint32_t unique_id, const uint64_t begin_byte, const uint64_t end_byte, const uint8_t *buffer)
 {
-    const ata_device* dev = map_get(ata_disk_registry, (void*)unique_id);
+    ata_device* dev = map_get(ata_disk_registry, (void*)(uintptr_t)unique_id);
     if (dev == NULL) return -2;
-    if (begin_byte >= end_byte) return 0;
-
-    uint8_t* sector = malloc(ATA_SECTOR_SIZE);
-    if (sector == NULL) return -1;
-
-    int result = 0;
-    for (uint64_t lba = begin_byte / ATA_SECTOR_SIZE; result == 0 && lba <= (end_byte - 1) / ATA_SECTOR_SIZE; lba++) {
-        const uint64_t sector_start = lba * ATA_SECTOR_SIZE;
-        const uint64_t from = begin_byte > sector_start ? begin_byte : sector_start;
-        const uint64_t to = end_byte < sector_start + ATA_SECTOR_SIZE ? end_byte : sector_start + ATA_SECTOR_SIZE;
-
-        if (from != sector_start || to != sector_start + ATA_SECTOR_SIZE)
-            result = ata_read_sector(dev, (uint32_t)lba, (uint16_t*)sector);
-        if (result == 0) {
-            memcpy(sector + (from - sector_start), buffer + (from - begin_byte), to - from);
-            result = ata_write_sector(dev, (uint32_t)lba, (const uint16_t*)sector);
-        }
-    }
-    free(sector);
-    return result;
+    return ata_write_bytes(dev, begin_byte, end_byte, buffer);
 }
 
 int ata_flush_device(const uint32_t unique_id)
@@ -282,7 +243,7 @@ boot_type detect_boot_type(const ata_device* dev) {
     return BOOT_UNKNOWN;
 }
 
-void ata_get_gpt(const ata_device * dev, full_gpt* gpt)
+void ata_get_gpt(ata_device * dev, full_gpt* gpt)
 {
     if (gpt == NULL) return;
 
