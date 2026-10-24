@@ -4,8 +4,8 @@
 #include <os/stdint.h>
 #include <hardware/memory/mmu.h>
 #include <hardware/interrupts/interrupts.h>
-#include <hardware/gdt/tss.h>
 #include <utils/queue/queue.h>
+#include <drivers/scheduler/signal.h>
 
 #define STACK_SIZE      PAGE_SIZE
 #define MAXIMUM_NUMBER_OF_PROCESSES 10
@@ -26,15 +26,24 @@ typedef enum {
 } process_state_t;
 
 typedef struct {
-    struct dlist_node link;     // in one of the scheduler lists
+    struct dlist_node link;
     int pid;
     int wait_id;
     process_state_t state;
     uint64_t page_map;
-    uint64_t context;           // kernel stack pointer saved by context_switch
+    uint64_t context;
     uint64_t stack;
-    interrupt_context *frame;   // user registers, restored by trap_return
+    interrupt_context *frame;
     struct file_s *file[PROC_MAX_FILE_DESCRIPTORS];
+    uint64_t sig_pending;
+    uint64_t sig_blocked;
+    struct k_sigaction sig_actions[SIGNAL_MAX];
+    struct signal_info sig_info[SIGNAL_MAX];
+    int64_t syscall_nr;
+    uint64_t altstack_sp;
+    uint64_t altstack_size;
+    int32_t altstack_flags;
+    bool interruptible;
 } process_t;
 
 typedef struct {
@@ -52,6 +61,11 @@ void context_switch(uint64_t *old, uint64_t new);
 
 void process_sleep(int wait_id);
 void process_wakeup(int wait_id);
+
+int process_sleep_interruptible(int wait_id);
+void process_interrupt(process_t *proc);
+process_t *process_find(int pid);
+
 void process_exit();
 void process_wait(int pid);
 int process_fork();

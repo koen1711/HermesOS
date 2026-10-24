@@ -1,8 +1,10 @@
 #include "process.h"
 #include <hardware/memory/mmu.h>
 #include <hardware/memory/pmm.h>
+#include <hardware/gdt/tss.h>
 #include <drivers/fs/vfs/vfs.h>
 #include <hardware/memory/alloc.h>
+#include <os/errno.h>
 
 #include "drivers/terminal/terminal.h"
 
@@ -71,6 +73,37 @@ void process_wakeup(const int wait_id) {
     }
 }
 
+int process_sleep_interruptible(const int wait_id) {
+    process_t *proc = scheduler.current;
+    if (proc->sig_pending & ~proc->sig_blocked) {
+        return -EINTR;
+    }
+    proc->interruptible = true;
+    process_sleep(wait_id);
+    proc->interruptible = false;
+    return proc->sig_pending & ~proc->sig_blocked ? -EINTR : 0;
+}
+
+void process_interrupt(process_t *proc) {
+    if (proc->state != PROC_SLOT_SLEEPING || !proc->interruptible) {
+        return;
+    }
+    dlist_remove(&scheduler.waiting, &proc->link);
+    proc->state = PROC_SLOT_READY;
+    dlist_insert_tail(&scheduler.ready, &proc->link);
+}
+
+process_t *process_find(const int pid) {
+    for (int i = 0; i<MAXIMUM_NUMBER_OF_PROCESSES; i++) {
+        process_t *proc = &processes[i];
+        if (proc->pid == pid && pid != IDLE_PROC_PID && proc->state != PROC_SLOT_UNUSED
+            && proc->state != PROC_SLOT_KILLED) {
+            return proc;
+        }
+    }
+    return nullptr;
+}
+
 void process_exit() {
     process_t *proc = scheduler.current;
     proc->state = PROC_SLOT_KILLED;
@@ -127,6 +160,13 @@ int process_fork() {
     }
     memcpy(proc->frame, current->frame, sizeof(interrupt_context));
 
+    // the child inherits handlers and mask, not pending signals
+    memcpy(proc->sig_actions, current->sig_actions, sizeof(proc->sig_actions));
+    proc->sig_blocked = current->sig_blocked;
+    proc->altstack_sp = current->altstack_sp;
+    proc->altstack_size = current->altstack_size;
+    proc->altstack_flags = current->altstack_flags;
+
     proc->frame->rax = 0;
     proc->state = PROC_SLOT_READY;
     dlist_insert_tail(&scheduler.ready, &proc->link);
@@ -137,6 +177,15 @@ int process_fork() {
 int process_exec(process_t *proc, const char *filename) {
     vfs_stat_t stat = {0};
     size_t program_size = 0;
+
+    // the handlers are gone with the old image; ignored signals stay ignored (POSIX exec)
+    for (int i = 0; i<SIGNAL_MAX; i++) {
+        if (proc->sig_actions[i].handler != SIG_IGN) {
+            memset(&proc->sig_actions[i], 0, sizeof(proc->sig_actions[i]));
+        }
+    }
+    proc->altstack_sp = proc->altstack_size = 0;
+    proc->altstack_flags = 0;
 
     const int fd = vfs_open(filename, O_RDONLY);
     if (fd<0) {

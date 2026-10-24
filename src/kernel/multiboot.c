@@ -7,14 +7,14 @@ multiboot_info_t parse_multiboot_info(multiboot_info_t_header* mb_info) {
     uint8_t* ptr = (uint8_t*)mb_info + 8; // Skip total_size and reserved
 
     while (1) {
-        multiboot_tag_t* tag = (multiboot_tag_t*)ptr;
+        const auto tag = (multiboot_tag_t*)ptr;
 
         if (tag->type == MULTIBOOT_TAG_TYPE_END)
             break;
 
         if (tag->type == MULTIBOOT_TAG_TYPE_MMAP) {
-            multiboot_tag_mmap_t* mmap_tag = (multiboot_tag_mmap_t*)tag;
-            multiboot_mmap_entry_t* mmap_entry =
+            const auto mmap_tag = (multiboot_tag_mmap_t*)tag;
+            auto mmap_entry =
                 (multiboot_mmap_entry_t*)((uint8_t*)mmap_tag + sizeof(multiboot_tag_mmap_t));
 
             const size_t entries = (mmap_tag->size - sizeof(multiboot_tag_mmap_t)) / mmap_tag->entry_size;
@@ -29,7 +29,7 @@ multiboot_info_t parse_multiboot_info(multiboot_info_t_header* mb_info) {
             }
         }
 
-        ptr += (tag->size + 7) & ~7; // 8-byte alignment
+        ptr += tag->size + 7 & ~7; // 8-byte alignment
     }
 
     return result;

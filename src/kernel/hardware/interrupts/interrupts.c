@@ -7,7 +7,8 @@
 #include <drivers/syscalls/syscalls.h>
 #include <drivers/terminal/terminal.h>
 #include <drivers/timer/pit.h>
-#include <scheduler/process.h> // timer: process_yield, exceptions: process_exit
+#include <drivers/scheduler/process.h> // timer: process_yield, exceptions: process_exit
+#include <drivers/scheduler/signal.h>
 
 #define EXCEPTION_COUNT   32
 #define PAGE_FAULT_VECTOR 14
@@ -52,6 +53,10 @@ static void handle_exception(const interrupt_context* context)
     uint64_t cr2 = 0;
     asm volatile("mov %%cr2, %0" : "=r"(cr2));
 
+    // a user fault the process has a handler for: trap_handler delivers it on the way out
+    if (from_user_mode(context) && signal_fault(context, cr2))
+        return;
+
     terminal_printf("\nException %d (%s), error code 0x%lx\n",
                     (int)context->interrupt_number, exception_names[context->interrupt_number],
                     context->error_code);
@@ -90,6 +95,7 @@ void trap_handler(interrupt_context* context)
         if (context->interrupt_number == IRQ_OFFSET + PIT_IRQ && should_preempt(context))
             process_yield();
     }
+    signal_deliver(context);
 }
 
 

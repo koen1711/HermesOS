@@ -39,7 +39,14 @@ enum so_optname
     SOOPT_SNDBUF = 7,
     SOOPT_RCVBUF = 8,
     SOOPT_KEEPALIVE = 9,
-    SOOPT_REUSEPORT = 15
+    SOOPT_REUSEPORT = 15,
+    SOOPT_RCVTIMEO = 20,
+    SOOPT_SNDTIMEO = 21
+};
+
+struct sock_timeval {
+    int64_t tv_sec;
+    int64_t tv_usec;
 };
 
 
@@ -51,7 +58,6 @@ enum shutdown_how
 };
 
 
-// send/recv flags (Linux values, for mlibc)
 enum msg_flags
 {
     MSG_OOB = 0x01,
@@ -85,6 +91,9 @@ struct socket {
 
     int fd;
     uint32_t refcount;
+
+    uint64_t rcv_timeo;
+    uint64_t snd_timeo;
 
     void (*upcall)(struct socket* so, void* arg);
     void* upcall_arg;

@@ -1,7 +1,7 @@
 #include <hardware/memory/mmu.h>
 #include <hardware/interrupts/interrupts.h>
 #include <hardware/gdt/tss.h>
-#include <scheduler/process.h>
+#include <drivers/scheduler/process.h>
 #include <drivers/drivers.h>
 
 #include "drivers/terminal/terminal.h"

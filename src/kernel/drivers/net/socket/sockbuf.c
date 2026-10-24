@@ -5,7 +5,7 @@
 #include <drivers/net/core/netisr.h>
 #include <drivers/timer/callout.h>
 #include <hardware/interrupts/irq.h>
-#include <scheduler/process.h>
+#include <drivers/scheduler/process.h>
 #include <hardware/memory/alloc.h>
 #include <os/errno.h>
 
@@ -189,11 +189,8 @@ void sockbuf_copy(const struct sockbuf* sb, size_t offset, size_t len, void* out
     }
 }
 
-// A process sleeps on the sockbuf (FreeBSD sbwait -> msleep). The kernel itself (no process
-// yet, the idle loop, interrupt context) can't sleep and polls the NICs, queues and timers instead.
 static int sockbuf_wait_id(const struct sockbuf* sb)
 {
-    // positive and above every pid, INIT_PROC_ID and WAIT_KEY_INT; a collision is only a spurious wakeup
     return (int)(((uintptr_t)sb >> 4) & 0x3FFFFFFF) | 0x40000000;
 }
 
@@ -207,7 +204,7 @@ static void sockbuf_poll_once()
 {
     const uint64_t rflags = irq_save();
     irq_restore(rflags);
-    if (rflags & 0x200)     // IF
+    if (rflags & 0x200)
         asm volatile("hlt");
     else
         netif_poll_all();
@@ -220,10 +217,8 @@ static void sockbuf_timeout(void* arg)
     sockbuf_wakeup(arg);
 }
 
-// Callers re-check their condition after every return: wakeups can be spurious
 int sockbuf_timedwait(struct sockbuf* sb, const uint64_t timeout)
 {
-    // packets still queued (loopback, or what the caller just sent) may be what it waits for
     if (netisr_poll_pending())
         return 0;
     if (!sockbuf_can_sleep()) {
@@ -232,17 +227,17 @@ int sockbuf_timedwait(struct sockbuf* sb, const uint64_t timeout)
         return 0;
     }
 
-    // interrupts stay off from the caller's check until we are on the wait list: no lost wakeup
     const uint64_t flags = irq_save();
     struct callout timer;
     callout_init(&timer);
     if (timeout)
         callout_reset(&timer, timeout, sockbuf_timeout, sb);
     sb->flags |= SB_WAIT;
-    process_sleep(sockbuf_wait_id(sb));
+    const int err = process_sleep_interruptible(sockbuf_wait_id(sb));
     callout_stop(&timer);
     irq_restore(flags);
-    return 0;
+    // like Linux sock_intr_errno: a wait without timeout is restartable, a timed one is not
+    return err == -EINTR && !timeout ? -ERESTARTSYS : err;
 }
 
 int sockbuf_wait(struct sockbuf* sb)

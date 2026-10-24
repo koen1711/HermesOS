@@ -2,6 +2,7 @@
 
 #include <drivers/net/socket/protosw.h>
 #include <drivers/net/core/netbuf.h>
+#include <drivers/timer/callout.h>
 #include <hardware/memory/alloc.h>
 #include <os/errno.h>
 
@@ -33,7 +34,7 @@ static struct socket* sock_alloc(const int type, struct protosw* pr)
     so->proto = pr;
     so->fd = -1;
     so->refcount = 1;
-    so->linger = -1;    // SO_LINGER off; 0 would make close send a RST
+    so->linger = -1;
     sockbuf_init(&so->snd, SOCKBUF_DEFAULT_SIZE);
     sockbuf_init(&so->rcv, SOCKBUF_DEFAULT_SIZE);
     dlist_init(&so->incomplete);
@@ -98,15 +99,26 @@ int sock_listen(struct socket* so, int backlog)
     return 0;
 }
 
-#define SOCK_WAIT_UNTIL(so, sb, flags, cond)            \
-    while (!(cond)) {                                   \
-        if ((so)->error)                                \
-            return -sock_take_error(so);                \
-        if (sock_nonblocking(so, flags))                \
-            return -EAGAIN;                             \
-        const int werr_ = sockbuf_wait(sb);             \
-        if (werr_)                                      \
-            return werr_;                               \
+static int sock_wait(struct sockbuf* sb, const uint64_t timeo, const uint64_t start)
+{
+    if (!timeo)
+        return sockbuf_wait(sb);
+
+    const uint64_t waited = ticks_get() - start;
+    if (waited > timeo)
+        return -EAGAIN;
+    return sockbuf_timedwait(sb, timeo + 1 - waited);
+}
+
+#define SOCK_WAIT_UNTIL(so, sb, flags, timeo, cond)                 \
+    for (const uint64_t start_ = ticks_get(); !(cond);) {          \
+        if ((so)->error)                                           \
+            return -sock_take_error(so);                           \
+        if (sock_nonblocking(so, flags))                           \
+            return -EAGAIN;                                        \
+        const int werr_ = sock_wait(sb, timeo, start_);            \
+        if (werr_)                                                 \
+            return werr_;                                          \
     }
 
 int sock_connect(struct socket* so, const struct sockaddr* addr, const socklen_t len)
@@ -133,7 +145,14 @@ int sock_connect(struct socket* so, const struct sockaddr* addr, const socklen_t
     if (so->state & SS_ISCONNECTING) {
         if (so->state & SS_NBIO)
             return -EINPROGRESS;
-        SOCK_WAIT_UNTIL(so, &so->rcv, 0, !(so->state & SS_ISCONNECTING));
+
+        const uint64_t start = ticks_get();
+        while ((so->state & SS_ISCONNECTING) && !so->error) {
+            const int werr = sock_wait(&so->rcv, so->snd_timeo, start);
+            // a restart would find the handshake running and say EALREADY: POSIX wants EINTR
+            if (werr)
+                return werr == -EAGAIN ? -EINPROGRESS : werr == -ERESTARTSYS ? -EINTR : werr;
+        }
     }
     if (so->error)
         return -sock_take_error(so);
@@ -145,7 +164,7 @@ int sock_accept(struct socket* so, struct socket** out, struct sockaddr* addr, s
     *out = nullptr;
     if (!(so->options & SO_ACCEPTCONN))
         return -EINVAL;
-    SOCK_WAIT_UNTIL(so, &so->rcv, 0, !dlist_empty(&so->complete));
+    SOCK_WAIT_UNTIL(so, &so->rcv, 0, so->rcv_timeo, !dlist_empty(&so->complete));
 
     struct socket* conn = dlist_entry(dlist_first(&so->complete), struct socket, listen_link);
     dlist_remove(&so->complete, &conn->listen_link);
@@ -202,6 +221,7 @@ ssize_t sock_send(struct socket* so, const void* buf, const size_t len, const in
 
     const uint8_t* p = buf;
     size_t sent = 0;
+    const uint64_t start = ticks_get();
     while (sent < len) {
         if (so->state & SS_CANTSENDMORE)
             return sent ? (ssize_t)sent : -EPIPE;
@@ -211,7 +231,7 @@ ssize_t sock_send(struct socket* so, const void* buf, const size_t len, const in
         if (space == 0) {
             if (sock_nonblocking(so, flags))
                 return sent ? (ssize_t)sent : -EAGAIN;
-            const int werr = sockbuf_wait(&so->snd);
+            const int werr = sock_wait(&so->snd, so->snd_timeo, start);
             if (werr)
                 return sent ? (ssize_t)sent : werr;
             continue;
@@ -236,6 +256,7 @@ static const struct netbuf* sock_record_addr(const struct netbuf* rec)
 ssize_t sock_recv(struct socket* so, void* buf, const size_t len, const int flags,
                   struct sockaddr* from, socklen_t* from_len)
 {
+    const uint64_t start = ticks_get();
     while (!so->rcv.head) {
         if (so->error)
             return -sock_take_error(so);
@@ -245,7 +266,7 @@ ssize_t sock_recv(struct socket* so, void* buf, const size_t len, const int flag
             return -ENOTCONN;
         if (sock_nonblocking(so, flags))
             return -EAGAIN;
-        const int werr = sockbuf_wait(&so->rcv);
+        const int werr = sock_wait(&so->rcv, so->rcv_timeo, start);
         if (werr)
             return werr;
     }
@@ -278,15 +299,16 @@ ssize_t sock_recv(struct socket* so, void* buf, const size_t len, const int flag
 
     const size_t want = len;
     if ((flags & MSG_WAITALL) && !(flags & MSG_PEEK)) {
-        SOCK_WAIT_UNTIL(so, &so->rcv, flags,
-                        so->rcv.cc >= want || (so->state & SS_CANTRCVMORE));
+        while (so->rcv.cc < want && !(so->state & SS_CANTRCVMORE) && !so->error && !sock_nonblocking(so, flags))
+            if (sock_wait(&so->rcv, so->rcv_timeo, start))
+                break;
     }
     const size_t n = so->rcv.cc < want ? so->rcv.cc : want;
     sockbuf_copy(&so->rcv, 0, n, buf);
     if (!(flags & MSG_PEEK)) {
         sockbuf_drop(&so->rcv, n);
         if (so->proto->pr_rcvd)
-            so->proto->pr_rcvd(so, flags);   // TCP: maybe open the window
+            so->proto->pr_rcvd(so, flags);
     }
     if (from && from_len && so->proto->pr_peeraddr)
         so->proto->pr_peeraddr(so, from, from_len);
@@ -329,6 +351,20 @@ int sock_close(struct socket* so)
     return 0;
 }
 
+static int sock_timeval_to_ticks(const struct sock_timeval* tv, uint64_t* out)
+{
+    if (tv->tv_usec < 0 || tv->tv_usec >= 1000000)
+        return -EDOM;
+    if (tv->tv_sec < 0) {
+        *out = 1;
+        return 0;
+    }
+    const uint64_t hz = ticks_hz();
+    const uint64_t sec = tv->tv_sec > 1000000000000 ? 1000000000000 : (uint64_t)tv->tv_sec;
+    *out = sec * hz + ((uint64_t)tv->tv_usec * hz + 999999) / 1000000;
+    return 0;
+}
+
 int sock_setopt(struct socket* so, const int level, const int optname, const void* optval, const socklen_t optlen)
 {
     if (level != SOL_SOCKET) {
@@ -337,6 +373,15 @@ int sock_setopt(struct socket* so, const int level, const int optname, const voi
         socklen_t l = optlen;
         return so->proto->pr_ctloutput(so, level, optname, (void*)optval, &l, true);
     }
+
+    if (optname == SOOPT_RCVTIMEO || optname == SOOPT_SNDTIMEO) {
+        if (!optval || optlen < sizeof(struct sock_timeval))
+            return -EINVAL;
+        const auto tv = (const struct sock_timeval*)optval;
+        const int err = sock_timeval_to_ticks(tv, optname == SOOPT_RCVTIMEO ? &so->rcv_timeo : &so->snd_timeo);
+        return err;
+    }
+
     if (!optval || optlen < sizeof(int))
         return -EINVAL;
     const int v = *(const int*)optval;
@@ -372,6 +417,18 @@ int sock_getopt(struct socket* so, const int level, const int optname, void* opt
             return -ENOPROTOOPT;
         return so->proto->pr_ctloutput(so, level, optname, optval, optlen, false);
     }
+
+    if (optname == SOOPT_RCVTIMEO || optname == SOOPT_SNDTIMEO) {
+        if (!optval || !optlen || *optlen < sizeof(struct sock_timeval))
+            return -EINVAL;
+        const uint64_t t = optname == SOOPT_RCVTIMEO ? so->rcv_timeo : so->snd_timeo;
+        const uint64_t us = t * 1000000 / ticks_hz();
+        const struct sock_timeval tv = { .tv_sec = (int64_t)(us / 1000000), .tv_usec = (int64_t)(us % 1000000) };
+        memcpy(optval, &tv, sizeof(tv));
+        *optlen = sizeof(tv);
+        return 0;
+    }
+
     if (!optval || !optlen || *optlen < sizeof(int))
         return -EINVAL;
 

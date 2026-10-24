@@ -1,7 +1,7 @@
 #include "fd.h"
 
 #include <drivers/fs/vfs/vfs.h>
-#include <scheduler/process.h>
+#include <drivers/scheduler/process.h>
 #include <os/errno.h>
 
 int fd_install(struct file_s* f)

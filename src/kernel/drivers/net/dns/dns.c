@@ -404,7 +404,10 @@ static int dns_query_server(const struct sockaddr_storage* server, const char* n
             const uint64_t now = ticks_get();
             if (now >= deadline)
                 break;
-            sockbuf_timedwait(&so->rcv, deadline - now);
+            if (sockbuf_timedwait(&so->rcv, deadline - now) == -EINTR) {
+                result = -EINTR;
+                break;
+            }
             continue;
         }
         if (n < 0) {
@@ -452,7 +455,7 @@ static int dns_resolve_type(const char* name, const uint16_t qtype, struct dns_r
             if (deadline > end)
                 deadline = end;
             const int r = dns_query_server(&list[i], name, qtype, out, max_out, deadline);
-            if (r >= 0 || r == -ENOENT)
+            if (r >= 0 || r == -ENOENT || r == -EINTR)
                 return r;
             last = r;
         }
@@ -498,8 +501,8 @@ int dns_resolve(const char* name, const sa_family_t family, struct dns_result* o
     int err = 0;
     for (int t = 0; t < n_types && total < max_out; t++) {
         const int r = dns_resolve_type(name, types[t], out + total, max_out - total, timeout_ms);
-        if (r == -ENOENT)
-            return total ? (int)total : -ENOENT;
+        if (r == -ENOENT || r == -EINTR)
+            return total ? (int)total : r;
         if (r < 0) {
             err = r;
             continue;

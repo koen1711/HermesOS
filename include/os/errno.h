@@ -81,5 +81,6 @@
 #define EALREADY       114  // operation already in progress
 #define EINPROGRESS    115  // operation now in progress
 #define ECANCELED      125  // operation canceled
+#define ERESTARTSYS    512
 
 #endif //OS_ERRNO_H

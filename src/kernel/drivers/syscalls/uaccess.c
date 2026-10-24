@@ -2,7 +2,7 @@
 
 #include <hardware/memory/alloc.h>
 #include <hardware/memory/mmu.h>
-#include <scheduler/process.h>
+#include <drivers/scheduler/process.h>
 #include <os/errno.h>
 
 bool uaccess_ok(const void* ptr, const size_t len)
