@@ -3,6 +3,7 @@
 
 #include <os/stdint.h>
 #include <os/stdbool.h>
+#include <hardware/memory/dma.h>
 #include <hardware/port/pci.h>
 #include <hardware/network/e1000/types.h>
 
@@ -19,6 +20,14 @@ struct e1000_device {
     bool eeprom_exists;
     uint8_t mac[6];
 
+    struct dma_tag* ring_tag;
+    struct dma_tag* rx_buf_tag;
+    struct dma_tag* tx_tag;
+    struct dma_map* rx_ring_map;
+    struct dma_map* tx_ring_map;
+    struct dma_map* rx_buf_map;
+    struct dma_map* tx_maps[E1000_NUM_TX_DESC];
+
     struct e1000_rx_desc* rx_descs[E1000_NUM_RX_DESC];
     struct e1000_tx_desc* tx_descs[E1000_NUM_TX_DESC];
     uint8_t* rx_buffers[E1000_NUM_RX_DESC];
@@ -31,6 +40,7 @@ struct e1000_device {
 
 void e1000_initialize();
 struct e1000_device* e1000_probe(const pci_device* pci);
+void e1000_detach(struct e1000_device* dev);
 
 void e1000_write_command(const struct e1000_device* dev, uint16_t address, uint32_t value);
 uint32_t e1000_read_command(const struct e1000_device* dev, uint16_t address);
@@ -41,8 +51,8 @@ bool e1000_read_mac_address(struct e1000_device* dev);
 bool e1000_start_link(struct e1000_device* dev);
 bool e1000_link_up(const struct e1000_device* dev);
 
-void e1000_rx_init(struct e1000_device* dev);
-void e1000_tx_init(struct e1000_device* dev);
+bool e1000_rx_init(struct e1000_device* dev);
+bool e1000_tx_init(struct e1000_device* dev);
 void e1000_enable_interrupts(const struct e1000_device* dev);
 void e1000_disable_interrupts(const struct e1000_device* dev);
 

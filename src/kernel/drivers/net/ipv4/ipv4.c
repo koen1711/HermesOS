@@ -44,6 +44,9 @@ static struct dlist reassemble_queues;
 static spinlock_t reassemble_lock;
 static struct callout reassemble_callout;
 
+static struct dlist all_addrs;
+static spinlock_t addr_lock;
+
 void ipv4_initialize()
 {
     for (int i = 0; i < 256; i++)
@@ -51,6 +54,8 @@ void ipv4_initialize()
     next_id = (uint16_t)ticks_get();
     dlist_init(&reassemble_queues);
     spinlock_init(&reassemble_lock, "ipv4_reass");
+    dlist_init(&all_addrs);
+    spinlock_init(&addr_lock, "ipv4_addr");
     netisr_register(NETISR_IP, ipv4_input, IPV4_INPUT_QUEUE_LEN);
     callout_init(&reassemble_callout);
     callout_reset(&reassemble_callout, ticks_hz(), ipv4_reassemble_timer, nullptr);
@@ -77,12 +82,26 @@ static uint16_t ipv4_header_checksum(const void* header, const size_t len)
     return htons(inet_checksum(header, len));
 }
 
+static struct ipv4_ifaddr* ipv4_addr_find_locked(const struct in_addr addr)
+{
+    for (struct dlist_node* n = dlist_first(&all_addrs); n; n = dlist_next(n)) {
+        const auto ia = dlist_entry(n, struct ipv4_ifaddr, all_link);
+        if (ia->addr.s_addr == addr.s_addr)
+            return ia;
+    }
+    return nullptr;
+}
+
+static void ipv4_addr_unlink_locked(struct ipv4_ifaddr* ia)
+{
+    dlist_remove(&ia->nif->ipv4_addrs, &ia->link);
+    dlist_remove(&all_addrs, &ia->all_link);
+}
+
 int ipv4_addr_add(struct netif* nif, const struct in_addr addr, const uint8_t prefix_len, const uint64_t valid_until)
 {
     if (prefix_len > 32)
         return -EINVAL;
-    if (ipv4_addr_find(addr))
-        return -EEXIST;
 
     struct ipv4_ifaddr* ia = malloc(sizeof(struct ipv4_ifaddr));
     if (!ia)
@@ -94,11 +113,23 @@ int ipv4_addr_add(struct netif* nif, const struct in_addr addr, const uint8_t pr
     ia->netmask = ipv4_prefix_to_mask(prefix_len);
     ia->broadcast.s_addr = addr.s_addr | ~ia->netmask.s_addr;
     ia->valid_until = valid_until;
+
+    uint64_t irq;
+    spinlock_acquire_irqsave(&addr_lock, &irq);
+    if (ipv4_addr_find_locked(addr)) {
+        spinlock_release_irqrestore(&addr_lock, irq);
+        free(ia);
+        return -EEXIST;
+    }
     dlist_insert_tail(&nif->ipv4_addrs, &ia->link);
+    dlist_insert_tail(&all_addrs, &ia->all_link);
+    spinlock_release_irqrestore(&addr_lock, irq);
 
     const int rc = route_add4(addr, prefix_len, (struct in_addr){ INADDR_ANY }, nif, 0);
     if (rc < 0) {
-        dlist_remove(&nif->ipv4_addrs, &ia->link);
+        spinlock_acquire_irqsave(&addr_lock, &irq);
+        ipv4_addr_unlink_locked(ia);
+        spinlock_release_irqrestore(&addr_lock, irq);
         free(ia);
     }
     return rc;
@@ -106,68 +137,104 @@ int ipv4_addr_add(struct netif* nif, const struct in_addr addr, const uint8_t pr
 
 int ipv4_addr_del(struct netif* nif, const struct in_addr addr)
 {
+    uint64_t irq;
+    spinlock_acquire_irqsave(&addr_lock, &irq);
+    struct ipv4_ifaddr* ia = ipv4_addr_find_locked(addr);
+    if (!ia || ia->nif != nif) {
+        spinlock_release_irqrestore(&addr_lock, irq);
+        return -EADDRNOTAVAIL;
+    }
+    ipv4_addr_unlink_locked(ia);
+    spinlock_release_irqrestore(&addr_lock, irq);
+
+    route_del4(addr, ia->prefix_len);
+    free(ia);
+    return 0;
+}
+
+struct in_addr ipv4_addr_primary(const struct netif* nif)
+{
+    uint64_t irq;
+    spinlock_acquire_irqsave(&addr_lock, &irq);
+    struct dlist_node* n = dlist_first(&nif->ipv4_addrs);
+    const struct in_addr addr = n ? dlist_entry(n, struct ipv4_ifaddr, link)->addr : (struct in_addr){ INADDR_ANY };
+    spinlock_release_irqrestore(&addr_lock, irq);
+    return addr;
+}
+
+bool ipv4_addr_is_on(const struct netif* nif, const struct in_addr addr)
+{
+    uint64_t irq;
+    spinlock_acquire_irqsave(&addr_lock, &irq);
+    const struct ipv4_ifaddr* ia = ipv4_addr_find_locked(addr);
+    const bool on = ia && ia->nif == nif;
+    spinlock_release_irqrestore(&addr_lock, irq);
+    return on;
+}
+
+int ipv4_addr_set_expiry(const struct in_addr addr, const uint64_t valid_until)
+{
+    uint64_t irq;
+    spinlock_acquire_irqsave(&addr_lock, &irq);
+    struct ipv4_ifaddr* ia = ipv4_addr_find_locked(addr);
+    if (ia)
+        ia->valid_until = valid_until;
+    spinlock_release_irqrestore(&addr_lock, irq);
+    return ia ? 0 : -EADDRNOTAVAIL;
+}
+
+static struct in_addr ipv4_select_source_on(const struct netif* nif, const struct in_addr dst)
+{
+    struct in_addr src = { INADDR_ANY };
+    uint64_t irq;
+    spinlock_acquire_irqsave(&addr_lock, &irq);
     for (struct dlist_node* n = dlist_first(&nif->ipv4_addrs); n; n = dlist_next(n)) {
         const auto ia = dlist_entry(n, struct ipv4_ifaddr, link);
-        if (ia->addr.s_addr == addr.s_addr) {
-            route_del4(addr, ia->prefix_len);
-            dlist_remove(&nif->ipv4_addrs, n);
-            free(ia);
-            return 0;
+        if (src.s_addr == INADDR_ANY)
+            src = ia->addr;
+        if ((ia->addr.s_addr & ia->netmask.s_addr) == (dst.s_addr & ia->netmask.s_addr)) {
+            src = ia->addr;
+            break;
         }
     }
-    return -EADDRNOTAVAIL;
-}
-
-struct ipv4_ifaddr* ipv4_addr_for_netif(const struct netif* nif)
-{
-    struct dlist_node* n = dlist_first(&nif->ipv4_addrs);
-    return n ? dlist_entry(n, struct ipv4_ifaddr, link) : nullptr;
-}
-
-struct ipv4_ifaddr* ipv4_addr_find(const struct in_addr addr)
-{
-    for (const struct netif* nif = netif_first(); nif; nif = netif_next(nif)) {
-        for (struct dlist_node* n = dlist_first(&nif->ipv4_addrs); n; n = dlist_next(n)) {
-            const auto ia = dlist_entry(n, struct ipv4_ifaddr, link);
-            if (ia->addr.s_addr == addr.s_addr)
-                return ia;
-        }
-    }
-    return nullptr;
+    spinlock_release_irqrestore(&addr_lock, irq);
+    return src;
 }
 
 struct in_addr ipv4_select_source(struct netif* nif, const struct in_addr dst)
 {
-    if (!nif) {
-        const struct route_nexthop* nh = route_lookup4(dst);
-        if (!nh)
-            return (struct in_addr){ INADDR_ANY };
-        nif = nh->nif;
-    }
-    for (struct dlist_node* n = dlist_first(&nif->ipv4_addrs); n; n = dlist_next(n)) {
-        const auto ia = dlist_entry(n, struct ipv4_ifaddr, link);
-        if ((ia->addr.s_addr & ia->netmask.s_addr) == (dst.s_addr & ia->netmask.s_addr))
-            return ia->addr;
-    }
-    const struct ipv4_ifaddr* ia = ipv4_addr_for_netif(nif);
-    return ia ? ia->addr : (struct in_addr){ INADDR_ANY };
+    if (nif)
+        return ipv4_select_source_on(nif, dst);
+    struct route_nexthop nh;
+    if (!route_lookup4(dst, &nh))
+        return (struct in_addr){ INADDR_ANY };
+    const struct in_addr src = ipv4_select_source_on(nh.nif, dst);
+    netif_rele(nh.nif);
+    return src;
 }
 
 bool ipv4_is_local(const struct in_addr addr)
 {
-    return ipv4_addr_find(addr) != nullptr;
+    uint64_t irq;
+    spinlock_acquire_irqsave(&addr_lock, &irq);
+    const bool local = ipv4_addr_find_locked(addr) != nullptr;
+    spinlock_release_irqrestore(&addr_lock, irq);
+    return local;
 }
 
 bool ipv4_is_broadcast(const struct netif* nif, const struct in_addr addr)
 {
     if (addr.s_addr == INADDR_BROADCAST)
         return true;
-    for (struct dlist_node* n = dlist_first(&nif->ipv4_addrs); n; n = dlist_next(n)) {
+    bool bcast = false;
+    uint64_t irq;
+    spinlock_acquire_irqsave(&addr_lock, &irq);
+    for (struct dlist_node* n = dlist_first(&nif->ipv4_addrs); n && !bcast; n = dlist_next(n)) {
         const auto ia = dlist_entry(n, struct ipv4_ifaddr, link);
-        if (ia->prefix_len < 31 && addr.s_addr == ia->broadcast.s_addr)
-            return true;
+        bcast = ia->prefix_len < 31 && addr.s_addr == ia->broadcast.s_addr;
     }
-    return false;
+    spinlock_release_irqrestore(&addr_lock, irq);
+    return bcast;
 }
 
 bool ipv4_is_multicast(const struct in_addr addr)
@@ -345,6 +412,38 @@ drop_queue:
     spinlock_release_irqrestore(&reassemble_lock, irq);
     netbuf_free_chain(nb);
     return nullptr;
+}
+
+static bool ipv4_reassemble_from(const struct ipv4_reassemble* q, const struct netif* nif)
+{
+    for (const struct ipv4_frag* f = q->frags; f; f = f->next)
+        if (f->nb->rcvif == nif)
+            return true;
+    return false;
+}
+
+void ipv4_ifdetach(struct netif* nif)
+{
+    for (;;) {
+        const struct in_addr addr = ipv4_addr_primary(nif);
+        if (addr.s_addr == INADDR_ANY || ipv4_addr_del(nif, addr) < 0)
+            break;
+    }
+
+    uint64_t irq;
+    spinlock_acquire_irqsave(&reassemble_lock, &irq);
+    struct dlist_node* n;
+    n = dlist_first(&reassemble_queues);
+    while (n) {
+        struct dlist_node* next = dlist_next(n);
+        const auto q = dlist_entry(n, struct ipv4_reassemble, link);
+        if (ipv4_reassemble_from(q, nif)) {
+            dlist_remove(&reassemble_queues, n);
+            ipv4_reassemble_free(q);
+        }
+        n = next;
+    }
+    spinlock_release_irqrestore(&reassemble_lock, irq);
 }
 
 void ipv4_reassemble_timer(void* arg)
@@ -537,23 +636,10 @@ fail:
     return -ENOBUFS;
 }
 
-int ipv4_output(struct netbuf* nb, struct in_addr src, const struct in_addr dst, const uint8_t protocol,
-                const struct ipv4_options* opts, const uint32_t flags)
+static int ipv4_output_via(struct netbuf* nb, struct in_addr src, const struct in_addr dst, const uint8_t protocol,
+                           const struct ipv4_options* opts, const uint32_t flags, const struct route_nexthop* nh,
+                           const bool bcast_limited)
 {
-    const bool bcast_limited = dst.s_addr == INADDR_BROADCAST;
-    const struct route_nexthop* nh = route_lookup4(dst);
-    if (!nh) {
-        struct netif* first = netif_first();
-        if (!bcast_limited || !first) {
-            netbuf_free_chain(nb);
-            return -ENETUNREACH;
-        }
-        static struct route_nexthop bcast_nh;
-        bcast_nh.nif = first;
-        bcast_nh.family = AF_INET;
-        bcast_nh.gw4.s_addr = INADDR_ANY;
-        nh = &bcast_nh;
-    }
     struct netif* nif = nh->nif;
     if (!(nif->flags & NETIF_UP)) {
         netbuf_free_chain(nb);
@@ -646,6 +732,24 @@ int ipv4_output(struct netbuf* nb, struct in_addr src, const struct in_addr dst,
         frags = next;
     }
     return result;
+}
+
+int ipv4_output(struct netbuf* nb, const struct in_addr src, const struct in_addr dst, const uint8_t protocol,
+                const struct ipv4_options* opts, const uint32_t flags)
+{
+    const bool bcast_limited = dst.s_addr == INADDR_BROADCAST;
+    struct route_nexthop nh;
+    if (!route_lookup4(dst, &nh)) {
+        struct netif* first = bcast_limited ? netif_first() : nullptr;
+        if (!first) {
+            netbuf_free_chain(nb);
+            return -ENETUNREACH;
+        }
+        nh = (struct route_nexthop){ .nif = first, .family = AF_INET, .gw4 = { INADDR_ANY } };
+    }
+    const int rc = ipv4_output_via(nb, src, dst, protocol, opts, flags, &nh, bcast_limited);
+    netif_rele(nh.nif);
+    return rc;
 }
 
 int ipv4_pton(const char* str, struct in_addr* out)

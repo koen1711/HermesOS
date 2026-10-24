@@ -144,6 +144,7 @@ enum syscall_numbers {
 #endif
 
 void syscalls_initialize();
+void syscalls_cpu_initialize();
 void handle_syscall(interrupt_context* context);
 
 #endif //OS_SYSCALLS_H

@@ -24,6 +24,8 @@ uint32_t tcp_rexmt_ms(const struct tcpcb* tp);
 void tcp_timer_activate(struct tcpcb* tp, enum tcp_timer_type which, uint64_t delta_ms);
 void tcp_timer_stop(struct tcpcb* tp, enum tcp_timer_type which);
 void tcp_timer_stop_all(struct tcpcb* tp);
+
+uint32_t tcp_timer_discard(struct tcpcb* tp);
 bool tcp_timer_active(const struct tcpcb* tp, enum tcp_timer_type which);
 
 void tcp_timer_rexmt(void* arg);

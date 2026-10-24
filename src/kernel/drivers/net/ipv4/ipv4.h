@@ -67,6 +67,7 @@ struct route_nexthop;
 
 struct ipv4_ifaddr {
     struct dlist_node link;
+    struct dlist_node all_link;
     struct netif* nif;
     struct in_addr addr;
     struct in_addr netmask;
@@ -100,8 +101,11 @@ int ipv4_register_protocol(uint8_t protocol, ipv4_proto_input_t input);
 
 int ipv4_addr_add(struct netif* nif, struct in_addr addr, uint8_t prefix_len, uint64_t valid_until);
 int ipv4_addr_del(struct netif* nif, struct in_addr addr);
-struct ipv4_ifaddr* ipv4_addr_for_netif(const struct netif* nif);
-struct ipv4_ifaddr* ipv4_addr_find(struct in_addr addr);
+
+struct in_addr ipv4_addr_primary(const struct netif* nif);
+bool ipv4_addr_is_on(const struct netif* nif, struct in_addr addr);
+int ipv4_addr_set_expiry(struct in_addr addr, uint64_t valid_until);
+void ipv4_ifdetach(struct netif* nif);
 struct in_addr ipv4_select_source(struct netif* nif, struct in_addr dst);
 bool ipv4_is_local(struct in_addr addr);
 bool ipv4_is_broadcast(const struct netif* nif, struct in_addr addr);

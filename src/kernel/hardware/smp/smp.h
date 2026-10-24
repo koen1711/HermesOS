@@ -8,6 +8,9 @@
 #define MAX_CPUS 16
 
 struct cpu {
+    struct cpu* self;
+    uint64_t kernel_rsp;
+    uint64_t user_rsp;
     int index;
     uint32_t apic_id;
     volatile bool online;
@@ -21,9 +24,12 @@ int cpu_count();
 
 bool kernel_lock_enter();
 void kernel_lock_exit();
-void kernel_lock_release_for_new_process();
+bool kernel_lock_drop();
 
+void smp_early_initialize();
 void smp_initialize();
+void smp_spin_poll();
+void smp_kick(int index);
 void smp_tlb_shootdown();
 void smp_tlb_interrupt();
 

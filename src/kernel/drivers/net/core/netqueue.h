@@ -6,6 +6,7 @@
 #include <utils/sync/spinlock.h>
 
 struct netbuf;
+struct netif;
 
 struct netqueue {
     struct netbuf* head;
@@ -22,6 +23,8 @@ bool netqueue_enqueue(struct netqueue* q, struct netbuf* nb);
 struct netbuf* netqueue_dequeue(struct netqueue* q);
 
 void netqueue_drain(struct netqueue* q);
+
+size_t netqueue_purge(struct netqueue* q, const struct netif* rcvif);
 size_t netqueue_len(const struct netqueue* q);
 bool netqueue_full(const struct netqueue* q);
 bool netqueue_empty(const struct netqueue* q);

@@ -88,6 +88,13 @@ void lapic_send_startup(const uint32_t apic_id, const uint32_t vector)
     icr_wait();
 }
 
+void lapic_send_ipi(const uint32_t apic_id, const uint32_t vector)
+{
+    lapic_write(LAPIC_ICR_HIGH, apic_id << 24);
+    lapic_write(LAPIC_ICR_LOW, vector & 0xFF);
+    icr_wait();
+}
+
 void lapic_send_others(const uint32_t vector)
 {
     lapic_write(LAPIC_ICR_HIGH, 0);

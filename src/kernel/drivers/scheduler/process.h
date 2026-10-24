@@ -90,6 +90,8 @@ typedef struct {
 void process_initialize();
 bool process_create_idle(int cpu_index, uint64_t stack);
 extern void process_entry();
+extern void kthread_entry();
+process_t *process_create_kernel(void (*fn)(void *), void *arg);
 scheduler_t *scheduler_get();
 
 void process_yield();

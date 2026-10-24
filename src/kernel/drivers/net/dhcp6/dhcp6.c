@@ -238,10 +238,9 @@ static size_t dhcp6_build(const struct dhcp6_client* client, const uint8_t type,
 static int dhcp6_send(const struct dhcp6_client* client, const uint8_t type)
 {
     struct netif* nif = client->nif;
-    const struct ipv6_ifaddr* ll = ipv6_addr_linklocal(nif);
-    if (!ll || (ll->flags & (IPV6_ADDR_TENTATIVE | IPV6_ADDR_DUPLICATED)))
+    struct in6_addr src;
+    if (!ipv6_addr_linklocal(nif, &src))
         return -EADDRNOTAVAIL;
-    const struct in6_addr src = ll->addr;
 
     const size_t len = dhcp6_build(client, type, dhcp6_buf);
     struct netbuf* nb = netbuf_alloc_packet(len);
@@ -296,6 +295,25 @@ int dhcp6_send_info_request(struct dhcp6_client* client)
     return dhcp6_send(client, DHCP6_INFO_REQUEST);
 }
 
+struct dhcp6_renewal {
+    const struct netif* nif;
+    uint64_t preferred_until;
+    uint64_t valid_until;
+    bool undeprecate;
+};
+
+static int dhcp6_refresh(struct ipv6_ifaddr* ifa, void* arg)
+{
+    const struct dhcp6_renewal* r = arg;
+    if (ifa->nif != r->nif || !(ifa->flags & IPV6_ADDR_DHCP6))
+        return -EEXIST;
+    ifa->preferred_until = r->preferred_until;
+    ifa->valid_until = r->valid_until;
+    if (r->undeprecate)
+        ifa->flags &= ~IPV6_ADDR_DEPRECATED;
+    return 0;
+}
+
 int dhcp6_apply_lease(struct dhcp6_client* client)
 {
     struct dhcp6_lease* l = &client->lease;
@@ -310,12 +328,13 @@ int dhcp6_apply_lease(struct dhcp6_client* client)
     client->expire_tick = dhcp6_seconds(l->valid_lifetime, now);
     const uint64_t preferred_until = dhcp6_seconds(l->preferred_lifetime, now);
 
-    struct ipv6_ifaddr* ifa = ipv6_addr_find(&l->addr);
-    if (ifa && ifa->nif == client->nif && (ifa->flags & IPV6_ADDR_DHCP6)) {
-        ifa->preferred_until = preferred_until;
-        ifa->valid_until = client->expire_tick;
-        if (l->preferred_lifetime)
-            ifa->flags &= ~IPV6_ADDR_DEPRECATED;
+    struct dhcp6_renewal renewal = {
+        .nif = client->nif,
+        .preferred_until = preferred_until,
+        .valid_until = client->expire_tick,
+        .undeprecate = l->preferred_lifetime != 0,
+    };
+    if (ipv6_addr_modify(&l->addr, dhcp6_refresh, &renewal) == 0) {
         client->configured = true;
         return 0;
     }
@@ -446,6 +465,11 @@ void dhcp6_timer(void* arg)
     struct dhcp6_client* client = arg;
     uint64_t flags;
     spinlock_acquire_irqsave(&dhcp6_lock, &flags);
+
+    if (client->nif->dhcp6_state != client) {
+        spinlock_release_irqrestore(&dhcp6_lock, flags);
+        return;
+    }
     const uint64_t now = ticks_get();
     switch (client->state) {
     case DHCP6_STATE_SOLICIT:
@@ -572,10 +596,12 @@ void dhcp6_input(struct dhcp6_client* client, const uint8_t* msg, const size_t l
 static struct dhcp6_client* dhcp6_find_client(const uint8_t* msg)
 {
     const uint32_t xid = (uint32_t)msg[1] << 16 | (uint32_t)msg[2] << 8 | msg[3];
-    for (const struct netif* nif = netif_first(); nif; nif = netif_next(nif)) {
+    for (struct netif* nif = netif_first(); nif; nif = netif_next(nif)) {
         struct dhcp6_client* client = nif->dhcp6_state;
-        if (client && client->xid == xid)
+        if (client && client->xid == xid) {
+            netif_rele(nif);
             return client;
+        }
     }
     return nullptr;
 }
@@ -631,9 +657,12 @@ static int dhcp6_open_socket()
 
 static bool dhcp6_any_client()
 {
-    for (const struct netif* nif = netif_first(); nif; nif = netif_next(nif))
-        if (nif->dhcp6_state)
+    for (struct netif* nif = netif_first(); nif; nif = netif_next(nif)) {
+        if (nif->dhcp6_state) {
+            netif_rele(nif);
             return true;
+        }
+    }
     return false;
 }
 
@@ -709,6 +738,7 @@ void dhcp6_stop(struct netif* nif)
         callout_stop(&dhcp6_rx_callout);
     }
     spinlock_release_irqrestore(&dhcp6_lock, flags);
+    callout_drain(&client->timer);
     free(client);
     if (so)
         sock_close(so);

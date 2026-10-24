@@ -170,7 +170,7 @@ long sys_setitimer(const int which, const void* unew, void* uold)
     if (uold && copy_to_user(uold, &old, sizeof(old)) < 0)
         return -EFAULT;
 
-    callout_stop(&current->itimer);
+    callout_drain(&current->itimer);
     current->itimer_interval = ticks_from_timeval(&next.it_interval);
     const uint64_t value = ticks_from_timeval(&next.it_value);
     if (value)
@@ -190,7 +190,7 @@ long sys_alarm(const unsigned int seconds)
 {
     process_t* current = scheduler_get()->current;
     const struct itimerval_k old = itimer_get(current);
-    callout_stop(&current->itimer);
+    callout_drain(&current->itimer);
     current->itimer_interval = 0;
     if (seconds)
         callout_reset(&current->itimer, (uint64_t)seconds * ticks_hz(), itimer_fire, current);

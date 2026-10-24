@@ -24,5 +24,12 @@ context_switch:
 
 .global process_entry
 process_entry:
-    call kernel_lock_release_for_new_process
+    call process_entry_unlock
     jmp trap_return
+
+.global kthread_entry
+kthread_entry:
+    call process_entry_unlock
+    movq %r13, %rdi
+    call *%r12
+    ud2

@@ -6,6 +6,7 @@
 #include <os/stdbool.h>
 #include <utils/queue/queue.h>
 #include <hardware/memory/mmu.h>
+#include <utils/sync/spinlock.h>
 
 #define USER_ADDR_MIN       0x0000000040000000ULL
 #define USER_IMAGE_BASE     USER_ADDR_MIN
@@ -41,6 +42,7 @@ struct vm_area {
 };
 
 struct vm_space {
+    spinlock_t lock;
     uint64_t page_map;
     int ref_count;
     struct dlist areas;

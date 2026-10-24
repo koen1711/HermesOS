@@ -12,6 +12,7 @@ struct callout {
     callout_func_t func;
     void* arg;
     bool pending;
+    uint32_t dispatched;
 };
 
 void callout_initialize();
@@ -19,7 +20,11 @@ void callout_init(struct callout* c);
 
 void callout_reset(struct callout* c, uint64_t delay, callout_func_t func, void* arg);
 bool callout_stop(struct callout* c);
+
+void callout_drain(struct callout* c);
 bool callout_pending(const struct callout* c);
+
+uint32_t callout_dispatches(const struct callout* c);
 
 void callout_tick();
 void callout_poll();

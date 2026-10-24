@@ -9,6 +9,7 @@
 #include <hardware/memory/mmu.h>
 #include <hardware/memory/pmm.h>
 #include <drivers/scheduler/process.h>
+#include <drivers/syscalls/syscalls.h>
 #include <drivers/terminal/terminal.h>
 #include <drivers/timer/tsc.h>
 
@@ -16,14 +17,16 @@
 #define AP_STARTUP_TIMEOUT_US 200000
 #define AP_TIMER_HZ 1000
 
+#define MSR_GS_BASE 0xC0000101
+#define MSR_KERNEL_GS_BASE 0xC0000102
+
 extern uint8_t ap_trampoline_start[], ap_trampoline_end[];
 extern uint64_t ap_trampoline_cr3[], ap_trampoline_stack[], ap_trampoline_entry[];
 extern uint64_t gdt_start[];
-extern void irq_lapic_timer(), irq_tlb_shootdown(), irq_lapic_spurious();
+extern void irq_lapic_timer(), irq_tlb_shootdown(), irq_resched(), irq_lapic_spurious();
 
-static struct cpu cpus[MAX_CPUS] = { [0] = { .index = 0, .online = true, .tss = &task_state_segment } };
+static struct cpu cpus[MAX_CPUS] = { [0] = { .self = &cpus[0], .index = 0, .online = true, .tss = &task_state_segment } };
 static int ncpus = 1;
-static int8_t index_of_apic[256];
 
 static volatile uint32_t kernel_lock;
 static volatile int kernel_lock_owner = -1;
@@ -33,11 +36,23 @@ static struct {
     uint64_t address;
 } __attribute__((packed)) kernel_gdtr, kernel_idtr;
 
+static void wrmsr(const uint32_t msr, const uint64_t value)
+{
+    asm volatile("wrmsr" : : "c"(msr), "a"((uint32_t)value), "d"((uint32_t)(value >> 32)));
+}
+
+static void cpu_install(struct cpu* cpu)
+{
+    cpu->self = cpu;
+    wrmsr(MSR_GS_BASE, (uint64_t)cpu);
+    wrmsr(MSR_KERNEL_GS_BASE, 0);
+}
+
 struct cpu* cpu_this()
 {
-    if (ncpus == 1)
-        return &cpus[0];
-    return &cpus[index_of_apic[lapic_id() & 0xFF]];
+    struct cpu* cpu;
+    asm volatile("mov %%gs:0, %0" : "=r"(cpu));
+    return cpu;
 }
 
 struct cpu* cpu_get(const int index)
@@ -86,9 +101,24 @@ void kernel_lock_exit()
     __atomic_store_n(&kernel_lock, 0, __ATOMIC_RELEASE);
 }
 
-void kernel_lock_release_for_new_process()
+bool kernel_lock_drop()
 {
+    if (kernel_lock_owner != cpu_this()->index)
+        return false;
     kernel_lock_exit();
+    return true;
+}
+
+void smp_kick(const int index)
+{
+    if (ncpus > 1 && index >= 0 && index < ncpus && cpus[index].online)
+        lapic_send_ipi(cpus[index].apic_id, RESCHED_VECTOR);
+}
+
+void smp_spin_poll()
+{
+    if (ncpus > 1)
+        tlb_poll(cpu_this());
 }
 
 void smp_tlb_shootdown()
@@ -116,7 +146,7 @@ void smp_tlb_interrupt()
 static void install_tss(const int index, tss_t* tss)
 {
     const uint64_t base = (uint64_t)tss;
-    const uint64_t limit = sizeof(tss_t) - 1;
+    constexpr uint64_t limit = sizeof(tss_t) - 1;
     const int slot = TSS_GDT_INDEX + 2 * index;
     tss->iopb = sizeof(tss_t);
     gdt_start[slot] = (limit & 0xFFFF) | ((base & 0xFFFFFF) << 16) | (0x89ULL << 40) | (((limit >> 16) & 0xF) << 48)
@@ -130,11 +160,13 @@ static volatile int booting_index;
 static void ap_main()
 {
     struct cpu* cpu = &cpus[booting_index];
+    cpu_install(cpu);
 
     asm volatile("lgdt %0" : : "m"(kernel_gdtr));
     asm volatile("pushq $0x08; leaq 1f(%%rip), %%rax; pushq %%rax; lretq; 1:" : : : "rax", "memory");
     asm volatile("lidt %0" : : "m"(kernel_idtr));
     install_tss(cpu->index, cpu->tss);
+    syscalls_cpu_initialize();
 
     asm volatile("fninit");
     const uint32_t mxcsr = 0x1F80;
@@ -181,6 +213,11 @@ static bool start_ap(struct cpu* cpu)
     return cpu->online;
 }
 
+void smp_early_initialize()
+{
+    cpu_install(&cpus[0]);
+}
+
 void smp_initialize()
 {
     uint8_t apic_ids[MAX_CPUS];
@@ -194,6 +231,7 @@ void smp_initialize()
     asm volatile("sidt %0" : "=m"(kernel_idtr));
     idt_set_entry(LAPIC_TIMER_VECTOR, (uintptr_t)irq_lapic_timer);
     idt_set_entry(TLB_SHOOTDOWN_VECTOR, (uintptr_t)irq_tlb_shootdown);
+    idt_set_entry(RESCHED_VECTOR, (uintptr_t)irq_resched);
     idt_set_entry(LAPIC_SPURIOUS_VECTOR, (uintptr_t)irq_lapic_spurious);
 
     const uint64_t flags = irq_save();
@@ -202,7 +240,6 @@ void smp_initialize()
     lapic_timer_calibrate(AP_TIMER_HZ);
     const uint32_t bsp = lapic_id();
     cpus[0].apic_id = bsp;
-    index_of_apic[bsp] = 0;
 
     for (int i = 0; i < found; i++) {
         if (apic_ids[i] == bsp || ncpus >= MAX_CPUS)
@@ -210,13 +247,11 @@ void smp_initialize()
         struct cpu* cpu = &cpus[ncpus];
         cpu->index = ncpus;
         cpu->apic_id = apic_ids[i];
-        index_of_apic[apic_ids[i]] = (int8_t)ncpus;
 
         ncpus++;
         if (!start_ap(cpu)) {
             terminal_printf("smp: cpu with apic id %d did not start\n", apic_ids[i]);
             ncpus--;
-            index_of_apic[apic_ids[i]] = 0;
         }
     }
     terminal_printf("smp: %d cpus online\n", ncpus);

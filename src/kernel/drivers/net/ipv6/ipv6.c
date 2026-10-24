@@ -58,12 +58,17 @@ static struct dlist reassemble_queues;
 static spinlock_t reassemble_lock;
 static struct callout reassemble_callout;
 
+static struct dlist all_addrs;
+static spinlock_t addr_lock;
+
 void ipv6_initialize()
 {
     for (int i = 0; i < 256; i++)
         protocols[i] = nullptr;
     dlist_init(&reassemble_queues);
     spinlock_init(&reassemble_lock, "ipv6_reassemble");
+    dlist_init(&all_addrs);
+    spinlock_init(&addr_lock, "ipv6_addr");
     netisr_register(NETISR_IPV6, ipv6_input, IPV6_INPUT_QUEUE_LEN);
     callout_init(&reassemble_callout);
     callout_reset(&reassemble_callout, ticks_hz(), ipv6_reassemble_timer, nullptr);
@@ -184,13 +189,27 @@ static bool ipv6_addr_wants_route(const struct ipv6_ifaddr* ifa)
     return !(ifa->flags & (IPV6_ADDR_AUTOCONF | IPV6_ADDR_LINKLOCAL)) && ifa->prefix_len < 128;
 }
 
+static struct ipv6_ifaddr* ipv6_addr_find_locked(const struct in6_addr* addr)
+{
+    for (struct dlist_node* n = dlist_first(&all_addrs); n; n = dlist_next(n)) {
+        const auto ifa = dlist_entry(n, struct ipv6_ifaddr, all_link);
+        if (ipv6_addr_equal(&ifa->addr, addr))
+            return ifa;
+    }
+    return nullptr;
+}
+
+static void ipv6_addr_unlink_locked(struct ipv6_ifaddr* ifa)
+{
+    dlist_remove(&ifa->nif->ipv6_addrs, &ifa->link);
+    dlist_remove(&all_addrs, &ifa->all_link);
+}
+
 int ipv6_addr_add(struct netif* nif, const struct in6_addr* addr, const uint8_t prefix_len,
                   const uint32_t flags, const uint64_t preferred_until, const uint64_t valid_until)
 {
     if (prefix_len > 128 || ipv6_addr_is_multicast(addr) || ipv6_addr_is_unspecified(addr))
         return -EINVAL;
-    if (ipv6_addr_find(addr))
-        return -EEXIST;
 
     struct ipv6_ifaddr* ifa = malloc(sizeof(struct ipv6_ifaddr));
     if (!ifa)
@@ -200,80 +219,168 @@ int ipv6_addr_add(struct netif* nif, const struct in6_addr* addr, const uint8_t 
     ifa->addr = *addr;
     ifa->prefix_len = prefix_len;
     ifa->flags = flags | (ipv6_addr_is_linklocal(addr) ? IPV6_ADDR_LINKLOCAL : 0);
+    if (nif->flags & NETIF_LOOPBACK)
+        ifa->flags &= ~IPV6_ADDR_TENTATIVE;
     ifa->preferred_until = preferred_until;
     ifa->valid_until = valid_until;
+    const bool wants_route = ipv6_addr_wants_route(ifa);
+    const bool tentative = ifa->flags & IPV6_ADDR_TENTATIVE;
 
-    if (ipv6_addr_wants_route(ifa)) {
+    uint64_t irq;
+    spinlock_acquire_irqsave(&addr_lock, &irq);
+    if (ipv6_addr_find_locked(addr)) {
+        spinlock_release_irqrestore(&addr_lock, irq);
+        free(ifa);
+        return -EEXIST;
+    }
+    dlist_insert_tail(&nif->ipv6_addrs, &ifa->link);
+    dlist_insert_tail(&all_addrs, &ifa->all_link);
+    spinlock_release_irqrestore(&addr_lock, irq);
+
+    if (wants_route) {
         const int rc = route_add6(addr, prefix_len, nullptr, nif, 0);
         if (rc < 0) {
+            spinlock_acquire_irqsave(&addr_lock, &irq);
+            ipv6_addr_unlink_locked(ifa);
+            spinlock_release_irqrestore(&addr_lock, irq);
             free(ifa);
             return rc;
         }
     }
-    dlist_insert_tail(&nif->ipv6_addrs, &ifa->link);
 
-    if (nif->flags & NETIF_LOOPBACK) {
-        ifa->flags &= ~IPV6_ADDR_TENTATIVE;
+    if (nif->flags & NETIF_LOOPBACK)
         return 0;
-    }
 
     struct in6_addr group;
     ipv6_solicited_node(addr, &group);
     mld6_join(nif, &group);
-    if (ifa->flags & IPV6_ADDR_TENTATIVE)
-        nd6_dad_start(nif, ifa);
+    if (tentative)
+        nd6_dad_start(nif, addr);
     return 0;
 }
 
 int ipv6_addr_del(struct netif* nif, const struct in6_addr* addr)
 {
-    for (struct dlist_node* n = dlist_first(&nif->ipv6_addrs); n; n = dlist_next(n)) {
-        struct ipv6_ifaddr* ifa = dlist_entry(n, struct ipv6_ifaddr, link);
-        if (!ipv6_addr_equal(&ifa->addr, addr))
-            continue;
-        nd6_dad_stop(ifa);
-        dlist_remove(&nif->ipv6_addrs, n);
-        if (ipv6_addr_wants_route(ifa))
-            route_del6(addr, ifa->prefix_len);
-        if (!(nif->flags & NETIF_LOOPBACK)) {
-            struct in6_addr group;
-            ipv6_solicited_node(addr, &group);
-            mld6_leave(nif, &group);
-        }
-        free(ifa);
-        return 0;
+    if (ipv6_addr_flags(addr, nif) < 0)
+        return -EADDRNOTAVAIL;
+    nd6_dad_stop(addr);
+
+    uint64_t irq;
+    spinlock_acquire_irqsave(&addr_lock, &irq);
+    struct ipv6_ifaddr* ifa = ipv6_addr_find_locked(addr);
+    if (!ifa || ifa->nif != nif) {
+        spinlock_release_irqrestore(&addr_lock, irq);
+        return -EADDRNOTAVAIL;
     }
-    return -EADDRNOTAVAIL;
+    ipv6_addr_unlink_locked(ifa);
+    spinlock_release_irqrestore(&addr_lock, irq);
+
+    if (ipv6_addr_wants_route(ifa))
+        route_del6(addr, ifa->prefix_len);
+    if (!(nif->flags & NETIF_LOOPBACK)) {
+        struct in6_addr group;
+        ipv6_solicited_node(addr, &group);
+        mld6_leave(nif, &group);
+    }
+    free(ifa);
+    return 0;
 }
 
-struct ipv6_ifaddr* ipv6_addr_find(const struct in6_addr* addr)
+int ipv6_addr_flags(const struct in6_addr* addr, const struct netif* nif)
 {
-    for (const struct netif* nif = netif_first(); nif; nif = netif_next(nif)) {
-        for (struct dlist_node* n = dlist_first(&nif->ipv6_addrs); n; n = dlist_next(n)) {
-            const auto ifa = dlist_entry(n, struct ipv6_ifaddr, link);
-            if (ipv6_addr_equal(&ifa->addr, addr))
-                return ifa;
-        }
-    }
-    return nullptr;
+    uint64_t irq;
+    spinlock_acquire_irqsave(&addr_lock, &irq);
+    const struct ipv6_ifaddr* ifa = ipv6_addr_find_locked(addr);
+    const int flags = ifa && (!nif || ifa->nif == nif) ? (int)ifa->flags : -EADDRNOTAVAIL;
+    spinlock_release_irqrestore(&addr_lock, irq);
+    return flags;
 }
 
-struct ipv6_ifaddr* ipv6_addr_linklocal(struct netif* nif)
+int ipv6_addr_update(const struct in6_addr* addr, const uint32_t set, const uint32_t clear)
 {
+    uint64_t irq;
+    spinlock_acquire_irqsave(&addr_lock, &irq);
+    struct ipv6_ifaddr* ifa = ipv6_addr_find_locked(addr);
+    int flags = -EADDRNOTAVAIL;
+    if (ifa) {
+        ifa->flags = (ifa->flags & ~clear) | set;
+        flags = (int)ifa->flags;
+    }
+    spinlock_release_irqrestore(&addr_lock, irq);
+    return flags;
+}
+
+int ipv6_addr_modify(const struct in6_addr* addr, int (*fn)(struct ipv6_ifaddr* ifa, void* arg), void* arg)
+{
+    uint64_t irq;
+    spinlock_acquire_irqsave(&addr_lock, &irq);
+    struct ipv6_ifaddr* ifa = ipv6_addr_find_locked(addr);
+    const int rc = ifa ? fn(ifa, arg) : -EADDRNOTAVAIL;
+    spinlock_release_irqrestore(&addr_lock, irq);
+    return rc;
+}
+
+static struct netif* ipv6_addr_netif(const struct in6_addr* addr)
+{
+    uint64_t irq;
+    spinlock_acquire_irqsave(&addr_lock, &irq);
+    const struct ipv6_ifaddr* ifa = ipv6_addr_find_locked(addr);
+    struct netif* nif = ifa ? ifa->nif : nullptr;
+    if (nif)
+        netif_ref(nif);
+    spinlock_release_irqrestore(&addr_lock, irq);
+    return nif;
+}
+
+bool ipv6_addr_linklocal(const struct netif* nif, struct in6_addr* out)
+{
+    bool found = false;
+    uint64_t irq;
+    spinlock_acquire_irqsave(&addr_lock, &irq);
     for (struct dlist_node* n = dlist_first(&nif->ipv6_addrs); n; n = dlist_next(n)) {
         const auto ifa = dlist_entry(n, struct ipv6_ifaddr, link);
-        if (ifa->flags & IPV6_ADDR_LINKLOCAL)
-            return ifa;
+        if (ifa->flags & IPV6_ADDR_LINKLOCAL) {
+            found = ipv6_addr_usable(ifa);
+            if (found)
+                *out = ifa->addr;
+            break;
+        }
     }
-    return nullptr;
+    spinlock_release_irqrestore(&addr_lock, irq);
+    return found;
+}
+
+#define IPV6_EXPIRE_BATCH 8
+
+void ipv6_addr_expire(struct netif* nif, const uint64_t now)
+{
+    struct in6_addr expired[IPV6_EXPIRE_BATCH];
+    size_t n_expired;
+    do {
+        n_expired = 0;
+        uint64_t irq;
+        spinlock_acquire_irqsave(&addr_lock, &irq);
+        for (struct dlist_node* n = dlist_first(&nif->ipv6_addrs); n; n = dlist_next(n)) {
+            const auto ifa = dlist_entry(n, struct ipv6_ifaddr, link);
+            if (ifa->valid_until && ifa->valid_until <= now) {
+                if (n_expired < IPV6_EXPIRE_BATCH)
+                    expired[n_expired++] = ifa->addr;
+            } else if (ifa->preferred_until && ifa->preferred_until <= now) {
+                ifa->flags |= IPV6_ADDR_DEPRECATED;
+            }
+        }
+        spinlock_release_irqrestore(&addr_lock, irq);
+        for (size_t i = 0; i < n_expired; i++)
+            ipv6_addr_del(nif, &expired[i]);
+    } while (n_expired == IPV6_EXPIRE_BATCH);
 }
 
 bool ipv6_is_local(const struct in6_addr* addr)
 {
     if (ipv6_addr_is_loopback(addr))
         return true;
-    const struct ipv6_ifaddr* ifa = ipv6_addr_find(addr);
-    return ifa && !(ifa->flags & IPV6_ADDR_DUPLICATED);
+    const int flags = ipv6_addr_flags(addr, nullptr);
+    return flags >= 0 && !(flags & IPV6_ADDR_DUPLICATED);
 }
 
 static struct netif* ipv6_default_netif()
@@ -288,8 +395,8 @@ static struct netif* ipv6_netif_for(const struct in6_addr* dst)
 {
     if (ipv6_addr_is_multicast(dst) || ipv6_addr_is_linklocal(dst))
         return ipv6_default_netif();
-    const struct route_nexthop* nh = route_lookup6(dst);
-    return nh ? nh->nif : nullptr;
+    struct route_nexthop nh;
+    return route_lookup6(dst, &nh) ? nh.nif : nullptr;
 }
 
 static bool ipv6_source_better(const struct ipv6_ifaddr* cand, const struct ipv6_ifaddr* best, const struct in6_addr* dst)
@@ -315,22 +422,29 @@ int ipv6_select_source(struct netif* nif, const struct in6_addr* dst, struct in6
         *out = in6addr_loopback;
         return 0;
     }
+    struct netif* held = nif ? nullptr : ipv6_netif_for(dst);
     if (!nif)
-        nif = ipv6_netif_for(dst);
+        nif = held;
     if (!nif)
         return -ENETUNREACH;
 
+    int result = 0;
+    uint64_t irq;
+    spinlock_acquire_irqsave(&addr_lock, &irq);
     const struct ipv6_ifaddr* best = nullptr;
     for (struct dlist_node* n = dlist_first(&nif->ipv6_addrs); n; n = dlist_next(n)) {
         const auto ifa = dlist_entry(n, struct ipv6_ifaddr, link);
         if (ipv6_addr_usable(ifa) && ipv6_source_better(ifa, best, dst))
             best = ifa;
     }
-
     if (!best || (ipv6_scope(&best->addr) < ipv6_scope(dst) && !ipv6_addr_is_multicast(dst)))
-        return -EADDRNOTAVAIL;
-    *out = best->addr;
-    return 0;
+        result = -EADDRNOTAVAIL;
+    else
+        *out = best->addr;
+    spinlock_release_irqrestore(&addr_lock, irq);
+    if (held)
+        netif_rele(held);
+    return result;
 }
 
 static bool ipv6_is_ext_header(const uint8_t nh)
@@ -405,9 +519,9 @@ static bool ipv6_accept_dst(const struct netif* nif, const struct netbuf* nb, co
 {
     if (ipv6_addr_is_multicast(dst))
         return nif && mld6_is_member((struct netif*)nif, dst);
-    const struct ipv6_ifaddr* ifa = ipv6_addr_find(dst);
-    if (ifa)
-        return ipv6_addr_usable(ifa);
+    const int flags = ipv6_addr_flags(dst, nullptr);
+    if (flags >= 0)
+        return !(flags & (IPV6_ADDR_TENTATIVE | IPV6_ADDR_DUPLICATED));
     return ipv6_addr_is_loopback(dst) && nb->rcvif && (nb->rcvif->flags & NETIF_LOOPBACK);
 }
 
@@ -753,36 +867,11 @@ int ipv6_fragment(struct netbuf* nb, struct netif* nif, const uint32_t mtu, stru
     return 0;
 }
 
-int ipv6_output(struct netbuf* nb, const struct in6_addr* src, const struct in6_addr* dst, const uint8_t next_header,
-                const struct ipv6_options* opts, const uint32_t flags)
+static int ipv6_output_via(struct netbuf* nb, const struct in6_addr* src, const struct in6_addr* dst,
+                           const uint8_t next_header, const struct ipv6_options* opts, const uint32_t flags,
+                           struct netif* nif, const struct in6_addr* next_hop, const uint32_t route_mtu,
+                           const bool local)
 {
-    const bool scoped = ipv6_addr_is_multicast(dst) || ipv6_addr_is_linklocal(dst);
-    const bool local = !ipv6_addr_is_multicast(dst) && ipv6_is_local(dst);
-    struct netif* nif = opts ? opts->nif : nullptr;
-    const struct in6_addr* next_hop = dst;
-    uint32_t route_mtu = 0;
-
-    if (!nif && (scoped || local)) {
-        const struct ipv6_ifaddr* ifa = src && !ipv6_addr_is_unspecified(src) ? ipv6_addr_find(src) : nullptr;
-        if (!ifa && local)
-            ifa = ipv6_addr_find(dst);
-        nif = ifa ? ifa->nif : ipv6_default_netif();
-    }
-    if (!scoped && !local) {
-        const struct route_nexthop* nh = route_lookup6(dst);
-        if (!nh) {
-            netbuf_free_chain(nb);
-            return -ENETUNREACH;
-        }
-        nif = nh->nif;
-        if (!ipv6_addr_is_unspecified(&nh->gw6))
-            next_hop = &nh->gw6;
-        route_mtu = nh->mtu;
-    }
-    if (!nif) {
-        netbuf_free_chain(nb);
-        return -ENETUNREACH;
-    }
     if (!(nif->flags & NETIF_UP)) {
         netbuf_free_chain(nb);
         return -ENETDOWN;
@@ -851,6 +940,47 @@ int ipv6_output(struct netbuf* nb, const struct in6_addr* src, const struct in6_
     return result;
 }
 
+int ipv6_output(struct netbuf* nb, const struct in6_addr* src, const struct in6_addr* dst, const uint8_t next_header,
+                const struct ipv6_options* opts, const uint32_t flags)
+{
+    const bool scoped = ipv6_addr_is_multicast(dst) || ipv6_addr_is_linklocal(dst);
+    const bool local = !ipv6_addr_is_multicast(dst) && ipv6_is_local(dst);
+    struct netif* nif = opts ? opts->nif : nullptr;
+    struct in6_addr next_hop = *dst;
+    uint32_t route_mtu = 0;
+
+    if (nif) {
+        netif_ref(nif);
+    } else if (scoped || local) {
+        if (src && !ipv6_addr_is_unspecified(src))
+            nif = ipv6_addr_netif(src);
+        if (!nif && local)
+            nif = ipv6_addr_netif(dst);
+        if (!nif)
+            nif = ipv6_default_netif();
+    }
+    if (!scoped && !local) {
+        struct route_nexthop nh;
+        if (nif)
+            netif_rele(nif);
+        if (!route_lookup6(dst, &nh)) {
+            netbuf_free_chain(nb);
+            return -ENETUNREACH;
+        }
+        nif = nh.nif;
+        if (!ipv6_addr_is_unspecified(&nh.gw6))
+            next_hop = nh.gw6;
+        route_mtu = nh.mtu;
+    }
+    if (!nif) {
+        netbuf_free_chain(nb);
+        return -ENETUNREACH;
+    }
+    const int rc = ipv6_output_via(nb, src, dst, next_header, opts, flags, nif, &next_hop, route_mtu, local);
+    netif_rele(nif);
+    return rc;
+}
+
 void ipv6_ifattach(struct netif* nif)
 {
     if (nif->flags & NETIF_LOOPBACK) {
@@ -867,13 +997,34 @@ void ipv6_ifattach(struct netif* nif)
 
 void ipv6_ifdetach(struct netif* nif)
 {
-    struct dlist_node* n;
-    while ((n = dlist_first(&nif->ipv6_addrs))) {
-        const auto ifa = dlist_entry(n, struct ipv6_ifaddr, link);
-        const struct in6_addr addr = ifa->addr;
-        ipv6_addr_del(nif, &addr);
+    for (;;) {
+        uint64_t irq;
+        spinlock_acquire_irqsave(&addr_lock, &irq);
+        struct dlist_node* first = dlist_first(&nif->ipv6_addrs);
+        struct in6_addr addr;
+        if (first)
+            addr = dlist_entry(first, struct ipv6_ifaddr, link)->addr;
+        spinlock_release_irqrestore(&addr_lock, irq);
+        if (!first || ipv6_addr_del(nif, &addr) < 0)
+            break;
     }
+    struct dlist_node* n;
     nd6_ifdetach(nif);
+    mld6_ifdetach(nif);
+
+    uint64_t irq;
+    spinlock_acquire_irqsave(&reassemble_lock, &irq);
+    n = dlist_first(&reassemble_queues);
+    while (n) {
+        struct dlist_node* next = dlist_next(n);
+        struct ipv6_reassemble* q = dlist_entry(n, struct ipv6_reassemble, link);
+        if (q->rcvif == nif) {
+            dlist_remove(&reassemble_queues, n);
+            ipv6_reassemble_free(q);
+        }
+        n = next;
+    }
+    spinlock_release_irqrestore(&reassemble_lock, irq);
 }
 
 static int ipv6_hex_digit(const char c)

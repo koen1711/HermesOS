@@ -1,32 +1,17 @@
 .code64
 
-# Every interrupt stub builds an interrupt_context (see interrupts.h) on the stack:
-#
-#   CPU:            ss, rsp, rflags, cs, rip  (+ error code for some exceptions)
-#   vector stub:    error code (0 if the CPU didn't push one), vector number
-#   trap_common:    rax, rbx, rcx, rdx, rsi, rdi, rbp, r8 - r15
-#
-# After that %rsp points at the interrupt_context, which is passed to trap_handler.
-# trap_return then restores every register from the frame and does iretq.
-#
-# The CPU aligns %rsp to 16 bytes before pushing its frame. The full interrupt_context
-# is 22 * 8 = 176 bytes, a multiple of 16, so %rsp is still 16-byte aligned at the
-# call to trap_handler, as the SysV ABI requires.
-
 .global trap_return
 
 .extern trap_handler
 
-# Stub for a vector where the CPU does not push an error code
 .macro TRAP_NOERR name, vector
 .global \name
 \name:
-    pushq $0            # dummy error code, keeps the frame layout the same
+    pushq $0
     pushq $\vector
     jmp trap_common
 .endm
 
-# Stub for a vector where the CPU pushes an error code (8, 10-14, 17, 21, 29, 30)
 .macro TRAP_ERR name, vector
 .global \name
 \name:
@@ -34,7 +19,6 @@
     jmp trap_common
 .endm
 
-# CPU exceptions 0-31
 TRAP_NOERR exception_0,  0      # divide error
 TRAP_NOERR exception_1,  1      # debug
 TRAP_NOERR exception_2,  2      # NMI
@@ -89,6 +73,7 @@ TRAP_NOERR irq_interrupt_15, 0x2f      # secondary ATA, also the slave's spuriou
 TRAP_NOERR irq_interrupt_syscall, 0x80 # SYSCALL_VECTOR, syscalls_initialize puts it in the IDT
 TRAP_NOERR irq_lapic_timer, 0x40       # LAPIC_TIMER_VECTOR, smp_initialize puts these in the IDT
 TRAP_NOERR irq_tlb_shootdown, 0x41
+TRAP_NOERR irq_resched, 0x42
 TRAP_NOERR irq_lapic_spurious, 0xff
 
 # Stub address for every exception 0-31, idt_initialize puts them in the IDT
@@ -106,6 +91,10 @@ exception_stub_table:
 .section .text
 
 trap_common:
+    testb $3, 24(%rsp)
+    jz 1f
+    swapgs
+1:
     pushq %rax
     pushq %rbx
     pushq %rcx
@@ -122,8 +111,8 @@ trap_common:
     pushq %r14
     pushq %r15
 
-    cld                 # the SysV ABI requires the direction flag clear on calls
-    movq %rsp, %rdi     # first argument: interrupt_context*
+    cld
+    movq %rsp, %rdi
     call trap_handler
 
 trap_return:
@@ -143,5 +132,77 @@ trap_return:
     popq %rbx
     popq %rax
 
-    addq $16, %rsp      # skip vector number and error code
+    testb $3, 24(%rsp)
+    jz 1f
+    swapgs
+1:
+    addq $16, %rsp
     iretq
+
+.global syscall_entry
+syscall_entry:
+    swapgs
+    movq %rsp, %gs:16   # cpu->user_rsp
+    movq %gs:8, %rsp    # cpu->kernel_rsp
+    pushq $0x1b         # ss: user data | 3
+    pushq %gs:16        # rsp
+    pushq %r11          # rflags
+    pushq $0x23         # cs: user code | 3
+    pushq %rcx          # rip
+    pushq $0            # error code
+    pushq $0x80         # SYSCALL_VECTOR
+
+    pushq %rax
+    pushq %rbx
+    pushq %rcx
+    pushq %rdx
+    pushq %rsi
+    pushq %rdi
+    pushq %rbp
+    pushq %r8
+    pushq %r9
+    pushq %r10
+    pushq %r11
+    pushq %r12
+    pushq %r13
+    pushq %r14
+    pushq %r15
+
+    cld
+    movq %rsp, %rdi
+    call trap_handler
+
+    movq 136(%rsp), %rcx    # rip
+    cmpq 96(%rsp), %rcx     # rcx
+    jne trap_return
+    movq 152(%rsp), %r11    # rflags
+    cmpq 32(%rsp), %r11     # r11
+    jne trap_return
+    cmpq $0x23, 144(%rsp)   # cs
+    jne trap_return
+    cmpq $0x1b, 168(%rsp)   # ss
+    jne trap_return
+    movq %rcx, %rax
+    shrq $47, %rax
+    jnz trap_return
+
+    popq %r15
+    popq %r14
+    popq %r13
+    popq %r12
+    popq %r11
+    popq %r10
+    popq %r9
+    popq %r8
+    popq %rbp
+    popq %rdi
+    popq %rsi
+    popq %rdx
+    popq %rcx
+    popq %rbx
+    popq %rax
+
+    cli
+    movq 40(%rsp), %rsp
+    swapgs
+    sysretq

@@ -14,12 +14,41 @@
 #define CLONE_VM 0x00000100
 #define CLONE_VFORK 0x00004000
 
+#define MSR_EFER  0xC0000080
+#define MSR_STAR  0xC0000081
+#define MSR_LSTAR 0xC0000082
+#define MSR_FMASK 0xC0000084
+#define EFER_SCE  0x1
+#define FMASK_BITS 0x47700  // TF, DF, IF, IOPL, NT, AC
+
 extern void irq_interrupt_syscall();
+extern void syscall_entry();
+
+static uint64_t rdmsr(const uint32_t msr)
+{
+    uint32_t lo, hi;
+    asm volatile("rdmsr" : "=a"(lo), "=d"(hi) : "c"(msr));
+    return (uint64_t)hi << 32 | lo;
+}
+
+static void wrmsr(const uint32_t msr, const uint64_t value)
+{
+    asm volatile("wrmsr" : : "c"(msr), "a"((uint32_t)value), "d"((uint32_t)(value >> 32)));
+}
+
+void syscalls_cpu_initialize()
+{
+    wrmsr(MSR_EFER, rdmsr(MSR_EFER) | EFER_SCE);
+    wrmsr(MSR_STAR, (0x13ULL << 48) | (0x08ULL << 32));
+    wrmsr(MSR_LSTAR, (uint64_t)syscall_entry);
+    wrmsr(MSR_FMASK, FMASK_BITS);
+}
 
 void syscalls_initialize()
 {
     idt_set_entry(SYSCALL_VECTOR, (uintptr_t)irq_interrupt_syscall);
     idt[SYSCALL_VECTOR].type_attr = 0xEE;
+    syscalls_cpu_initialize();
 }
 
 static long socket_syscall(const interrupt_context* c)

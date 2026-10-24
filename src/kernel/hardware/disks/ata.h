@@ -2,7 +2,9 @@
 #define ATAPI_H
 
 #define ATA_SECTOR_SIZE 512
-#define ATA_CACHE_SIZE  4096
+#define ATA_DMA_MAX_SIZE 0x100000
+#define ATA_PRD_MAX      512
+#define ATA_PRD_LAST     0x8000
 
 #define ATA_CMD_IDENTIFY   0xEC
 
@@ -39,8 +41,26 @@
 #define ATA_CMD_WRITE_PIO         0x30
 #define ATA_CMD_WRITE_PIO_EXT     0x34
 
+#define ATA_CMD_READ_DMA          0xC8
+#define ATA_CMD_READ_DMA_EXT      0x25
+
+#define ATA_CMD_WRITE_DMA         0xCA
+#define ATA_CMD_WRITE_DMA_EXT     0x35
+
+#define ATA_BM_COMMAND   0x00
+#define ATA_BM_STATUS    0x02
+#define ATA_BM_PRDT      0x04
+
+#define ATA_BM_CMD_START 0x01
+#define ATA_BM_CMD_READ  0x08
+
+#define ATA_BM_SR_ACTIVE 0x01
+#define ATA_BM_SR_ERR    0x02
+#define ATA_BM_SR_IRQ    0x04
+
 #include <os/stdint.h>
 
+#include <hardware/memory/dma.h>
 #include <hardware/port/ports.h>
 #include "partition_table.h"
 
@@ -65,10 +85,10 @@ typedef struct {
 } __attribute__((packed)) ata_identify;
 
 typedef struct {
-    uintptr_t offset;
+    uint32_t offset;
     uint16_t bytes;
     uint16_t last;
-} prdt;
+} __attribute__((packed)) prdt;
 
 typedef struct {
     int io_base;
@@ -78,9 +98,10 @@ typedef struct {
     ata_identify identity;
     prdt * dma_prdt;
     uintptr_t dma_prdt_phys;
-    uint8_t * dma_start;
-    uintptr_t dma_start_phys;
+    struct dma_map * dma_prdt_map;
+    struct dma_map * dma_data_map;
     uint32_t bar4;
+    uint16_t bmide;
     uint32_t atapi_lba;
     uint32_t atapi_sector_size;
     uint8_t bounce[ATA_SECTOR_SIZE];

@@ -2,7 +2,7 @@
 
 #include <hardware/memory/alloc.h>
 #include "drivers/terminal/terminal.h"
-#include <drivers/timer/rtc.h>
+#include <drivers/timer/clock.h>
 #include <utils/str/str.h>
 
 #include <drivers/fs/vfs/vfs.h>
@@ -30,6 +30,8 @@
 #define LFN_LAST          0x40
 #define LFN_MAX_ENTRIES   20
 #define FAT_NAME_MAX      255
+#define WRITE_RUN_MAX     (16u << 20)
+#define WRITE_ZERO_CHUNK  (64u << 10)
 
 static inode_operations_t fat32_dir_iops;
 static inode_operations_t fat32_file_iops;
@@ -72,11 +74,26 @@ static uint64_t fat_entry_byte(const fat32_sb_info *sbi, const int copy, const u
            + (uint64_t)cluster * 4;
 }
 
+static int fat_flush(fat32_sb_info *sbi)
+{
+    if (!sbi->fat_cache_dirty)
+        return 0;
+    const uint64_t copy_size = (uint64_t)sbi->sectors_per_fat * sbi->bytes_per_sector;
+    for (int copy = 0; copy < (sbi->bs.number_of_fats ? sbi->bs.number_of_fats : 1); copy++) {
+        if (bdev_write(sbi, (uint64_t)sbi->fat_cache_sector * 512 + copy * copy_size, 512, sbi->fat_cache) < 0)
+            return -EIO;
+    }
+    sbi->fat_cache_dirty = false;
+    return 0;
+}
+
 static int fat_get(fat32_sb_info *sbi, const uint32_t cluster, uint32_t *out)
 {
     const uint64_t off = fat_entry_byte(sbi, 0, cluster);
     const uint32_t sector = (uint32_t)(off / 512);
     if (!sbi->fat_cache_valid || sbi->fat_cache_sector != sector) {
+        if (fat_flush(sbi) < 0)
+            return -EIO;
         if (bdev_read(sbi, (uint64_t)sector * 512, 512, sbi->fat_cache) != 0) {
             sbi->fat_cache_valid = false;
             return -EIO;
@@ -100,13 +117,7 @@ static int fat_set(fat32_sb_info *sbi, const uint32_t cluster, const uint32_t va
     memcpy(&raw, sbi->fat_cache + off0 % 512, 4);
     raw = (raw & ~FAT_ENTRY_MASK) | (value & FAT_ENTRY_MASK);
     memcpy(sbi->fat_cache + off0 % 512, &raw, 4);
-
-    for (int copy = 0; copy < (sbi->bs.number_of_fats ? sbi->bs.number_of_fats : 1); copy++) {
-        if (bdev_write(sbi, fat_entry_byte(sbi, copy, cluster), 4, &raw) < 0) {
-            sbi->fat_cache_valid = false;
-            return -EIO;
-        }
-    }
+    sbi->fat_cache_dirty = true;
     return 0;
 }
 
@@ -129,13 +140,14 @@ static void fsinfo_adjust(fat32_sb_info *sbi, const int delta, const uint32_t hi
 
 static void fsinfo_sync(fat32_sb_info *sbi)
 {
+    fat_flush(sbi);
     if (!sbi->fsinfo_dirty || sbi->fsinfo.lead_signature != FSINFO_LEAD_SIG || sbi->bs.fsinfo_sector == 0)
         return;
     bdev_write(sbi, (uint64_t)sbi->bs.fsinfo_sector * sbi->bytes_per_sector, sizeof(sbi->fsinfo), &sbi->fsinfo);
     sbi->fsinfo_dirty = false;
 }
 
-static uint32_t alloc_cluster(fat32_sb_info *sbi, const uint32_t prev)
+static uint32_t alloc_cluster(fat32_sb_info *sbi, const uint32_t prev, const bool zero_fill)
 {
     const uint32_t total = sbi->total_clusters;
     const uint32_t hint = sbi->fsinfo.next_free_cluster;
@@ -149,13 +161,17 @@ static uint32_t alloc_cluster(fat32_sb_info *sbi, const uint32_t prev)
         if (v != FAT_FREE)
             continue;
 
-        uint8_t *zero = malloc(cluster_byte_size(sbi));
-        if (!zero)
-            return 0;
-        memset(zero, 0, cluster_byte_size(sbi));
-        const int err = bdev_write(sbi, cluster_to_byte(sbi, c), cluster_byte_size(sbi), zero);
-        free(zero);
-        if (err < 0 || fat_set(sbi, c, FAT_EOC) < 0)
+        if (zero_fill) {
+            uint8_t *zero = malloc(cluster_byte_size(sbi));
+            if (!zero)
+                return 0;
+            memset(zero, 0, cluster_byte_size(sbi));
+            const int err = bdev_write(sbi, cluster_to_byte(sbi, c), cluster_byte_size(sbi), zero);
+            free(zero);
+            if (err < 0)
+                return 0;
+        }
+        if (fat_set(sbi, c, FAT_EOC) < 0)
             return 0;
         if (prev && fat_set(sbi, prev, c) < 0)
             return 0;
@@ -184,7 +200,7 @@ static int chain_seek(fat32_inode_info *fi, const uint64_t pos, const bool grow,
     if (fi->first_cluster == 0) {
         if (!grow)
             return -EIO;
-        const uint32_t c = alloc_cluster(sbi, 0);
+        const uint32_t c = alloc_cluster(sbi, 0, false);
         if (!c)
             return -ENOSPC;
         fi->first_cluster = c;
@@ -202,7 +218,7 @@ static int chain_seek(fat32_inode_info *fi, const uint64_t pos, const bool grow,
         if (!valid_cluster(sbi, next)) {
             if (!grow)
                 return -EIO;
-            next = alloc_cluster(sbi, c);
+            next = alloc_cluster(sbi, c, false);
             if (!next)
                 return -ENOSPC;
         }
@@ -214,16 +230,31 @@ static int chain_seek(fat32_inode_info *fi, const uint64_t pos, const bool grow,
     return 0;
 }
 
+static uint64_t fat_now_secs()
+{
+    uint64_t ns = 0;
+    clock_get_ns(CLOCK_REALTIME_K, &ns);
+    return ns / 1000000000ULL;
+}
+
 static uint16_t fat_date()
 {
-    const rtc_datetime now = rtc_get_datetime();
-    return (uint16_t)(((now.date.year + 20) << 9) | (now.date.month << 5) | now.date.day);
+    const int64_t z = (int64_t)(fat_now_secs() / 86400) + 719468;
+    const int64_t era = (z >= 0 ? z : z - 146096) / 146097;
+    const unsigned doe = (unsigned)(z - era * 146097);
+    const unsigned yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    const unsigned doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    const unsigned mp = (5 * doy + 2) / 153;
+    const unsigned day = doy - (153 * mp + 2) / 5 + 1;
+    const unsigned month = mp < 10 ? mp + 3 : mp - 9;
+    const int64_t year = (int64_t)yoe + era * 400 + (month <= 2);
+    return (uint16_t)(((year - 1980) << 9) | (month << 5) | day);
 }
 
 static uint16_t fat_time()
 {
-    const rtc_datetime now = rtc_get_datetime();
-    return (uint16_t)((now.time.hours << 11) | (now.time.minutes << 5) | (now.time.seconds / 2));
+    const uint64_t s = fat_now_secs() % 86400;
+    return (uint16_t)(((s / 3600) << 11) | (((s / 60) % 60) << 5) | ((s % 60) / 2));
 }
 
 static int dir_entry_io(fat32_sb_info *sbi, const uint32_t dir_first, const uint32_t pos,
@@ -236,6 +267,9 @@ static int dir_entry_io(fat32_sb_info *sbi, const uint32_t dir_first, const uint
             return -EIO;
     }
     const uint64_t off = cluster_to_byte(sbi, c) + pos % cluster_byte_size(sbi);
+
+    if (write && fat_flush(sbi) < 0)
+        return -EIO;
     if (write)
         return bdev_write(sbi, off, DIRENT_SIZE, de);
     return bdev_read(sbi, off, DIRENT_SIZE, de) == 0 ? 0 : -EIO;
@@ -557,7 +591,7 @@ static int dir_alloc_slots(fat32_sb_info *sbi, const uint32_t dir_first, const u
             break;
         }
         if (r == 0) {
-            const uint32_t c = alloc_cluster(sbi, it.last_cluster);
+            const uint32_t c = alloc_cluster(sbi, it.last_cluster, true);
             if (!c) {
                 err = -ENOSPC;
                 break;
@@ -842,13 +876,15 @@ static ssize_t write_at(fat32_inode_info *fi, const uint64_t pos, const void *sr
         return -EFBIG;
 
     uint8_t *zero = nullptr;
+    const uint32_t zero_len = cs > WRITE_ZERO_CHUNK ? cs : WRITE_ZERO_CHUNK;
     if (!src) {
-        zero = malloc(cs);
+        zero = malloc(zero_len);
         if (!zero)
             return -ENOMEM;
-        memset(zero, 0, cs);
+        memset(zero, 0, zero_len);
     }
 
+    const uint32_t run_max = src ? WRITE_RUN_MAX : zero_len;
     size_t done = 0;
     int err = 0;
     while (done < len) {
@@ -856,8 +892,20 @@ static ssize_t write_at(fat32_inode_info *fi, const uint64_t pos, const void *sr
         if ((err = chain_seek(fi, pos + done, true, &clus)) < 0)
             break;
         const uint32_t in = (uint32_t)((pos + done) % cs);
-        const uint32_t n = len - done < cs - in ? (uint32_t)(len - done) : cs - in;
-        if ((err = bdev_write(sbi, cluster_to_byte(sbi, clus) + in, n,
+        const uint32_t run_start = clus;
+        uint32_t n = len - done < cs - in ? (uint32_t)(len - done) : cs - in;
+        while (done + n < len && n + cs <= run_max) {
+            uint32_t next = fat32_next_cluster(sbi, clus);
+            if (!valid_cluster(sbi, next))
+                next = alloc_cluster(sbi, clus, false);
+            if (next != clus + 1 || !valid_cluster(sbi, next))
+                break;
+            fi->cache_index++;
+            fi->cache_cluster = next;
+            clus = next;
+            n += len - done - n < cs ? (uint32_t)(len - done - n) : cs;
+        }
+        if ((err = bdev_write(sbi, cluster_to_byte(sbi, run_start) + in, n,
                               src ? (const uint8_t *)src + done : zero)) < 0)
             break;
         done += n;
@@ -1025,7 +1073,7 @@ static int fat32_create(inode_t *dir, const char *name, const bool directory)
 
     uint32_t cluster = 0;
     if (directory) {
-        cluster = alloc_cluster(sbi, 0);
+        cluster = alloc_cluster(sbi, 0, true);
         if (!cluster)
             return -ENOSPC;
         fat32_directory_entry dot;
@@ -1271,6 +1319,7 @@ static inode_t *fat32_mount(void *blob)
 static int fat32_sync(inode_t *root)
 {
     const fat32_inode_info *fi = root->private_data;
+    fsinfo_sync(fi->sbi);
     const struct block_device *bdev = fi->sbi->bdev;
     if (!bdev->ops->flush)
         return 0;
@@ -1285,7 +1334,10 @@ static void fat32_unmount(inode_t *root)
 
     if (sbi) {
         fsinfo_sync(sbi);
-        free(sbi->bdev);
+        if (sbi->bdev->ops->release)
+            sbi->bdev->ops->release(sbi->bdev);
+        else
+            free(sbi->bdev);
         free(sbi);
     }
     free(fi);

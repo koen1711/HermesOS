@@ -64,6 +64,8 @@ struct netif {
     struct dlist_node link;
     char name[NETIF_NAME_LEN];
     uint32_t index;
+    uint32_t refcount;
+    bool gone;
     uint32_t type;
     uint32_t flags;
     uint32_t link_state;
@@ -93,6 +95,8 @@ void netif_initialize();
 
 struct netif* netif_alloc(uint32_t type, const char* name_prefix);
 void netif_free(struct netif* nif);
+void netif_ref(struct netif* nif);
+void netif_rele(struct netif* nif);
 int netif_attach(struct netif* nif);
 void netif_detach(struct netif* nif);
 
@@ -102,7 +106,7 @@ int netif_output(struct netif* nif, struct netbuf* nb);
 struct netif* netif_find_by_name(const char* name);
 struct netif* netif_find_by_index(uint32_t index);
 struct netif* netif_first();
-struct netif* netif_next(const struct netif* nif);
+struct netif* netif_next(struct netif* nif);
 
 int netif_up(struct netif* nif);
 int netif_down(struct netif* nif);

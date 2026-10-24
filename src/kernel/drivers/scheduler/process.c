@@ -11,6 +11,8 @@
 #include <hardware/memory/alloc.h>
 #include <utils/random/random.h>
 #include <utils/str/str.h>
+#include <utils/sync/spinlock.h>
+#include <hardware/interrupts/irq.h>
 #include <os/errno.h>
 
 #include "drivers/terminal/terminal.h"
@@ -58,8 +60,9 @@ enum auxv_type {
 
 static process_t processes[MAXIMUM_NUMBER_OF_PROCESSES];
 static int next_pid = 1;
-// run queues are shared; each CPU has its own current process
+
 static scheduler_t scheduler;
+static spinlock_t sched_lock = { .name = "sched" };
 static scheduler_t per_cpu[MAX_CPUS];
 static uint8_t fpu_default[512] __attribute__((aligned(16)));
 
@@ -69,6 +72,8 @@ static void process_free(process_t *proc);
 
 static void set_tss(const process_t *proc);
 static void schedule();
+static void sched_switch(uint64_t flags);
+static void reap_detached();
 static void switch_process(process_t *prev, process_t *next);
 
 static process_t *remove_waiting_process(struct dlist *list, int wait_id);
@@ -95,7 +100,10 @@ scheduler_t *scheduler_get() {
 }
 
 void process_yield() {
+    uint64_t flags;
+    spinlock_acquire_irqsave(&sched_lock, &flags);
     if (dlist_empty(&scheduler.ready)) {
+        spinlock_release_irqrestore(&sched_lock, flags);
         return;
     }
 
@@ -106,17 +114,32 @@ void process_yield() {
         dlist_insert_tail(&scheduler.ready, &proc->link);
     }
 
-    schedule();
+    sched_switch(flags);
 }
 
 void process_sleep(const int wait_id) {
+    uint64_t flags;
+    spinlock_acquire_irqsave(&sched_lock, &flags);
     process_t *proc = scheduler_get()->current;
     proc->state = PROC_SLOT_SLEEPING;
     proc->wait_id = wait_id;
 
     dlist_insert_tail(&scheduler.waiting, &proc->link);
 
-    schedule();
+    sched_switch(flags);
+}
+
+static void kick_idle_cpu() {
+    const int self = cpu_this()->index;
+    if (per_cpu[self].current == per_cpu[self].idle) {
+        return;
+    }
+    for (int i = 0; i < cpu_count(); i++) {
+        if (i != self && per_cpu[i].current != nullptr && per_cpu[i].current == per_cpu[i].idle) {
+            smp_kick(i);
+            return;
+        }
+    }
 }
 
 void process_wakeup(const int wait_id) {
@@ -124,6 +147,8 @@ void process_wakeup(const int wait_id) {
 }
 
 int process_wakeup_n(const int wait_id, const int count) {
+    uint64_t flags;
+    spinlock_acquire_irqsave(&sched_lock, &flags);
     int woken = 0;
     while (count < 0 || woken < count) {
         process_t *proc = remove_waiting_process(&scheduler.waiting, wait_id);
@@ -134,16 +159,26 @@ int process_wakeup_n(const int wait_id, const int count) {
         dlist_insert_tail(&scheduler.ready, &proc->link);
         woken++;
     }
+    spinlock_release_irqrestore(&sched_lock, flags);
+    if (woken && irq_in_interrupt()) {
+        kick_idle_cpu();
+    }
     return woken;
 }
 
 void process_wake(process_t *proc) {
-    if (proc->state != PROC_SLOT_SLEEPING) {
-        return;
+    uint64_t flags;
+    spinlock_acquire_irqsave(&sched_lock, &flags);
+    const bool woke = proc->state == PROC_SLOT_SLEEPING;
+    if (woke) {
+        dlist_remove(&scheduler.waiting, &proc->link);
+        proc->state = PROC_SLOT_READY;
+        dlist_insert_tail(&scheduler.ready, &proc->link);
     }
-    dlist_remove(&scheduler.waiting, &proc->link);
-    proc->state = PROC_SLOT_READY;
-    dlist_insert_tail(&scheduler.ready, &proc->link);
+    spinlock_release_irqrestore(&sched_lock, flags);
+    if (woke && irq_in_interrupt()) {
+        kick_idle_cpu();
+    }
 }
 
 int process_sleep_interruptible(const int wait_id) {
@@ -180,12 +215,18 @@ int process_sleep_timeout(const int wait_id, const uint64_t ticks) {
 }
 
 void process_interrupt(process_t *proc) {
-    if (proc->state != PROC_SLOT_SLEEPING || !proc->interruptible) {
-        return;
+    uint64_t flags;
+    spinlock_acquire_irqsave(&sched_lock, &flags);
+    const bool woke = proc->state == PROC_SLOT_SLEEPING && proc->interruptible;
+    if (woke) {
+        dlist_remove(&scheduler.waiting, &proc->link);
+        proc->state = PROC_SLOT_READY;
+        dlist_insert_tail(&scheduler.ready, &proc->link);
     }
-    dlist_remove(&scheduler.waiting, &proc->link);
-    proc->state = PROC_SLOT_READY;
-    dlist_insert_tail(&scheduler.ready, &proc->link);
+    spinlock_release_irqrestore(&sched_lock, flags);
+    if (woke && irq_in_interrupt()) {
+        kick_idle_cpu();
+    }
 }
 
 process_t *process_find(const int pid) {
@@ -259,10 +300,12 @@ static bool parent_ignores_children(const process_t *parent) {
 
 void process_exit() {
     process_t *proc = scheduler_get()->current;
-    callout_stop(&proc->itimer);
+
+    proc->itimer_interval = 0;
+    callout_drain(&proc->itimer);
 
     if (proc->clear_child_tid && proc->vm != nullptr) {
-        const int zero = 0;
+        constexpr int zero = 0;
         if (vm_write(proc->vm, proc->clear_child_tid, &zero, sizeof(zero)) == 0) {
             futex_wake(proc->vm, proc->clear_child_tid, 1);
         }
@@ -292,14 +335,16 @@ void process_exit() {
         proc->detached = true;
     }
 
-    proc->state = PROC_SLOT_KILLED;
-    dlist_insert_tail(&scheduler.killed, &proc->link);
-
     if (!proc->detached) {
         signal_send(proc->ppid, SIGCHLD);
         process_wakeup(WAIT_CHANNEL_CHILD | proc->ppid);
     }
-    schedule();
+
+    uint64_t flags;
+    spinlock_acquire_irqsave(&sched_lock, &flags);
+    proc->state = PROC_SLOT_KILLED;
+    dlist_insert_tail(&scheduler.killed, &proc->link);
+    sched_switch(flags);
 }
 
 void process_exit_status(const int status) {
@@ -343,7 +388,10 @@ long process_wait4(const int pid, int *status, const int options) {
                 if (status != nullptr) {
                     *status = proc->exit_status;
                 }
+                uint64_t flags;
+                spinlock_acquire_irqsave(&sched_lock, &flags);
                 dlist_remove(&scheduler.killed, &proc->link);
+                spinlock_release_irqrestore(&sched_lock, flags);
                 process_free(proc);
                 return child;
             }
@@ -428,10 +476,33 @@ long process_clone(const uint64_t flags, const uint64_t stack, int *parent_tid, 
         copy_to_user(parent_tid, &proc->pid, sizeof(proc->pid));
     }
 
+    uint64_t irq;
+    spinlock_acquire_irqsave(&sched_lock, &irq);
     proc->state = PROC_SLOT_READY;
     dlist_insert_tail(&scheduler.ready, &proc->link);
+    spinlock_release_irqrestore(&sched_lock, irq);
+    kick_idle_cpu();
 
     return proc->pid;
+}
+
+process_t *process_create_kernel(void (*fn)(void *), void *arg) {
+    process_t *proc = create_process();
+    if (proc == nullptr) {
+        return nullptr;
+    }
+    uint64_t *regs = (uint64_t *)proc->context;
+    regs[2] = (uint64_t)arg;
+    regs[3] = (uint64_t)fn;
+    regs[6] = (uint64_t)kthread_entry;
+
+    uint64_t irq;
+    spinlock_acquire_irqsave(&sched_lock, &irq);
+    proc->state = PROC_SLOT_READY;
+    dlist_insert_tail(&scheduler.ready, &proc->link);
+    spinlock_release_irqrestore(&sched_lock, irq);
+    kick_idle_cpu();
+    return proc;
 }
 
 int process_fork() {
@@ -526,7 +597,7 @@ static int setup_stack(struct vm_space *vm, const char *path, char *const argv[]
         top -= 8;
     }
     top -= words * 8;
-    uint64_t *w = (uint64_t *)(image + (top - base));
+    const auto w = (uint64_t *)(image + (top - base));
     size_t k = 0;
     w[k++] = argc;
     for (size_t i = 0; i<argc; i++) w[k++] = arg_ptrs[i];
@@ -649,28 +720,38 @@ static process_t *find_free_process_slot() {
 }
 
 static void set_tss(const process_t *proc) {
-    cpu_this()->tss->rsp0 = proc->stack + KERNEL_STACK_SIZE;
+    struct cpu *cpu = cpu_this();
+    cpu->tss->rsp0 = cpu->kernel_rsp = proc->stack + KERNEL_STACK_SIZE;
 }
 
 static void reap_detached() {
-    struct dlist_node *node = dlist_first(&scheduler.killed);
-    while (node) {
-        struct dlist_node *next = dlist_next(node);
-        process_t *proc = dlist_entry(node, process_t, link);
-        if (proc->detached && proc != scheduler_get()->current) {
-            dlist_remove(&scheduler.killed, node);
-            process_free(proc);
+    while (!dlist_empty(&scheduler.killed)) {
+        process_t *victim = nullptr;
+        uint64_t flags;
+        spinlock_acquire_irqsave(&sched_lock, &flags);
+        for (struct dlist_node *node = dlist_first(&scheduler.killed); node; node = dlist_next(node)) {
+            const auto proc = dlist_entry(node, process_t, link);
+            if (proc->detached) {
+                dlist_remove(&scheduler.killed, node);
+                victim = proc;
+                break;
+            }
         }
-        node = next;
+        spinlock_release_irqrestore(&sched_lock, flags);
+        if (victim == nullptr) {
+            return;
+        }
+        process_free(victim);
     }
 }
 
 static void schedule() {
-    process_t *prev = scheduler_get()->current;
+    scheduler_t *cpu = scheduler_get();
+    process_t *prev = cpu->current;
     process_t *next;
 
     if (dlist_empty(&scheduler.ready)) {
-        next = per_cpu[cpu_this()->index].idle;
+        next = cpu->idle;
     }
     else {
         struct dlist_node *node = dlist_first(&scheduler.ready);
@@ -679,12 +760,25 @@ static void schedule() {
     }
 
     next->state = PROC_SLOT_RUNNING;
-    scheduler_get()->current = next;
+    cpu->current = next;
 
     if (prev != next) {
         switch_process(prev, next);
     }
-    reap_detached();
+}
+
+static void sched_switch(const uint64_t flags) {
+    const bool had_kernel_lock = kernel_lock_drop();
+    schedule();
+    spinlock_release_irqrestore(&sched_lock, flags);
+    if (had_kernel_lock) {
+        kernel_lock_enter();
+        reap_detached();
+    }
+}
+
+void process_entry_unlock() {
+    spinlock_release(&sched_lock);
 }
 
 static void switch_process(process_t *prev, process_t *next) {
@@ -749,8 +843,11 @@ static void init_shell_process() {
         return;
     }
 
+    uint64_t flags;
+    spinlock_acquire_irqsave(&sched_lock, &flags);
     proc->state = PROC_SLOT_READY;
     dlist_insert_tail(&scheduler.ready, &proc->link);
+    spinlock_release_irqrestore(&sched_lock, flags);
 }
 
 static void process_free(process_t *proc) {
@@ -761,6 +858,7 @@ static void process_free(process_t *proc) {
 }
 
 static process_t *create_process() {
+    reap_detached();
     process_t *proc = find_free_process_slot();
 
     if (proc == nullptr) {

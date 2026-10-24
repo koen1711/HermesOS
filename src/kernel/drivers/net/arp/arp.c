@@ -91,14 +91,12 @@ static int arp_send(struct netif* nif, const uint16_t op, const struct in_addr s
 
 static struct in_addr arp_source(struct netif* nif)
 {
-    const struct ipv4_ifaddr* ia = ipv4_addr_for_netif(nif);
-    return ia ? ia->addr : (struct in_addr){ INADDR_ANY };
+    return ipv4_addr_primary(nif);
 }
 
 static bool arp_is_ours(const struct netif* nif, const struct in_addr ip)
 {
-    const struct ipv4_ifaddr* ia = ipv4_addr_find(ip);
-    return ia && ia->nif == nif;
+    return ipv4_addr_is_on(nif, ip);
 }
 
 static struct arp_entry* arp_find(const struct arp_cache* cache, const struct in_addr ip)
@@ -252,11 +250,10 @@ int arp_resolve(struct netif* nif, const struct in_addr ip, struct netbuf* nb, u
         e->tries = 1;
         e->expires = ticks_get() + ticks_from_ms(ARP_RETRY_MS);
         dlist_insert_tail(&cache->entries, &e->link);
-        send_request = true;    // retries come from arp_timer
+        send_request = true;
     }
 
     if (nb) {
-        // keep the newest packets, like FreeBSD's la_hold
         if (e->pending_count >= ARP_MAX_PENDING) {
             struct netbuf* oldest = e->pending;
             e->pending = oldest->next_pkt;

@@ -2,7 +2,13 @@
 
 #include <drivers/net/core/netbuf.h>
 #include <drivers/net/arp/arp.h>
+#include <drivers/net/core/netisr.h>
+#include <drivers/net/core/route.h>
 #include <drivers/net/dhcp/dhcp.h>
+#include <drivers/net/dhcp6/dhcp6.h>
+#include <drivers/net/ipv4/ipv4.h>
+#include <drivers/net/ipv6/ipv6.h>
+#include <hardware/smp/smp.h>
 #include <os/errno.h>
 
 #include "hardware/memory/alloc.h"
@@ -32,7 +38,8 @@ struct netif* netif_alloc(const uint32_t type, const char* name_prefix)
     memset(nif, 0, sizeof(struct netif));
     nif->type = type;
     nif->link_state = NETIF_LINK_UNKNOWN;
-    nif->mtu = 1500; // Default MTU
+    nif->mtu = 1500;
+    nif->refcount = 1;
 
     strncpy(nif->name, name_prefix ? name_prefix : "if", NETIF_NAME_LEN - 4);
 
@@ -48,8 +55,19 @@ void netif_free(struct netif* nif)
 {
     if (!nif)
         return;
-    if (nif->index)
-        netif_detach(nif);
+    netif_detach(nif);
+    netif_rele(nif);
+}
+
+void netif_ref(struct netif* nif)
+{
+    __atomic_add_fetch(&nif->refcount, 1, __ATOMIC_SEQ_CST);
+}
+
+void netif_rele(struct netif* nif)
+{
+    if (__atomic_sub_fetch(&nif->refcount, 1, __ATOMIC_SEQ_CST))
+        return;
     netqueue_drain(&nif->send_queue);
     free(nif);
 }
@@ -59,7 +77,8 @@ static uint32_t netif_free_unit(const char* prefix)
     const size_t plen = strlen(prefix);
     for (uint32_t unit = 0;; unit++) {
         bool used = false;
-        for (struct netif* nif = netif_first(); nif && !used; nif = netif_next(nif)) {
+        for (struct dlist_node* node = dlist_first(&netif_list); node && !used; node = dlist_next(node)) {
+            const struct netif* nif = dlist_entry(node, struct netif, link);
             if (strncmp(nif->name, prefix, plen) != 0)
                 continue;
             uint32_t n = 0;
@@ -106,13 +125,26 @@ void netif_detach(struct netif* nif)
 {
     if (!nif->index)
         return;
+    dhcp_stop(nif);
+    dhcp6_stop(nif);
     netif_down(nif);
 
     uint64_t flags;
     spinlock_acquire_irqsave(&netif_list_lock, &flags);
     dlist_remove(&netif_list, &nif->link);
     nif->index = 0;
+    __atomic_store_n(&nif->gone, true, __ATOMIC_SEQ_CST);
     spinlock_release_irqrestore(&netif_list_lock, flags);
+
+    netisr_purge(nif);
+    while (__atomic_load_n(&nif->refcount, __ATOMIC_SEQ_CST) > 1) {
+        smp_spin_poll();
+        asm volatile("pause");
+    }
+
+    ipv4_ifdetach(nif);
+    ipv6_ifdetach(nif);
+    route_flush_netif(nif);
 }
 
 void netif_input(struct netif* nif, struct netbuf* nb)
@@ -155,20 +187,39 @@ struct netif* netif_find_by_index(const uint32_t index)
     return nullptr;
 }
 
-struct netif* netif_first()
+static struct netif* netif_hold(struct dlist_node* node)
 {
-    struct dlist_node* node = dlist_first(&netif_list);
-    return node ? dlist_entry(node, struct netif, link) : nullptr;
+    if (!node)
+        return nullptr;
+    struct netif* nif = dlist_entry(node, struct netif, link);
+    netif_ref(nif);
+    return nif;
 }
 
-struct netif* netif_next(const struct netif* nif)
+struct netif* netif_first()
 {
-    struct dlist_node* node = dlist_next(&nif->link);
-    return node ? dlist_entry(node, struct netif, link) : nullptr;
+    uint64_t flags;
+    spinlock_acquire_irqsave(&netif_list_lock, &flags);
+    struct netif* first = netif_hold(dlist_first(&netif_list));
+    spinlock_release_irqrestore(&netif_list_lock, flags);
+    return first;
+}
+
+struct netif* netif_next(struct netif* nif)
+{
+    uint64_t flags;
+    spinlock_acquire_irqsave(&netif_list_lock, &flags);
+
+    struct netif* next = netif_hold(nif->gone ? dlist_first(&netif_list) : dlist_next(&nif->link));
+    spinlock_release_irqrestore(&netif_list_lock, flags);
+    netif_rele(nif);
+    return next;
 }
 
 int netif_up(struct netif* nif)
 {
+    if (nif->gone)
+        return -ENXIO;
     if (nif->flags & NETIF_UP)
         return 0;
     if (nif->ops && nif->ops->init) {
@@ -217,6 +268,8 @@ int netif_set_hw_addr(struct netif* nif, const uint8_t* hwaddr, const uint8_t le
 
 int netif_ioctl(struct netif* nif, const uint32_t cmd, void* arg)
 {
+    if (__atomic_load_n(&nif->gone, __ATOMIC_SEQ_CST))
+        return -ENXIO;
     if (!nif->ops || !nif->ops->ioctl)
         return -EOPNOTSUPP;
     return nif->ops->ioctl(nif, cmd, arg);

@@ -3,6 +3,7 @@
 #include "mmu.h"
 #include "pmm.h"
 #include <hardware/interrupts/panic.h>
+#include <utils/sync/spinlock.h>
 
 #define DEFAULT_BLOCK_SIZE 4096
 #define BLOCKS 8192
@@ -18,6 +19,7 @@ struct memory_block_s
 typedef struct memory_block_s memory_block_t;
 
 memory_block_t* first_free_block = nullptr;
+static spinlock_t heap_lock = { .name = "heap" };
 
 void memory_initialize(const multiboot_info_t mb_info) {
     pmm_initialize(mb_info);
@@ -35,10 +37,13 @@ void memory_initialize(const multiboot_info_t mb_info) {
 }
 
 uint64_t get_amount_of_free_memory() {
+    uint64_t flags;
+    spinlock_acquire_irqsave(&heap_lock, &flags);
     uint64_t total_free = 0;
     for (const memory_block_t* current = first_free_block; current != nullptr; current = current->next) {
         total_free += current->size;
     }
+    spinlock_release_irqrestore(&heap_lock, flags);
     return total_free;
 }
 
@@ -47,6 +52,8 @@ void* malloc(const uintptr_t size) {
 
     const uintptr_t aligned_size = (size + 7) & ~7;
 
+    uint64_t flags;
+    spinlock_acquire_irqsave(&heap_lock, &flags);
     if (first_free_block == nullptr) {
         panic("No free memory blocks available", __FILE__, __LINE__);
         return nullptr;
@@ -83,6 +90,7 @@ void* malloc(const uintptr_t size) {
                     first_free_block = current->next;
             }
 
+            spinlock_release_irqrestore(&heap_lock, flags);
             uint8_t* current_address = (uint8_t*)current + sizeof(memory_block_t);
             memset(current_address, 0, aligned_size);
             return current_address;
@@ -92,6 +100,7 @@ void* malloc(const uintptr_t size) {
         current = current->next;
     }
 
+    spinlock_release_irqrestore(&heap_lock, flags);
     return nullptr;
 }
 
@@ -117,6 +126,8 @@ void free(void* ptr) {
 
     const auto block_to_free = (memory_block_t*)((uint8_t*)ptr - sizeof(memory_block_t));
 
+    uint64_t flags;
+    spinlock_acquire_irqsave(&heap_lock, &flags);
     if (!first_free_block || block_to_free < first_free_block) {
         block_to_free->next = first_free_block;
         first_free_block = block_to_free;
@@ -130,6 +141,7 @@ void free(void* ptr) {
     }
 
     coalesce_free_blocks();
+    spinlock_release_irqrestore(&heap_lock, flags);
 }
 
 void memcpy(void* dest, const void* src, const uintptr_t size) {

@@ -4,6 +4,7 @@
 #include <multiboot.h>
 
 #include "drivers/terminal/terminal.h"
+#include <utils/sync/spinlock.h>
 
 extern void* _kernel_virtual_end;
 
@@ -13,6 +14,8 @@ static uint64_t physical_pages[MAX_PHYSICAL_PAGES / 64]; // Bitmap
 static uint16_t shared_refs[MAX_PHYSICAL_PAGES];
 static uintptr_t physical_base = 0;
 static size_t total_pages = 0;
+static spinlock_t pmm_lock = { .name = "pmm" };
+static size_t first_free_word = 0;
 
 #define BITMAP_INDEX(page) ((page) / 64)
 #define BITMAP_OFFSET(page) ((page) % 64)
@@ -48,16 +51,22 @@ void pmm_initialize(const multiboot_info_t mb_info) {
 }
 
 void* alloc_physical_page() {
-    for (size_t page = 0; page < total_pages; page++) {
-        if (!TEST_BIT(physical_pages, page)) {
-            SET_BIT(physical_pages, page);
-            return (void*)(physical_base + (page * 0x1000));
-        }
+    uint64_t flags;
+    spinlock_acquire_irqsave(&pmm_lock, &flags);
+    for (size_t word = first_free_word; word < total_pages / 64; word++) {
+        if (physical_pages[word] == ~0ULL) continue;
+        const size_t page = word * 64 + __builtin_ctzll(~physical_pages[word]);
+        SET_BIT(physical_pages, page);
+        first_free_word = word;
+        spinlock_release_irqrestore(&pmm_lock, flags);
+        return (void*)(physical_base + (page * 0x1000));
     }
+    first_free_word = total_pages / 64;
+    spinlock_release_irqrestore(&pmm_lock, flags);
     return NULL;
 }
 
-void free_physical_page(void* page) {
+static void free_page_locked(void* page) {
     const uintptr_t address = (uintptr_t)page;
     if (address < physical_base) return;
 
@@ -68,7 +77,12 @@ void free_physical_page(void* page) {
             return;
         }
         CLEAR_BIT(physical_pages, addr);
+        if (BITMAP_INDEX(addr) < first_free_word) first_free_word = BITMAP_INDEX(addr);
     }
+}
+
+void free_physical_page(void* page) {
+    free_physical_pages(page, 1);
 }
 
 void pmm_share_page(void* page) {
@@ -76,31 +90,41 @@ void pmm_share_page(void* page) {
     if (address < physical_base) return;
 
     const size_t addr = (address - physical_base) / 0x1000;
+    uint64_t flags;
+    spinlock_acquire_irqsave(&pmm_lock, &flags);
     if (addr < total_pages && shared_refs[addr] < 0xFFFF) {
         shared_refs[addr]++;
     }
+    spinlock_release_irqrestore(&pmm_lock, flags);
 }
 
 void* alloc_physical_pages(const size_t count) {
     if (count == 0) return NULL;
+    uint64_t flags;
+    spinlock_acquire_irqsave(&pmm_lock, &flags);
     size_t run = 0;
-    for (size_t page = 0; page < total_pages; page++) {
+    for (size_t page = first_free_word * 64; page < total_pages; page++) {
         run = TEST_BIT(physical_pages, page) ? 0 : run + 1;
         if (run == count) {
             const size_t first = page + 1 - count;
             for (size_t i = first; i <= page; i++) {
                 SET_BIT(physical_pages, i);
             }
+            spinlock_release_irqrestore(&pmm_lock, flags);
             return (void*)(physical_base + (first * 0x1000));
         }
     }
+    spinlock_release_irqrestore(&pmm_lock, flags);
     return NULL;
 }
 
 void free_physical_pages(void* first, const size_t count) {
+    uint64_t flags;
+    spinlock_acquire_irqsave(&pmm_lock, &flags);
     for (size_t i = 0; i < count; i++) {
-        free_physical_page((uint8_t*)first + i * 0x1000);
+        free_page_locked((uint8_t*)first + i * 0x1000);
     }
+    spinlock_release_irqrestore(&pmm_lock, flags);
 }
 
 size_t pmm_total_pages() {

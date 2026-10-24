@@ -56,11 +56,6 @@ static void handle_exception(const interrupt_context* context)
     uint64_t cr2 = 0;
     asm volatile("mov %%cr2, %0" : "=r"(cr2));
 
-    const process_t* current = scheduler_get()->current;
-    if (context->interrupt_number == PAGE_FAULT_VECTOR && current != nullptr && current->vm != nullptr
-        && vm_fault(current->vm, cr2, context->error_code & 2))
-        return;
-
     if (from_user_mode(context) && signal_fault(context, cr2))
         return;
 
@@ -90,35 +85,59 @@ static bool should_preempt(const interrupt_context* context)
     return from_user_mode(context) || current->pid == IDLE_PROC_PID;
 }
 
-void trap_handler(interrupt_context* context)
+static bool resolve_page_fault(const interrupt_context* context)
 {
-    // answered without the kernel lock: its holder may be the CPU waiting for this
-    if (context->interrupt_number == TLB_SHOOTDOWN_VECTOR) {
-        smp_tlb_interrupt();
-        return;
-    }
-    if (context->interrupt_number == LAPIC_SPURIOUS_VECTOR)
-        return;
+    uint64_t cr2;
+    asm volatile("mov %%cr2, %0" : "=r"(cr2));
+    const process_t* current = scheduler_get()->current;
+    return current != nullptr && current->vm != nullptr && vm_fault(current->vm, cr2, context->error_code & 2);
+}
 
+static void deliver_pending_signals(interrupt_context* context)
+{
+    const process_t* current = scheduler_get()->current;
+    if (!from_user_mode(context) || current == nullptr || current->pid == IDLE_PROC_PID
+        || !((current->sig_pending & ~current->sig_blocked) || current->sig_restore_mask))
+        return;
     const bool locked = kernel_lock_enter();
-    if (context->interrupt_number < EXCEPTION_COUNT)
-        handle_exception(context);
-    else if (context->interrupt_number == SYSCALL_VECTOR)
-        handle_syscall(context);
-    else if (context->interrupt_number == LAPIC_TIMER_VECTOR) {
-        lapic_eoi();
-        if (should_preempt(context))
-            process_yield();
-    }
-    else if (context->interrupt_number >= IRQ_OFFSET && context->interrupt_number < IRQ_OFFSET + IRQ_MAX_LINES) {
-        handle_pic_interrupt(context);
-
-        if (context->interrupt_number == IRQ_OFFSET + PIT_IRQ && should_preempt(context))
-            process_yield();
-    }
     signal_deliver(context);
     if (locked)
         kernel_lock_exit();
+}
+
+void trap_handler(interrupt_context* context)
+{
+    const uint64_t vector = context->interrupt_number;
+
+    if (vector == TLB_SHOOTDOWN_VECTOR) {
+        smp_tlb_interrupt();
+        return;
+    }
+    if (vector == LAPIC_SPURIOUS_VECTOR)
+        return;
+
+       if (vector == LAPIC_TIMER_VECTOR || vector == RESCHED_VECTOR) {
+        lapic_eoi();
+    } else if (vector != PAGE_FAULT_VECTOR || !resolve_page_fault(context)) {
+        const bool locked = kernel_lock_enter();
+        if (vector < EXCEPTION_COUNT)
+            handle_exception(context);
+        else if (vector == SYSCALL_VECTOR)
+            handle_syscall(context);
+        else if (vector >= IRQ_OFFSET && vector < IRQ_OFFSET + IRQ_MAX_LINES)
+            handle_pic_interrupt(context);
+        if (vector == SYSCALL_VECTOR)
+            signal_deliver(context);
+        if (locked)
+            kernel_lock_exit();
+    }
+
+    const bool tick = vector == LAPIC_TIMER_VECTOR || vector == IRQ_OFFSET + PIT_IRQ;
+    const bool wake = vector == RESCHED_VECTOR || (vector >= IRQ_OFFSET && vector < IRQ_OFFSET + IRQ_MAX_LINES);
+    if ((tick && should_preempt(context)) || (wake && scheduler_get()->current->pid == IDLE_PROC_PID))
+        process_yield();
+    if (vector != SYSCALL_VECTOR)
+        deliver_pending_signals(context);
 }
 
 

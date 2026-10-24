@@ -45,12 +45,13 @@ void route_initialize();
 
 int route_add4(struct in_addr dst, uint8_t prefix_len, struct in_addr gw, struct netif* nif, uint32_t flags);
 int route_del4(struct in_addr dst, uint8_t prefix_len);
-const struct route_nexthop* route_lookup4(struct in_addr dst);
+
+bool route_lookup4(struct in_addr dst, struct route_nexthop* out);
 int route_set_default4(struct in_addr gw, struct netif* nif);
 
 int route_add6(const struct in6_addr* dst, uint8_t prefix_len, const struct in6_addr* gw, struct netif* nif, uint32_t flags);
 int route_del6(const struct in6_addr* dst, uint8_t prefix_len);
-const struct route_nexthop* route_lookup6(const struct in6_addr* dst);
+bool route_lookup6(const struct in6_addr* dst, struct route_nexthop* out);
 int route_set_default6(const struct in6_addr* gw, struct netif* nif);
 
 void route_flush_netif(const struct netif* nif);

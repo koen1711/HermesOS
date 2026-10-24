@@ -6,6 +6,7 @@
 #include <drivers/timer/clock.h>
 #include <hardware/memory/alloc.h>
 #include <hardware/memory/pmm.h>
+#include <hardware/smp/smp.h>
 #include <utils/random/random.h>
 #include <utils/str/str.h>
 #include <os/errno.h>
@@ -210,8 +211,7 @@ static void set_field(char* field, const char* value)
 
 long sys_uname(void* buf)
 {
-    struct utsname_k u;
-    memset(&u, 0, sizeof(u));
+    struct utsname_k u = {0};
     set_field(u.sysname, "Hermes");
     set_field(u.nodename, "hermes");
     set_field(u.release, "0.1.0");
@@ -223,8 +223,7 @@ long sys_uname(void* buf)
 
 long sys_sysinfo(void* info)
 {
-    struct sysinfo_k si;
-    memset(&si, 0, sizeof(si));
+    struct sysinfo_k si = {0};
     si.uptime = (int64_t)(clock_monotonic_ns() / 1000000000ULL);
     si.totalram = pmm_total_pages() * PAGE_SIZE;
     si.freeram = pmm_free_pages() * PAGE_SIZE;
@@ -278,8 +277,8 @@ long sys_sched_getaffinity(const int pid, const size_t len, void* mask)
         return -ESRCH;
     if (len < sizeof(uint64_t))
         return -EINVAL;
-    const uint64_t one_cpu = 1;
-    if (copy_to_user(mask, &one_cpu, sizeof(one_cpu)) < 0)
+    const uint64_t cpus = cpu_count() >= 64 ? ~0ULL : (1ULL << cpu_count()) - 1;
+    if (copy_to_user(mask, &cpus, sizeof(cpus)) < 0)
         return -EFAULT;
     return sizeof(uint64_t);
 }

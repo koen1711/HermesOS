@@ -65,6 +65,7 @@ struct netbuf;
 
 struct ipv6_ifaddr {
     struct dlist_node link;
+    struct dlist_node all_link;
     struct netif* nif;
     struct in6_addr addr;
     uint8_t prefix_len;
@@ -105,8 +106,13 @@ int ipv6_register_protocol(uint8_t next_header, ipv6_proto_input_t input);
 int ipv6_addr_add(struct netif* nif, const struct in6_addr* addr, uint8_t prefix_len,
                   uint32_t flags, uint64_t preferred_until, uint64_t valid_until);
 int ipv6_addr_del(struct netif* nif, const struct in6_addr* addr);
-struct ipv6_ifaddr* ipv6_addr_find(const struct in6_addr* addr);
-struct ipv6_ifaddr* ipv6_addr_linklocal(struct netif* nif);
+
+int ipv6_addr_flags(const struct in6_addr* addr, const struct netif* nif);
+int ipv6_addr_update(const struct in6_addr* addr, uint32_t set, uint32_t clear);
+
+int ipv6_addr_modify(const struct in6_addr* addr, int (*fn)(struct ipv6_ifaddr* ifa, void* arg), void* arg);
+bool ipv6_addr_linklocal(const struct netif* nif, struct in6_addr* out);
+void ipv6_addr_expire(struct netif* nif, uint64_t now);
 
 int ipv6_select_source(struct netif* nif, const struct in6_addr* dst, struct in6_addr* out);
 bool ipv6_is_local(const struct in6_addr* addr);

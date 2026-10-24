@@ -120,13 +120,14 @@ struct vm_space* vm_create()
         free(vm);
         return nullptr;
     }
+    spinlock_init(&vm->lock, "vm");
     vm->ref_count = 1;
     vm->mmap_base = USER_MMAP_BASE;
     dlist_init(&vm->areas);
     return vm;
 }
 
-struct vm_space* vm_clone(const struct vm_space* src)
+static struct vm_space* clone_locked(const struct vm_space* src)
 {
     struct vm_space* vm = vm_create();
     if (!vm)
@@ -169,6 +170,15 @@ struct vm_space* vm_clone(const struct vm_space* src)
             }
         }
     }
+    return vm;
+}
+
+struct vm_space* vm_clone(const struct vm_space* src)
+{
+    spinlock_t* lock = (spinlock_t*)&src->lock;
+    spinlock_acquire(lock);
+    struct vm_space* vm = clone_locked(src);
+    spinlock_release(lock);
     return vm;
 }
 
@@ -228,8 +238,10 @@ static uint64_t find_gap(const struct vm_space* vm, const size_t len)
     return candidate + len <= USER_STACK_TOP - USER_STACK_LIMIT ? candidate : 0;
 }
 
-int vm_map(struct vm_space* vm, const uint64_t addr, size_t len, const uint32_t prot, const uint32_t flags,
-           const bool fixed, uint64_t* out)
+static int unmap_locked(struct vm_space* vm, uint64_t addr, size_t len);
+
+static int map_locked(struct vm_space* vm, const uint64_t addr, size_t len, const uint32_t prot, const uint32_t flags,
+                      const bool fixed, uint64_t* out)
 {
     len = PAGE_ALIGN_UP(len);
     if (len == 0 || (addr & ~PAGE_MASK))
@@ -239,7 +251,7 @@ int vm_map(struct vm_space* vm, const uint64_t addr, size_t len, const uint32_t 
     if (fixed) {
         if (!user_range(start, start + len))
             return -EINVAL;
-        const int err = vm_unmap(vm, start, len);
+        const int err = unmap_locked(vm, start, len);
         if (err)
             return err;
     } else if (!addr || !user_range(addr, addr + len) || !vm_range_free(vm, addr, addr + len)) {
@@ -257,7 +269,7 @@ int vm_map(struct vm_space* vm, const uint64_t addr, size_t len, const uint32_t 
     return 0;
 }
 
-int vm_unmap(struct vm_space* vm, const uint64_t addr, const size_t len)
+static int unmap_locked(struct vm_space* vm, const uint64_t addr, const size_t len)
 {
     const uint64_t end = PAGE_ALIGN_UP(addr + len);
     if ((addr & ~PAGE_MASK) || len == 0 || end < addr)
@@ -283,7 +295,7 @@ int vm_unmap(struct vm_space* vm, const uint64_t addr, const size_t len)
     return 0;
 }
 
-int vm_protect(struct vm_space* vm, const uint64_t addr, const size_t len, const uint32_t prot)
+static int protect_locked(struct vm_space* vm, const uint64_t addr, const size_t len, const uint32_t prot)
 {
     const uint64_t end = PAGE_ALIGN_UP(addr + len);
     if ((addr & ~PAGE_MASK) || end < addr)
@@ -319,7 +331,7 @@ int vm_protect(struct vm_space* vm, const uint64_t addr, const size_t len, const
     return 0;
 }
 
-int vm_discard(struct vm_space* vm, const uint64_t addr, const size_t len)
+static int discard_locked(struct vm_space* vm, const uint64_t addr, const size_t len)
 {
     const uint64_t end = PAGE_ALIGN_UP(addr + len);
     if ((addr & ~PAGE_MASK) || end < addr || !user_range(addr, end))
@@ -339,7 +351,7 @@ int vm_discard(struct vm_space* vm, const uint64_t addr, const size_t len)
     return 0;
 }
 
-uint64_t vm_brk(struct vm_space* vm, const uint64_t new_brk)
+static uint64_t brk_locked(struct vm_space* vm, const uint64_t new_brk)
 {
     if (new_brk < vm->brk_start)
         return vm->brk;
@@ -352,17 +364,17 @@ uint64_t vm_brk(struct vm_space* vm, const uint64_t new_brk)
         struct vm_area* heap = old_end > vm->brk_start ? vm_find(vm, old_end - 1) : nullptr;
         if (heap && (heap->flags & VMA_HEAP) && heap->end == old_end) {
             heap->end = new_end;
-        } else if (vm_map(vm, old_end, new_end - old_end, VM_READ | VM_WRITE, VMA_HEAP, true, nullptr) < 0) {
+        } else if (map_locked(vm, old_end, new_end - old_end, VM_READ | VM_WRITE, VMA_HEAP, true, nullptr) < 0) {
             return vm->brk;
         }
     } else if (new_end < old_end) {
-        vm_unmap(vm, new_end, old_end - new_end);
+        unmap_locked(vm, new_end, old_end - new_end);
     }
     vm->brk = new_brk;
     return vm->brk;
 }
 
-bool vm_fault(struct vm_space* vm, const uint64_t addr, const bool write)
+static bool fault_locked(struct vm_space* vm, const uint64_t addr, const bool write)
 {
     const struct vm_area* a = vm_find(vm, addr);
     if (!a || !(a->prot & (write ? VM_WRITE : VM_READ)))
@@ -382,7 +394,7 @@ bool vm_fault(struct vm_space* vm, const uint64_t addr, const bool write)
     return true;
 }
 
-bool vm_populate(struct vm_space* vm, const uint64_t addr, const size_t len, const bool write)
+static bool populate_locked(struct vm_space* vm, const uint64_t addr, const size_t len, const bool write)
 {
     if (len == 0)
         return true;
@@ -401,13 +413,13 @@ bool vm_populate(struct vm_space* vm, const uint64_t addr, const size_t len, con
         const uint64_t* pte = mmu_find_pte(vm->page_map, va);
         if (pte && (*pte & MMU_PRESENT))
             continue;
-        if (!vm_fault(vm, va, write))
+        if (!fault_locked(vm, va, write))
             return false;
     }
     return true;
 }
 
-int vm_write(struct vm_space* vm, uint64_t addr, const void* src, size_t len)
+static int write_locked(struct vm_space* vm, uint64_t addr, const void* src, size_t len)
 {
     const uint8_t* p = src;
     while (len) {
@@ -437,4 +449,69 @@ uint64_t vm_translate(const struct vm_space* vm, const uint64_t addr)
     if (!pte || !(*pte & PTE_FRAME))
         return 0;
     return (*pte & PTE_FRAME) | (addr & ~PAGE_MASK);
+}
+
+int vm_map(struct vm_space* vm, const uint64_t addr, const size_t len, const uint32_t prot, const uint32_t flags,
+           const bool fixed, uint64_t* out)
+{
+    spinlock_acquire(&vm->lock);
+    const int err = map_locked(vm, addr, len, prot, flags, fixed, out);
+    spinlock_release(&vm->lock);
+    return err;
+}
+
+int vm_unmap(struct vm_space* vm, const uint64_t addr, const size_t len)
+{
+    spinlock_acquire(&vm->lock);
+    const int err = unmap_locked(vm, addr, len);
+    spinlock_release(&vm->lock);
+    return err;
+}
+
+int vm_protect(struct vm_space* vm, const uint64_t addr, const size_t len, const uint32_t prot)
+{
+    spinlock_acquire(&vm->lock);
+    const int err = protect_locked(vm, addr, len, prot);
+    spinlock_release(&vm->lock);
+    return err;
+}
+
+int vm_discard(struct vm_space* vm, const uint64_t addr, const size_t len)
+{
+    spinlock_acquire(&vm->lock);
+    const int err = discard_locked(vm, addr, len);
+    spinlock_release(&vm->lock);
+    return err;
+}
+
+uint64_t vm_brk(struct vm_space* vm, const uint64_t new_brk)
+{
+    spinlock_acquire(&vm->lock);
+    const uint64_t brk = brk_locked(vm, new_brk);
+    spinlock_release(&vm->lock);
+    return brk;
+}
+
+bool vm_fault(struct vm_space* vm, const uint64_t addr, const bool write)
+{
+    spinlock_acquire(&vm->lock);
+    const bool ok = fault_locked(vm, addr, write);
+    spinlock_release(&vm->lock);
+    return ok;
+}
+
+bool vm_populate(struct vm_space* vm, const uint64_t addr, const size_t len, const bool write)
+{
+    spinlock_acquire(&vm->lock);
+    const bool ok = populate_locked(vm, addr, len, write);
+    spinlock_release(&vm->lock);
+    return ok;
+}
+
+int vm_write(struct vm_space* vm, const uint64_t addr, const void* src, const size_t len)
+{
+    spinlock_acquire(&vm->lock);
+    const int err = write_locked(vm, addr, src, len);
+    spinlock_release(&vm->lock);
+    return err;
 }

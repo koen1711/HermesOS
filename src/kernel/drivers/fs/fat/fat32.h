@@ -5,7 +5,6 @@
 #include <os/stdint.h>
 #include <os/stdbool.h>
 
-/* ── block device abstraction ─────────────────────────────────── */
 
 struct block_device;
 
@@ -13,17 +12,16 @@ struct block_device_ops {
     int (*read_bytes)(struct block_device *bdev, uint64_t off, uint32_t len, void *buf);
     int (*write_bytes)(struct block_device *bdev, uint64_t off, uint32_t len, const void *buf);
     int (*flush)(struct block_device *bdev);
+    void (*release)(struct block_device *bdev);
 };
 
 struct block_device {
     uint32_t    unique_id;
-    uint64_t    part_offset;   /* partition start in bytes   */
-    uint64_t    part_length;   /* partition length in bytes   */
+    uint64_t    part_offset;
+    uint64_t    part_length;
     const struct block_device_ops *ops;
-    void       *private;       /* e.g. pointer to ata_device */
+    void       *private;
 };
-
-/* ── on-disk structures ───────────────────────────────────────── */
 
 typedef struct {
     uint8_t  jump_instruction[3];
@@ -94,8 +92,6 @@ typedef struct {
     uint16_t name3[2];
 } __attribute__((packed)) fat32_long_filename_entry;
 
-/* ── in-memory driver info ────────────────────────────────────── */
-
 typedef struct fat32_sb_info {
     struct block_device *bdev;
     fat32_boot_sector    bs;
@@ -110,14 +106,14 @@ typedef struct fat32_sb_info {
     uint32_t total_clusters;
     bool     fsinfo_dirty;
 
-    uint32_t fat_cache_sector;     /* one FAT sector kept in memory */
+    uint32_t fat_cache_sector;
     bool     fat_cache_valid;
+    bool     fat_cache_dirty;
     uint8_t  fat_cache[512];
 
     struct fat32_inode_info *open_nodes;
 } fat32_sb_info;
 
-/* inode_t.private_data of every FAT32 inode; one per file, shared by all its opens */
 typedef struct fat32_inode_info {
     fat32_sb_info *sbi;
     inode_t *inode;
@@ -127,27 +123,22 @@ typedef struct fat32_inode_info {
     uint32_t size;
     uint8_t  attr;
     bool     is_root;
-    bool     orphan;        /* unlinked while open, the chain is freed by the last release */
+    bool     orphan;
 
-    uint32_t dir_cluster;   /* first cluster of the parent directory */
-    uint32_t dirent_pos;    /* byte offset of the 8.3 entry in the parent */
-    uint32_t lfn_pos;       /* first long name entry, dirent_pos without one */
+    uint32_t dir_cluster;
+    uint32_t dirent_pos;
+    uint32_t lfn_pos;
 
-    uint32_t cache_index;   /* last cluster looked up in the chain */
+    uint32_t cache_index;
     uint32_t cache_cluster;
 } fat32_inode_info;
 
-/* ── VFS interface ────────────────────────────────────────────── */
-
-/* Register with vfs_register_driver("fat32", &fat32_driver).
- * vfs_mount passes a struct block_device* as the blob. */
 extern file_system_driver_t fat32_driver;
 
-/* Helper: create a block_device suitable for vfs_mount(..., "fat32", bdev) */
 struct block_device *fat32_create_bdev(uint32_t unique_id,
                                        uint64_t part_offset_bytes,
                                        uint64_t part_length_bytes,
                                        const struct block_device_ops *ops,
                                        void *private);
 
-#endif /* FAT32_H */
+#endif

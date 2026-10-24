@@ -372,9 +372,7 @@ int dhcp_apply_lease(struct dhcp_client* client)
 
     dhcp_apply_dns(l);
     if (client->configured) {
-        struct ipv4_ifaddr* ia = ipv4_addr_find(l->addr);
-        if (ia)
-            ia->valid_until = client->expire_tick;
+        ipv4_addr_set_expiry(l->addr, client->expire_tick);
         return 0;
     }
 
@@ -452,6 +450,11 @@ void dhcp_timer(void* arg)
     struct dhcp_client* client = arg;
     uint64_t flags;
     spinlock_acquire_irqsave(&dhcp_lock, &flags);
+
+    if (client->nif->dhcp_state != client) {
+        spinlock_release_irqrestore(&dhcp_lock, flags);
+        return;
+    }
     const uint64_t now = ticks_get();
     switch (client->state) {
     case DHCP_STATE_INIT:
@@ -564,8 +567,10 @@ static struct dhcp_client* dhcp_find_client(struct dhcp_message* msg)
     for (struct netif* nif = netif_first(); nif; nif = netif_next(nif)) {
         struct dhcp_client* client = nif->dhcp_state;
         if (client && client->xid == msg->xid && msg->hlen == nif->hw_addr_len &&
-            !memcmp(msg->chaddr, nif->hw_addr, nif->hw_addr_len))
+            !memcmp(msg->chaddr, nif->hw_addr, nif->hw_addr_len)) {
+            netif_rele(nif);
             return client;
+        }
     }
     return nullptr;
 }
@@ -623,9 +628,12 @@ static int dhcp_open_socket()
 
 static bool dhcp_any_client()
 {
-    for (const struct netif* nif = netif_first(); nif; nif = netif_next(nif))
-        if (nif->dhcp_state)
+    for (struct netif* nif = netif_first(); nif; nif = netif_next(nif)) {
+        if (nif->dhcp_state) {
+            netif_rele(nif);
             return true;
+        }
+    }
     return false;
 }
 
@@ -690,6 +698,7 @@ void dhcp_stop(struct netif* nif)
         callout_stop(&dhcp_rx_callout);
     }
     spinlock_release_irqrestore(&dhcp_lock, flags);
+    callout_drain(&client->timer);
     free(client);
     if (so)
         sock_close(so);

@@ -1,6 +1,7 @@
 #include <drivers/net/core/route.h>
 
 #include <drivers/net/core/byteorder.h>
+#include <drivers/net/core/netif.h>
 #include <drivers/timer/callout.h>
 #include <hardware/memory/alloc.h>
 #include <os/errno.h>
@@ -78,7 +79,16 @@ int route_del4(struct in_addr dst, const uint8_t prefix_len)
     return 0;
 }
 
-const struct route_nexthop* route_lookup4(const struct in_addr dst)
+static bool route_hold(const struct route_entry* best, struct route_nexthop* out)
+{
+    if (!best || !best->nexthop.nif)
+        return false;
+    *out = best->nexthop;
+    netif_ref(out->nif);
+    return true;
+}
+
+bool route_lookup4(const struct in_addr dst, struct route_nexthop* out)
 {
     const struct route_entry* best = nullptr;
     uint64_t irq;
@@ -92,8 +102,9 @@ const struct route_nexthop* route_lookup4(const struct in_addr dst)
         if (!best || r->prefix_len > best->prefix_len)
             best = r;
     }
+    const bool found = route_hold(best, out);
     spinlock_release_irqrestore(&route_lock, irq);
-    return best ? &best->nexthop : nullptr;
+    return found;
 }
 
 int route_set_default4(const struct in_addr gw, struct netif* nif)
@@ -168,7 +179,7 @@ int route_del6(const struct in6_addr* dst, const uint8_t prefix_len)
     return 0;
 }
 
-const struct route_nexthop* route_lookup6(const struct in6_addr* dst)
+bool route_lookup6(const struct in6_addr* dst, struct route_nexthop* out)
 {
     const struct route_entry* best = nullptr;
     uint64_t irq;
@@ -180,8 +191,9 @@ const struct route_nexthop* route_lookup6(const struct in6_addr* dst)
         if (!best || r->prefix_len > best->prefix_len)
             best = r;
     }
+    const bool found = route_hold(best, out);
     spinlock_release_irqrestore(&route_lock, irq);
-    return best ? &best->nexthop : nullptr;
+    return found;
 }
 
 int route_set_default6(const struct in6_addr* gw, struct netif* nif)
@@ -219,7 +231,7 @@ void route_timer()
         struct dlist_node* n = dlist_first(tables[t]);
         while (n) {
             struct dlist_node* next = dlist_next(n);
-            struct route_entry* r = dlist_entry(n, struct route_entry, link);
+            const auto r = dlist_entry(n, struct route_entry, link);
             if (r->expires && r->expires <= now) {
                 dlist_remove(tables[t], n);
                 free(r);

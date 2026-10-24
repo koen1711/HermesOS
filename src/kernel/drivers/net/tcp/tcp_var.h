@@ -70,9 +70,11 @@ struct tcpcb {
     enum tcp_state state;
     uint32_t t_flags;
     struct callout timers[TCPT_COUNT];
+    uint32_t t_timer_entered[TCPT_COUNT];
+    bool t_closed;
+    uint32_t t_draining;
     uint8_t rexmt_shift;
 
-    // send sequence space (RFC 9293 3.3.1)
     tcp_seq snd_una;
     tcp_seq snd_nxt;
     tcp_seq snd_max;

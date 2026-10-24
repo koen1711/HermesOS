@@ -167,9 +167,9 @@ bool signal_fault(const interrupt_context* context, const uint64_t cr2)
     return true;
 }
 
-static void signal_restart(interrupt_context* context, process_t* current)
+static void signal_restart(interrupt_context* context, const int64_t syscall_nr)
 {
-    context->rax = (uint64_t)current->syscall_nr;
+    context->rax = (uint64_t)syscall_nr;
     context->rip -= INT80_LEN;
 }
 
@@ -308,13 +308,14 @@ void signal_deliver(interrupt_context* context)
 
     const bool restartable = context->interrupt_number == SYSCALL_VECTOR && current->syscall_nr >= 0
                              && (int64_t)context->rax == -ERESTARTSYS;
+    const int64_t syscall_nr = current->syscall_nr;
     current->syscall_nr = -1;
 
     for (;;) {
         const uint64_t deliverable = current->sig_pending & ~current->sig_blocked;
         if (!deliverable) {
             if (restartable)
-                signal_restart(context, current);
+                signal_restart(context, syscall_nr);
             if (current->sig_restore_mask) {
                 current->sig_blocked = current->sig_saved_blocked;
                 current->sig_restore_mask = false;
@@ -338,7 +339,7 @@ void signal_deliver(interrupt_context* context)
 
         if (restartable) {
             if (current->sig_actions[sig - 1].flags & SA_RESTART)
-                signal_restart(context, current);
+                signal_restart(context, syscall_nr);
             else
                 context->rax = (uint64_t)-EINTR;
         }

@@ -9,6 +9,7 @@
 #include <drivers/net/socket/socket.h>
 #include <drivers/net/core/netbuf.h>
 #include <drivers/net/core/random.h>
+#include <drivers/net/core/netif.h>
 #include <drivers/net/core/route.h>
 #include <drivers/net/core/siphash.h>
 #include <hardware/memory/alloc.h>
@@ -91,13 +92,18 @@ struct tcpcb* tcp_close(struct tcpcb* tp)
 {
     struct inpcb* inp = tp->inp;
 
-    tcp_timer_stop_all(tp);
+    const uint32_t draining = tcp_timer_discard(tp);
     tcp_reassemble_flush(tp);
     if (tp->cc->destroy)
         tp->cc->destroy(tp);
     tcpstat.closed++;
     inp->ppcb = nullptr;
-    free(tp);
+    if (draining) {
+        tp->t_closed = true;
+        tp->t_draining = draining;
+    } else {
+        free(tp);
+    }
 
     if (inp->flags & INPCB_DETACHED) {
         tcp_pcb_release(inp);
@@ -247,8 +253,11 @@ uint16_t tcp_local_mss(const struct tcpcb* tp)
 {
     const struct in6_addr* dst = &tp->inp->faddr;
     const bool v4 = inpcb_is_v4_mapped(dst);
-    const struct route_nexthop* nh = v4 ? route_lookup4(inpcb_unmap_v4(dst)) : route_lookup6(dst);
-    const uint32_t mtu = nh && nh->mtu ? nh->mtu : 1500;
+    struct route_nexthop nh;
+    const bool found = v4 ? route_lookup4(inpcb_unmap_v4(dst), &nh) : route_lookup6(dst, &nh);
+    const uint32_t mtu = found && nh.mtu ? nh.mtu : 1500;
+    if (found)
+        netif_rele(nh.nif);
     const uint32_t mss = mtu - (v4 ? IPV4_HEADER_LEN : IPV6_HEADER_LEN) - TCP_HEADER_LEN;
     return mss < TCP_MAX_PAYLOAD ? mss : TCP_MAX_PAYLOAD;
 }

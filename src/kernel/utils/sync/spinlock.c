@@ -1,6 +1,7 @@
 #include <utils/sync/spinlock.h>
 
 #include <hardware/interrupts/irq.h>
+#include <hardware/smp/smp.h>
 
 void spinlock_init(spinlock_t* lock, const char* name)
 {
@@ -11,8 +12,10 @@ void spinlock_init(spinlock_t* lock, const char* name)
 void spinlock_acquire(spinlock_t* lock)
 {
     while (__atomic_exchange_n(&lock->locked, 1, __ATOMIC_ACQUIRE)) {
-        while (__atomic_load_n(&lock->locked, __ATOMIC_RELAXED))
+        while (__atomic_load_n(&lock->locked, __ATOMIC_RELAXED)) {
+            smp_spin_poll();
             asm volatile("pause");
+        }
     }
 }
 

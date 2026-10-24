@@ -66,6 +66,37 @@ void netqueue_drain(struct netqueue* q)
     }
 }
 
+size_t netqueue_purge(struct netqueue* q, const struct netif* rcvif)
+{
+    struct netbuf* dropped = nullptr;
+    size_t count = 0;
+    uint64_t flags;
+    spinlock_acquire_irqsave(&q->lock, &flags);
+    struct netbuf** pp = &q->head;
+    q->tail = nullptr;
+    while (*pp) {
+        struct netbuf* nb = *pp;
+        if (nb->rcvif == rcvif) {
+            *pp = nb->next_pkt;
+            nb->next_pkt = dropped;
+            dropped = nb;
+            q->len--;
+            count++;
+        } else {
+            q->tail = nb;
+            pp = &nb->next_pkt;
+        }
+    }
+    spinlock_release_irqrestore(&q->lock, flags);
+
+    while (dropped) {
+        struct netbuf* next = dropped->next_pkt;
+        netbuf_free_chain(dropped);
+        dropped = next;
+    }
+    return count;
+}
+
 size_t netqueue_len(const struct netqueue* q)
 {
     return q->len;

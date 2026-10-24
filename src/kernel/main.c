@@ -22,6 +22,7 @@
 
 void kernel_main(void* multiboot_info_ptr)
 {
+    smp_early_initialize();
     const multiboot_info_t pmm_info = parse_multiboot_info(multiboot_info_ptr);
     memory_initialize(pmm_info);
     terminal_initialize(VGA_TEXT_MODE);

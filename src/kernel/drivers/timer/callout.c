@@ -2,6 +2,7 @@
 
 #include <drivers/timer/pit.h>
 #include <drivers/timer/tsc.h>
+#include <hardware/smp/smp.h>
 #include <utils/sync/spinlock.h>
 
 #define WHEEL_SIZE 256
@@ -9,6 +10,8 @@
 static struct dlist wheel[WHEEL_SIZE];
 static spinlock_t callout_lock;
 static volatile uint64_t ticks;
+
+static struct callout* running[MAX_CPUS];
 
 void callout_initialize()
 {
@@ -25,6 +28,7 @@ void callout_init(struct callout* c)
     c->func = nullptr;
     c->arg = nullptr;
     c->pending = false;
+    c->dispatched = 0;
 }
 
 static void callout_unlink(struct callout* c)
@@ -61,9 +65,30 @@ bool callout_stop(struct callout* c)
     return was;
 }
 
+void callout_drain(struct callout* c)
+{
+    const int self = cpu_this()->index;
+    do {
+        callout_stop(c);
+        for (int i = 0; i < MAX_CPUS; i++) {
+            if (i == self)
+                continue;
+            while (__atomic_load_n(&running[i], __ATOMIC_ACQUIRE) == c) {
+                smp_spin_poll();
+                asm volatile("pause");
+            }
+        }
+    } while (callout_pending(c));
+}
+
 bool callout_pending(const struct callout* c)
 {
     return c->pending;
+}
+
+uint32_t callout_dispatches(const struct callout* c)
+{
+    return __atomic_load_n(&c->dispatched, __ATOMIC_ACQUIRE);
 }
 
 void callout_tick()
@@ -86,10 +111,15 @@ void callout_tick()
             break;
 
         callout_unlink(due);
+        __atomic_add_fetch(&due->dispatched, 1, __ATOMIC_RELEASE);
         const callout_func_t func = due->func;
         void* arg = due->arg;
+        struct callout** slot_running = &running[cpu_this()->index];
+        struct callout* outer = *slot_running;
+        __atomic_store_n(slot_running, due, __ATOMIC_RELEASE);
         spinlock_release_irqrestore(&callout_lock, flags);
         func(arg);
+        __atomic_store_n(slot_running, outer, __ATOMIC_RELEASE);
         spinlock_acquire_irqsave(&callout_lock, &flags);
     }
     spinlock_release_irqrestore(&callout_lock, flags);

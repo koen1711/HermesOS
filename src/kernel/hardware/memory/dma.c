@@ -27,7 +27,7 @@ static bool crosses_boundary(const dma_addr_t addr, const dma_size_t len, const 
 
 static bool translate(const uint64_t vaddr, dma_addr_t* out)
 {
-    const uint64_t* table = (const uint64_t*)(read_cr3() & PTE_FRAME);
+    auto table = (const uint64_t*)(read_cr3() & PTE_FRAME);
     for (int shift = 39; shift >= 12; shift -= 9) {
         const uint64_t entry = table[(vaddr >> shift) & 0x1FF];
         if (!(entry & MMU_PRESENT))

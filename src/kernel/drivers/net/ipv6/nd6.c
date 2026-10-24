@@ -36,7 +36,7 @@
 struct nd6_dad {
     struct dlist_node link;
     struct netif* nif;
-    struct ipv6_ifaddr* ifa;
+    struct in6_addr addr;
     uint8_t ns_sent;
     struct callout timer;
 };
@@ -269,8 +269,8 @@ static void nd6_solicit_source(struct netif* nif, const struct netbuf* nb, const
     if (nb && nb->pkt_len >= IPV6_HEADER_LEN) {
         struct ipv6_header ip;
         netbuf_copydata(nb, 0, sizeof(ip), &ip);
-        const struct ipv6_ifaddr* ifa = ipv6_addr_find(&ip.src);
-        if (ifa && ifa->nif == nif && !(ifa->flags & (IPV6_ADDR_TENTATIVE | IPV6_ADDR_DUPLICATED))) {
+        const int src_flags = ipv6_addr_flags(&ip.src, nif);
+        if (src_flags >= 0 && !(src_flags & (IPV6_ADDR_TENTATIVE | IPV6_ADDR_DUPLICATED))) {
             *out = ip.src;
             return;
         }
@@ -411,8 +411,8 @@ int nd6_na_output(struct netif* nif, const struct in6_addr* target, const struct
 
 int nd6_rs_output(struct netif* nif)
 {
-    const struct ipv6_ifaddr* ll = ipv6_addr_linklocal(nif);
-    const bool have_ll = ll && !(ll->flags & (IPV6_ADDR_TENTATIVE | IPV6_ADDR_DUPLICATED));
+    struct in6_addr ll;
+    const bool have_ll = ipv6_addr_linklocal(nif, &ll);
     struct netbuf* nb = nd6_alloc(8 + (have_ll ? 8 : 0));
     if (!nb)
         return -ENOBUFS;
@@ -420,7 +420,7 @@ int nd6_rs_output(struct netif* nif)
     m[0] = ICMP6_ND_ROUTER_SOLICIT;
     if (have_ll)
         nd6_put_lladdr(m + 8, ND6_OPT_SOURCE_LLADDR, nif);
-    return icmp6_output(nif, nb, have_ll ? &ll->addr : &in6addr_any, &nd6_all_routers, 255);
+    return icmp6_output(nif, nb, have_ll ? &ll : &in6addr_any, &nd6_all_routers, 255);
 }
 
 static bool nd6_parse_options(const uint8_t* p, const size_t len, struct nd6_opts* out)
@@ -493,28 +493,28 @@ static bool nd6_is_solicited_node(const struct in6_addr* a)
     return true;
 }
 
-static struct nd6_dad* nd6_dad_find(const struct ipv6_ifaddr* ifa)
+static struct nd6_dad* nd6_dad_find(const struct in6_addr* addr)
 {
     for (struct dlist_node* n = dlist_first(&dads); n; n = dlist_next(n)) {
         const auto d = dlist_entry(n, struct nd6_dad, link);
-        if (d->ifa == ifa)
+        if (ipv6_addr_equal(&d->addr, addr))
             return d;
     }
     return nullptr;
 }
 
-void nd6_dad_start(struct netif* nif, struct ipv6_ifaddr* ifa)
+void nd6_dad_start(struct netif* nif, const struct in6_addr* addr)
 {
     struct nd6_dad* d = malloc(sizeof(struct nd6_dad));
     if (!d)
         return;
     memset(d, 0, sizeof(struct nd6_dad));
     d->nif = nif;
-    d->ifa = ifa;
+    d->addr = *addr;
     callout_init(&d->timer);
     uint64_t flags;
     spinlock_acquire_irqsave(&nd6_lock, &flags);
-    if (nd6_dad_find(ifa)) {
+    if (nd6_dad_find(addr)) {
         spinlock_release_irqrestore(&nd6_lock, flags);
         free(d);
         return;
@@ -525,25 +525,26 @@ void nd6_dad_start(struct netif* nif, struct ipv6_ifaddr* ifa)
     spinlock_release_irqrestore(&nd6_lock, flags);
 }
 
-void nd6_dad_stop(struct ipv6_ifaddr* ifa)
+void nd6_dad_stop(const struct in6_addr* addr)
 {
     uint64_t flags;
     spinlock_acquire_irqsave(&nd6_lock, &flags);
-    struct nd6_dad* d = nd6_dad_find(ifa);
+    struct nd6_dad* d = nd6_dad_find(addr);
     if (d) {
         callout_stop(&d->timer);
         dlist_remove(&dads, &d->link);
     }
     spinlock_release_irqrestore(&nd6_lock, flags);
-    if (d)
+    if (d) {
+        callout_drain(&d->timer);
         free(d);
+    }
 }
 
-static void nd6_dad_duplicated(struct ipv6_ifaddr* ifa)
+static void nd6_dad_duplicated(const struct in6_addr* addr)
 {
-    ifa->flags &= ~IPV6_ADDR_TENTATIVE;
-    ifa->flags |= IPV6_ADDR_DUPLICATED;
-    nd6_dad_stop(ifa);
+    ipv6_addr_update(addr, IPV6_ADDR_DUPLICATED, IPV6_ADDR_TENTATIVE);
+    nd6_dad_stop(addr);
 }
 
 void nd6_dad_timer(void* arg)
@@ -551,28 +552,30 @@ void nd6_dad_timer(void* arg)
     struct nd6_dad* d = arg;
     uint64_t flags;
     spinlock_acquire_irqsave(&nd6_lock, &flags);
-    if (nd6_dad_find(d->ifa) != d) {
+
+    if (nd6_dad_find(&d->addr) != d) {
         spinlock_release_irqrestore(&nd6_lock, flags);
         return;
     }
     struct netif* nif = d->nif;
-    struct ipv6_ifaddr* ifa = d->ifa;
     const struct nd6_ifinfo* info = nd6_info(nif);
     const uint32_t retrans = info ? info->retrans_time_ms : ND6_RETRANS_TIMER_MS;
 
     if (d->ns_sent < ND6_DAD_TRANSMITS) {
         d->ns_sent++;
         callout_reset(&d->timer, nd6_ms(retrans), nd6_dad_timer, d);
-        const struct in6_addr target = ifa->addr;
+        const struct in6_addr target = d->addr;
+        netif_ref(nif);
         spinlock_release_irqrestore(&nd6_lock, flags);
         nd6_ns_send(nif, &target, nullptr, &in6addr_any);
+        netif_rele(nif);
         return;
     }
 
     dlist_remove(&dads, &d->link);
-    ifa->flags &= ~IPV6_ADDR_TENTATIVE;
+    ipv6_addr_update(&d->addr, 0, IPV6_ADDR_TENTATIVE);
     struct nd6_ifinfo* nd = nd6_info(nif);
-    if ((ifa->flags & IPV6_ADDR_LINKLOCAL) && nd && !nd->rs_done && !nd->next_rs && !nd->rs_sent)
+    if (ipv6_addr_is_linklocal(&d->addr) && nd && !nd->rs_done && !nd->next_rs && !nd->rs_sent)
         nd->next_rs = ticks_get() + 1 + nd6_ms(net_random32() % ND6_MAX_RS_DELAY_MS);
     spinlock_release_irqrestore(&nd6_lock, flags);
     free(d);
@@ -601,12 +604,12 @@ void nd6_ns_input(struct netbuf* nb, const size_t offset)
         memcpy(sll, opts.src_lladdr, ETH_ADDR_LEN);
     netbuf_free_chain(nb);
 
-    struct ipv6_ifaddr* ifa = ipv6_addr_find(&target);
-    if (!ifa || ifa->nif != nif || (ifa->flags & IPV6_ADDR_DUPLICATED))
+    const int target_flags = ipv6_addr_flags(&target, nif);
+    if (target_flags < 0 || (target_flags & IPV6_ADDR_DUPLICATED))
         return;
-    if (ifa->flags & IPV6_ADDR_TENTATIVE) {
+    if (target_flags & IPV6_ADDR_TENTATIVE) {
         if (from_unspec)
-            nd6_dad_duplicated(ifa);
+            nd6_dad_duplicated(&target);
         return;
     }
     if (from_unspec) {
@@ -644,10 +647,10 @@ void nd6_na_input(struct netbuf* nb, const size_t offset)
         memcpy(tll, opts.tgt_lladdr, ETH_ADDR_LEN);
     netbuf_free_chain(nb);
 
-    struct ipv6_ifaddr* ifa = ipv6_addr_find(&target);
-    if (ifa) {
-        if (ifa->flags & IPV6_ADDR_TENTATIVE)
-            nd6_dad_duplicated(ifa);
+    const int target_flags = ipv6_addr_flags(&target, nullptr);
+    if (target_flags >= 0) {
+        if (target_flags & IPV6_ADDR_TENTATIVE)
+            nd6_dad_duplicated(&target);
         // TODO: log a conflict on an address already in use
         return;
     }
@@ -806,6 +809,33 @@ static void nd6_prefix_onlink(struct netif* nif, const struct in6_addr* prefix, 
         route_del6(prefix, len);
 }
 
+struct nd6_slaac_lifetimes {
+    uint64_t now;
+    uint32_t valid;
+    uint32_t preferred;
+};
+
+
+static int nd6_slaac_refresh(struct ipv6_ifaddr* ifa, void* arg)
+{
+    const struct nd6_slaac_lifetimes* l = arg;
+    if (!(ifa->flags & IPV6_ADDR_AUTOCONF))
+        return 0;
+
+    ifa->preferred_until = nd6_lifetime(l->preferred, l->now);
+    if (l->preferred)
+        ifa->flags &= ~IPV6_ADDR_DEPRECATED;
+
+    const uint64_t two_hours = l->now + nd6_ms((uint64_t)ND6_TWO_HOURS_S * 1000);
+    const uint64_t proposed = nd6_lifetime(l->valid, l->now);
+    const bool infinite_now = ifa->valid_until == 0;
+    if (proposed == 0 || l->valid > ND6_TWO_HOURS_S || (!infinite_now && proposed > ifa->valid_until))
+        ifa->valid_until = proposed;
+    else if (infinite_now || ifa->valid_until > two_hours)
+        ifa->valid_until = two_hours;
+    return 0;
+}
+
 int nd6_slaac_prefix_add(struct netif* nif, const struct in6_addr* prefix, const uint8_t prefix_len,
                          const uint32_t valid_lifetime, const uint32_t preferred_lifetime)
 {
@@ -815,29 +845,11 @@ int nd6_slaac_prefix_add(struct netif* nif, const struct in6_addr* prefix, const
     ipv6_linklocal_from_hw(nif->hw_addr, &addr);
     memcpy(addr.s6_addr, prefix->s6_addr, 8);
 
-    const uint64_t now = ticks_get();
-    struct ipv6_ifaddr* ifa = ipv6_addr_find(&addr);
-    if (!ifa) {
-        if (!valid_lifetime)
-            return 0;
-        return ipv6_addr_add(nif, &addr, prefix_len, IPV6_ADDR_TENTATIVE | IPV6_ADDR_AUTOCONF,
-                             nd6_lifetime(preferred_lifetime, now), nd6_lifetime(valid_lifetime, now));
-    }
-    if (!(ifa->flags & IPV6_ADDR_AUTOCONF))
+    struct nd6_slaac_lifetimes lifetimes = { .now = ticks_get(), .valid = valid_lifetime, .preferred = preferred_lifetime };
+    if (ipv6_addr_modify(&addr, nd6_slaac_refresh, &lifetimes) != -EADDRNOTAVAIL || !valid_lifetime)
         return 0;
-
-    ifa->preferred_until = nd6_lifetime(preferred_lifetime, now);
-    if (preferred_lifetime)
-        ifa->flags &= ~IPV6_ADDR_DEPRECATED;
-
-    const uint64_t two_hours = now + nd6_ms((uint64_t)ND6_TWO_HOURS_S * 1000);
-    const uint64_t proposed = nd6_lifetime(valid_lifetime, now);
-    const bool infinite_now = ifa->valid_until == 0;
-    if (proposed == 0 || valid_lifetime > ND6_TWO_HOURS_S || (!infinite_now && proposed > ifa->valid_until))
-        ifa->valid_until = proposed;
-    else if (infinite_now || ifa->valid_until > two_hours)
-        ifa->valid_until = two_hours;
-    return 0;
+    return ipv6_addr_add(nif, &addr, prefix_len, IPV6_ADDR_TENTATIVE | IPV6_ADDR_AUTOCONF,
+                         nd6_lifetime(preferred_lifetime, lifetimes.now), nd6_lifetime(valid_lifetime, lifetimes.now));
 }
 
 void nd6_ra_input(struct netbuf* nb, const size_t offset)
@@ -950,6 +962,7 @@ static void nd6_timer_netif(struct netif* nif, struct nd6_ifinfo* info, const ui
                 }
                 e->probes++;
                 e->expires = now + nd6_ms(info->retrans_time_ms);
+                netif_ref(nif);
                 tx[(*n_tx)++] = (struct nd6_tx){ .nif = nif, .target = e->addr };
                 break;
             case ND6_REACHABLE:
@@ -970,6 +983,7 @@ static void nd6_timer_netif(struct netif* nif, struct nd6_ifinfo* info, const ui
                     break;
                 e->probes++;
                 e->expires = now + nd6_ms(info->retrans_time_ms);
+                netif_ref(nif);
                 tx[(*n_tx)++] = (struct nd6_tx){ .nif = nif, .target = e->addr, .dst = e->addr };
                 break;
             }
@@ -1004,6 +1018,7 @@ static void nd6_timer_netif(struct netif* nif, struct nd6_ifinfo* info, const ui
     }
 
     if (info->next_rs && now >= info->next_rs && *n_tx < ND6_MAX_TX) {
+        netif_ref(nif);
         tx[(*n_tx)++] = (struct nd6_tx){ .nif = nif, .rs = true };
         info->rs_sent++;
         info->next_rs = info->rs_sent < ND6_MAX_RTR_SOLICITATIONS ? now + nd6_ms(ND6_RTR_SOLICIT_INTERVAL_MS) : 0;
@@ -1033,18 +1048,7 @@ static void nd6_timer_lifetimes(struct netif* nif, struct nd6_ifinfo* info, cons
         route_del6(&prefix, len);
     }
 
-    struct dlist_node* n = dlist_first(&nif->ipv6_addrs);
-    while (n) {
-        struct dlist_node* next = dlist_next(n);
-        struct ipv6_ifaddr* ifa = dlist_entry(n, struct ipv6_ifaddr, link);
-        if (ifa->valid_until && ifa->valid_until <= now) {
-            const struct in6_addr addr = ifa->addr;
-            ipv6_addr_del(nif, &addr);
-        } else if (ifa->preferred_until && ifa->preferred_until <= now) {
-            ifa->flags |= IPV6_ADDR_DEPRECATED;
-        }
-        n = next;
-    }
+    ipv6_addr_expire(nif, now);
 }
 
 void nd6_timer(void* arg)
@@ -1073,12 +1077,13 @@ void nd6_timer(void* arg)
     for (size_t i = 0; i < n_tx; i++) {
         if (tx[i].rs) {
             nd6_rs_output(tx[i].nif);
-            continue;
+        } else {
+            struct in6_addr src;
+            nd6_solicit_source(tx[i].nif, nullptr, &tx[i].target, &src);
+            const bool unicast = !ipv6_addr_is_unspecified(&tx[i].dst);
+            nd6_ns_send(tx[i].nif, &tx[i].target, unicast ? &tx[i].dst : nullptr, &src);
         }
-        struct in6_addr src;
-        nd6_solicit_source(tx[i].nif, nullptr, &tx[i].target, &src);
-        const bool unicast = !ipv6_addr_is_unspecified(&tx[i].dst);
-        nd6_ns_send(tx[i].nif, &tx[i].target, unicast ? &tx[i].dst : nullptr, &src);
+        netif_rele(tx[i].nif);
     }
     callout_reset(&nd6_callout, nd6_ms(ND6_TIMER_MS), nd6_timer, nullptr);
 }

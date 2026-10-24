@@ -191,10 +191,10 @@ void icmp6_error(struct netbuf* orig, const uint8_t type, const uint8_t code, co
     nb->len = nb->pkt_len = sizeof(h) + quote;
 
     struct netif* nif = orig->rcvif;
-    const struct ipv6_ifaddr* ifa = ipv6_addr_find(&ip.dst);
+    const bool ours = ipv6_addr_flags(&ip.dst, nullptr) >= 0;
     const struct in6_addr src = ip.dst;
     netbuf_free_chain(orig);
-    icmp6_output(nif, nb, ifa ? &src : nullptr, &ip.src, 0);
+    icmp6_output(nif, nb, ours ? &src : nullptr, &ip.src, 0);
     return;
 
 drop:

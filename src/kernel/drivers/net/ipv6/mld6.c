@@ -110,9 +110,8 @@ static int mld6_send_report(struct netif* nif, const struct in6_addr* group, con
         return -ENOBUFS;
     }
 
-    const struct ipv6_ifaddr* ll = ipv6_addr_linklocal(nif);
-    const bool have_ll = ll && !(ll->flags & (IPV6_ADDR_TENTATIVE | IPV6_ADDR_DUPLICATED));
-    const struct in6_addr src = have_ll ? ll->addr : in6addr_any;
+    struct in6_addr src = in6addr_any;
+    const bool have_ll = ipv6_addr_linklocal(nif, &src);
     const uint16_t sum = icmp6_checksum(nb, sizeof(router_alert), icmp_len, &src, &mld6_all_routers);
     const uint16_t net_sum = htons(sum);
     netbuf_copyback(nb, sizeof(router_alert) + 2, 2, &net_sum);
@@ -187,6 +186,23 @@ int mld6_leave(struct netif* nif, const struct in6_addr* group)
     mld6_set_filter(nif, group, false);
     free(g);
     return 0;
+}
+
+void mld6_ifdetach(const struct netif* nif)
+{
+    uint64_t flags;
+    spinlock_acquire_irqsave(&mld6_lock, &flags);
+    struct dlist_node* n = dlist_first(&groups);
+    while (n) {
+        struct dlist_node* next = dlist_next(n);
+        struct mld6_group* g = dlist_entry(n, struct mld6_group, link);
+        if (g->nif == nif) {
+            dlist_remove(&groups, n);
+            free(g);
+        }
+        n = next;
+    }
+    spinlock_release_irqrestore(&mld6_lock, flags);
 }
 
 bool mld6_is_member(struct netif* nif, const struct in6_addr* group)
@@ -265,6 +281,7 @@ void mld6_timer(void* arg)
         const auto g = dlist_entry(n, struct mld6_group, link);
         if (!g->report_at || g->report_at > now)
             continue;
+        netif_ref(g->nif);
         due[n_due].nif = g->nif;
         due[n_due].group = g->addr;
         due[n_due].type = g->record_type;
@@ -278,7 +295,9 @@ void mld6_timer(void* arg)
     }
     spinlock_release_irqrestore(&mld6_lock, flags);
 
-    for (size_t i = 0; i < n_due; i++)
+    for (size_t i = 0; i < n_due; i++) {
         mld6_send_report(due[i].nif, &due[i].group, due[i].type);
+        netif_rele(due[i].nif);
+    }
     callout_reset(&mld6_callout, ticks_from_ms(MLD6_TIMER_MS), mld6_timer, nullptr);
 }

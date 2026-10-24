@@ -94,8 +94,8 @@ int nd6_rs_output(struct netif* nif);
 void nd6_ra_input(struct netbuf* nb, size_t offset);
 void nd6_redirect_input(struct netbuf* nb, size_t offset);
 
-void nd6_dad_start(struct netif* nif, struct ipv6_ifaddr* ifa);
-void nd6_dad_stop(struct ipv6_ifaddr* ifa);
+void nd6_dad_start(struct netif* nif, const struct in6_addr* addr);
+void nd6_dad_stop(const struct in6_addr* addr);
 void nd6_dad_timer(void* arg);
 
 int nd6_slaac_prefix_add(struct netif* nif, const struct in6_addr* prefix, uint8_t prefix_len,

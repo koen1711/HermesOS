@@ -4,6 +4,8 @@
 
 #include "pmm.h"
 #include "alloc.h"
+#include <hardware/smp/smp.h>
+#include <utils/sync/spinlock.h>
 
 static mmu_context_t kernel_mmu;
 
@@ -222,14 +224,50 @@ uint64_t* mmu_find_pte(const uint64_t pml4_addr, const uint64_t virtual_addr) {
 
 #define MMIO_VIRTUAL_BASE  0xFFFFFFFFC0000000ULL
 #define MMIO_VIRTUAL_LIMIT 0xFFFFFFFFFEC00000ULL
+#define MMIO_PAGES         ((MMIO_VIRTUAL_LIMIT - MMIO_VIRTUAL_BASE) / PAGE_SIZE)
+
+static uint64_t mmio_bitmap[MMIO_PAGES / 64];
+static spinlock_t mmio_lock = { .name = "mmio" };
+
+static void mmio_mark(const size_t first, const size_t count, const bool used) {
+    for (size_t page = first; page < first + count; page++) {
+        if (used) mmio_bitmap[page / 64] |= 1ULL << (page % 64);
+        else mmio_bitmap[page / 64] &= ~(1ULL << (page % 64));
+    }
+}
 
 uint64_t vmm_alloc_mmio_region(size_t size) {
-    static uint64_t next = MMIO_VIRTUAL_BASE;
+    const size_t count = ((size + 0xFFF) & ~0xFFFULL) / PAGE_SIZE;
+    if (count == 0 || count > MMIO_PAGES) return 0;
+
+    uint64_t flags;
+    spinlock_acquire_irqsave(&mmio_lock, &flags);
+    size_t run = 0;
+    for (size_t page = 0; page < MMIO_PAGES; page++) {
+        run = mmio_bitmap[page / 64] & (1ULL << (page % 64)) ? 0 : run + 1;
+        if (run == count) {
+            const size_t first = page + 1 - count;
+            mmio_mark(first, count, true);
+            spinlock_release_irqrestore(&mmio_lock, flags);
+            return MMIO_VIRTUAL_BASE + first * PAGE_SIZE;
+        }
+    }
+    spinlock_release_irqrestore(&mmio_lock, flags);
+    return 0;
+}
+
+void vmm_free_mmio_region(const uint64_t virt, size_t size) {
     size = (size + 0xFFF) & ~0xFFFULL;
-    if (size == 0 || next + size > MMIO_VIRTUAL_LIMIT) return 0;
-    const uint64_t region = next;
-    next += size;
-    return region;
+    if (size == 0 || virt < MMIO_VIRTUAL_BASE || virt + size > MMIO_VIRTUAL_LIMIT || (virt & 0xFFF)) return;
+
+    for (uint64_t off = 0; off < size; off += PAGE_SIZE)
+        unmap_page(virt + off);
+    smp_tlb_shootdown();
+
+    uint64_t flags;
+    spinlock_acquire_irqsave(&mmio_lock, &flags);
+    mmio_mark((virt - MMIO_VIRTUAL_BASE) / PAGE_SIZE, size / PAGE_SIZE, false);
+    spinlock_release_irqrestore(&mmio_lock, flags);
 }
 
 uint64_t mmu_kernel_page_map(void) {

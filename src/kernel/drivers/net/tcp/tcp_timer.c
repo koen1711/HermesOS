@@ -6,6 +6,7 @@
 #include <drivers/net/tcp/tcp_subr.h>
 #include <drivers/net/inpcb/inpcb.h>
 #include <drivers/net/socket/socket.h>
+#include <hardware/memory/alloc.h>
 #include <os/errno.h>
 
 static const callout_func_t tcp_timer_funcs[TCPT_COUNT] = {
@@ -43,6 +44,26 @@ void tcp_timer_stop_all(struct tcpcb* tp)
         callout_stop(&tp->timers[i]);
 }
 
+uint32_t tcp_timer_discard(struct tcpcb* tp)
+{
+    uint32_t pending = 0;
+    for (int i = 0; i < TCPT_COUNT; i++) {
+        callout_stop(&tp->timers[i]);
+        pending += callout_dispatches(&tp->timers[i]) - tp->t_timer_entered[i];
+    }
+    return pending;
+}
+
+static bool tcp_timer_enter(struct tcpcb* tp, const enum tcp_timer_type which)
+{
+    tp->t_timer_entered[which]++;
+    if (!tp->t_closed)
+        return true;
+    if (--tp->t_draining == 0)
+        free(tp);
+    return false;
+}
+
 bool tcp_timer_active(const struct tcpcb* tp, const enum tcp_timer_type which)
 {
     return callout_pending(&tp->timers[which]);
@@ -77,7 +98,8 @@ void tcp_timer_rexmt(void* arg)
 {
     uint64_t flags;
     tcp_lock(&flags);
-    tcp_rexmt_timeout(arg);
+    if (tcp_timer_enter(arg, TCPT_REXMT))
+        tcp_rexmt_timeout(arg);
     tcp_unlock(flags);
 }
 
@@ -86,6 +108,10 @@ void tcp_timer_persist(void* arg)
     struct tcpcb* tp = arg;
     uint64_t flags;
     tcp_lock(&flags);
+    if (!tcp_timer_enter(tp, TCPT_PERSIST)) {
+        tcp_unlock(flags);
+        return;
+    }
     tcpstat.persisttimeo++;
     tcp_setpersist(tp);
     tp->t_flags |= TF_FORCEDATA;
@@ -131,7 +157,8 @@ void tcp_timer_keep(void* arg)
 {
     uint64_t flags;
     tcp_lock(&flags);
-    tcp_keep_timeout(arg);
+    if (tcp_timer_enter(arg, TCPT_KEEP))
+        tcp_keep_timeout(arg);
     tcp_unlock(flags);
 }
 
@@ -139,7 +166,8 @@ void tcp_timer_2msl(void* arg)
 {
     uint64_t flags;
     tcp_lock(&flags);
-    tcp_close(arg);
+    if (tcp_timer_enter(arg, TCPT_2MSL))
+        tcp_close(arg);
     tcp_unlock(flags);
 }
 
@@ -148,6 +176,10 @@ void tcp_timer_delack(void* arg)
     struct tcpcb* tp = arg;
     uint64_t flags;
     tcp_lock(&flags);
+    if (!tcp_timer_enter(tp, TCPT_DELACK)) {
+        tcp_unlock(flags);
+        return;
+    }
     tp->t_flags &= ~TF_DELACK;
     tp->t_flags |= TF_ACKNOW;
     tcp_output(tp);
