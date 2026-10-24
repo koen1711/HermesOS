@@ -8,6 +8,7 @@
 #define O_WRONLY 0x02
 #define INODE_FILE 1
 #define INODE_DIR 2
+#define INODE_SOCKET 3
 
 #define MAX_FILE_PATH 50
 
@@ -34,9 +35,9 @@ typedef struct file_operations_s {
 
 typedef struct inode_s {
     size_t id;
-    size_t type; //directory or file
+    size_t type;
     size_t size;
-    size_t data_offset; //begin of data in blob
+    size_t data_offset;
     char path[MAX_FILE_PATH];
     file_operations_t* fops;
     inode_operations_t* iops;
@@ -47,7 +48,7 @@ typedef struct file_s {
     size_t id;
     char filename[64];
     inode_t* node;
-    size_t file_position; //how far are we in a file
+    size_t file_position;
     int flags;
     struct mounted_file_system_s* mount;
     int ref_count;

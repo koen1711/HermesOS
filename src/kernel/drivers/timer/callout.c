@@ -1,6 +1,7 @@
 #include <drivers/timer/callout.h>
 
 #include <drivers/timer/pit.h>
+#include <drivers/timer/tsc.h>
 #include <utils/sync/spinlock.h>
 
 #define WHEEL_SIZE 256
@@ -92,6 +93,24 @@ void callout_tick()
         spinlock_acquire_irqsave(&callout_lock, &flags);
     }
     spinlock_release_irqrestore(&callout_lock, flags);
+}
+
+void callout_poll()
+{
+    static uint64_t next_us;
+    static bool running;
+    if (pit_frequency() || running)
+        return;
+    running = true;     // a callout may itself wait and poll
+    const uint64_t now = tsc_micros();
+    const uint64_t step = 1000000 / ticks_hz();
+    if (!next_us)
+        next_us = now + step;
+    while (now >= next_us) {
+        callout_tick();
+        next_us += step;
+    }
+    running = false;
 }
 
 uint64_t ticks_get()

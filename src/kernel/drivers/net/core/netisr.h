@@ -23,6 +23,10 @@ int netisr_dispatch(enum netisr_proto proto, struct netbuf* nb);
 
 int netisr_queue(enum netisr_proto proto, struct netbuf* nb);
 
+// Runs the queued packets; re-entrant calls return at once (the outer call finishes the work)
 void netisr_poll();
+bool netisr_pending();
+// netisr_poll, but only reports true when it ran here and handled packets
+bool netisr_poll_pending();
 
 #endif //NET_CORE_NETISR_H

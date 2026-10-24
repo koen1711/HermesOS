@@ -49,6 +49,7 @@ struct netif_ops {
     int (*transmit)(struct netif* nif, struct netbuf* nb);
     int (*ioctl)(struct netif* nif, uint32_t cmd, void* arg);
     void (*qflush)(struct netif* nif);
+    void (*poll)(struct netif* nif);
 };
 
 typedef int (*netif_output_t)(struct netif* nif, struct netbuf* nb, const void* dst, uint16_t family);
@@ -108,6 +109,8 @@ int netif_down(struct netif* nif);
 int netif_set_mtu(struct netif* nif, uint32_t mtu);
 int netif_set_hw_addr(struct netif* nif, const uint8_t* hwaddr, uint8_t len);
 int netif_ioctl(struct netif* nif, uint32_t cmd, void* arg);
+
+void netif_poll_all();
 void netif_link_state_change(struct netif* nif, uint32_t link_state);
 
 #endif //NET_CORE_NETIF_H

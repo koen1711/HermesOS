@@ -131,6 +131,25 @@ static struct file_s* get_file(const int fd)
     return fd_table[fd];
 }
 
+struct file_s* vfs_get_file(const int fd)
+{
+    return get_file(fd);
+}
+
+int vfs_install(struct file_s* f)
+{
+    for (int i = 0; i < MAX_OPEN_FILES; i++)
+    {
+        if (fd_table[i] == nullptr)
+        {
+            f->id = i;
+            fd_table[i] = f;
+            return i;
+        }
+    }
+    return -1;
+}
+
 
 int vfs_open(const char* path, const int flags)
 {
@@ -289,8 +308,11 @@ int vfs_close(const int fd)
     if (f->ref_count == 0) {
         if (f->node->fops != nullptr && f->node->fops->close != nullptr)
             f->node->fops->close(f);
-        release_node(f->mount, f->node);
-        f->mount->open_count--;
+        if (f->mount != nullptr)
+        {
+            release_node(f->mount, f->node);
+            f->mount->open_count--;
+        }
         free(f);
         fd_table[fd] = nullptr;
     }

@@ -101,6 +101,94 @@ int route_set_default4(const struct in_addr gw, struct netif* nif)
     return route_add4((struct in_addr){ INADDR_ANY }, 0, gw, nif, ROUTE_STATIC);
 }
 
+static void route_mask6(struct in6_addr* addr, const uint8_t prefix_len)
+{
+    for (int i = 0; i < 16; i++) {
+        const int bits = prefix_len - i * 8;
+        addr->s6_addr[i] &= bits >= 8 ? 0xFF : bits <= 0 ? 0 : (uint8_t)(0xFF << (8 - bits));
+    }
+}
+
+static struct route_entry* route_find6(const struct in6_addr* dst, const uint8_t prefix_len)
+{
+    for (struct dlist_node* n = dlist_first(&routes6); n; n = dlist_next(n)) {
+        const auto r = dlist_entry(n, struct route_entry, link);
+        if (r->prefix_len == prefix_len && ipv6_addr_equal(&r->dst6, dst))
+            return r;
+    }
+    return nullptr;
+}
+
+int route_add6(const struct in6_addr* dst, const uint8_t prefix_len, const struct in6_addr* gw, struct netif* nif,
+               const uint32_t flags)
+{
+    if (prefix_len > 128 || !nif || !dst)
+        return -EINVAL;
+    struct in6_addr key = *dst;
+    route_mask6(&key, prefix_len);
+    const bool gateway = gw && !ipv6_addr_is_unspecified(gw);
+
+    uint64_t irq;
+    spinlock_acquire_irqsave(&route_lock, &irq);
+    struct route_entry* r = route_find6(&key, prefix_len);
+    if (!r) {
+        r = malloc(sizeof(struct route_entry));
+        if (!r) {
+            spinlock_release_irqrestore(&route_lock, irq);
+            return -ENOMEM;
+        }
+        memset(r, 0, sizeof(struct route_entry));
+        dlist_insert_tail(&routes6, &r->link);
+    }
+    r->family = AF_INET6;
+    r->dst6 = key;
+    r->prefix_len = prefix_len;
+    r->flags = flags | ROUTE_UP | (gateway ? ROUTE_GATEWAY : 0) | (prefix_len == 128 ? ROUTE_HOST : 0);
+    r->nexthop.nif = nif;
+    r->nexthop.family = AF_INET6;
+    r->nexthop.gw6 = gateway ? *gw : in6addr_any;
+    r->nexthop.mtu = 0;
+    spinlock_release_irqrestore(&route_lock, irq);
+    return 0;
+}
+
+int route_del6(const struct in6_addr* dst, const uint8_t prefix_len)
+{
+    struct in6_addr key = *dst;
+    route_mask6(&key, prefix_len);
+    uint64_t irq;
+    spinlock_acquire_irqsave(&route_lock, &irq);
+    struct route_entry* r = route_find6(&key, prefix_len);
+    if (r)
+        dlist_remove(&routes6, &r->link);
+    spinlock_release_irqrestore(&route_lock, irq);
+    if (!r)
+        return -ESRCH;
+    free(r);
+    return 0;
+}
+
+const struct route_nexthop* route_lookup6(const struct in6_addr* dst)
+{
+    const struct route_entry* best = nullptr;
+    uint64_t irq;
+    spinlock_acquire_irqsave(&route_lock, &irq);
+    for (struct dlist_node* n = dlist_first(&routes6); n; n = dlist_next(n)) {
+        const struct route_entry* r = dlist_entry(n, struct route_entry, link);
+        if (!(r->flags & ROUTE_UP) || !ipv6_prefix_match(dst, &r->dst6, r->prefix_len))
+            continue;
+        if (!best || r->prefix_len > best->prefix_len)
+            best = r;
+    }
+    spinlock_release_irqrestore(&route_lock, irq);
+    return best ? &best->nexthop : nullptr;
+}
+
+int route_set_default6(const struct in6_addr* gw, struct netif* nif)
+{
+    return route_add6(&in6addr_any, 0, gw, nif, ROUTE_STATIC);
+}
+
 void route_flush_netif(const struct netif* nif)
 {
     struct dlist* tables[] = { &routes4, &routes6 };

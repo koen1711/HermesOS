@@ -6,6 +6,7 @@
 #include <drivers/net/core/netisr.h>
 #include <drivers/net/core/byteorder.h>
 #include <drivers/net/arp/arp.h>
+#include <drivers/net/ipv6/nd6.h>
 #include <drivers/net/socket/sockaddr.h>
 #include <os/errno.h>
 
@@ -109,8 +110,15 @@ int eth_output(struct netif* nif, struct netbuf* nb, const void* dst, const uint
             return rc;
         return eth_output_frame(nif, nb, hw, ETHERTYPE_IPV4);
     }
+    case AF_INET6: {
+        const int rc = nd6_resolve(nif, dst, nb, hw);
+        if (rc == -EINPROGRESS)
+            return 0;
+        if (rc < 0)
+            return rc;
+        return eth_output_frame(nif, nb, hw, ETHERTYPE_IPV6);
+    }
     default:
-        // TODO: AF_INET6 through nd6_resolve
         netbuf_free_chain(nb);
         return -EAFNOSUPPORT;
     }

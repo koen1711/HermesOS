@@ -22,6 +22,7 @@ bool callout_stop(struct callout* c);
 bool callout_pending(const struct callout* c);
 
 void callout_tick();
+void callout_poll();
 
 uint64_t ticks_get();
 uint32_t ticks_hz();

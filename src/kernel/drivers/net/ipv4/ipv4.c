@@ -647,3 +647,45 @@ int ipv4_output(struct netbuf* nb, struct in_addr src, const struct in_addr dst,
     }
     return result;
 }
+
+int ipv4_pton(const char* str, struct in_addr* out)
+{
+    uint8_t parts[4];
+    for (int i = 0; i < 4; i++) {
+        if (*str < '0' || *str > '9')
+            return -EINVAL;
+        uint32_t v = 0;
+        int digits = 0;
+        while (*str >= '0' && *str <= '9') {
+            v = v * 10 + (uint32_t)(*str++ - '0');
+            if (++digits > 3 || v > 255)
+                return -EINVAL;
+        }
+        parts[i] = (uint8_t)v;
+        if (i < 3 && *str++ != '.')
+            return -EINVAL;
+    }
+    if (*str)
+        return -EINVAL;
+    memcpy(out, parts, sizeof(parts));
+    return 0;
+}
+
+void ipv4_ntop(const struct in_addr addr, char* out)
+{
+    const uint8_t* b = (const uint8_t*)&addr;
+    for (int i = 0; i < 4; i++) {
+        uint8_t v = b[i];
+        char digits[3];
+        int n = 0;
+        do {
+            digits[n++] = (char)('0' + v % 10);
+            v /= 10;
+        } while (v);
+        while (n)
+            *out++ = digits[--n];
+        if (i < 3)
+            *out++ = '.';
+    }
+    *out = '\0';
+}

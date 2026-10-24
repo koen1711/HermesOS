@@ -2,6 +2,7 @@
 
 #include <drivers/net/core/netbuf.h>
 #include <drivers/net/core/netqueue.h>
+#include <hardware/interrupts/irq.h>
 #include <os/errno.h>
 
 #define NETISR_POLL_BUDGET 64
@@ -19,6 +20,8 @@ void netisr_initialize()
         protos[i].handler = nullptr;
         netqueue_init(&protos[i].queue, 0);
     }
+
+    irq_register_softintr(netisr_poll);
 }
 
 int netisr_register(const enum netisr_proto proto, const netisr_handler_t handler, const uint32_t queue_len)
@@ -63,8 +66,25 @@ int netisr_queue(const enum netisr_proto proto, struct netbuf* nb)
     return 0;
 }
 
+bool netisr_pending()
+{
+    for (int p = 1; p < NETISR_MAX; p++)
+        if (netqueue_len(&protos[p].queue))
+            return true;
+    return false;
+}
+
 void netisr_poll()
 {
+    static bool running;
+    const uint64_t flags = irq_save();
+    if (running) {
+        irq_restore(flags);
+        return;
+    }
+    running = true;
+    irq_restore(flags);
+
     bool more = true;
     while (more) {
         more = false;
@@ -82,4 +102,5 @@ void netisr_poll()
             }
         }
     }
+    running = false;
 }

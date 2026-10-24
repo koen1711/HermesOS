@@ -7,6 +7,7 @@
 #include <drivers/net/core/netif.h>
 #include <drivers/net/core/random.h>
 #include <drivers/net/core/route.h>
+#include <drivers/net/dns/dns.h>
 #include <drivers/net/inpcb/inpcb.h>
 #include <drivers/net/socket/socket.h>
 #include <drivers/net/udp/udp.h>
@@ -341,6 +342,21 @@ int dhcp_send_release(const struct dhcp_client* client)
     return dhcp_send(client, DHCP_MSG_RELEASE);
 }
 
+static void dhcp_apply_dns(const struct dhcp_lease* l)
+{
+    if (!l->dns_count)
+        return;
+    struct sockaddr_storage list[DHCP_MAX_DNS];
+    memset(list, 0, sizeof(list));
+    for (uint8_t i = 0; i < l->dns_count; i++) {
+        struct sockaddr_in* sin = (struct sockaddr_in*)&list[i];
+        sin->sin_family = AF_INET;
+        sin->sin_port = htons(DNS_PORT);
+        sin->sin_addr = l->dns[i];
+    }
+    dns_set_servers(list, l->dns_count);
+}
+
 int dhcp_apply_lease(struct dhcp_client* client)
 {
     struct netif* nif = client->nif;
@@ -354,6 +370,7 @@ int dhcp_apply_lease(struct dhcp_client* client)
         client->expire_tick = base + dhcp_seconds(l->lease_time);
     }
 
+    dhcp_apply_dns(l);
     if (client->configured) {
         struct ipv4_ifaddr* ia = ipv4_addr_find(l->addr);
         if (ia)
@@ -368,7 +385,6 @@ int dhcp_apply_lease(struct dhcp_client* client)
     if (l->router.s_addr)
         client->default_route = route_set_default4(l->router, nif) == 0;
     arp_announce(nif, l->addr);
-    // TODO: hand l->dns to dns_set_servers once the resolver exists
     return 0;
 }
 

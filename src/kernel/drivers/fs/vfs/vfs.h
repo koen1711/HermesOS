@@ -43,5 +43,7 @@ ssize_t vfs_read(int fd, void *buf, size_t length);
 ssize_t vfs_write(int fd, const void *buf, size_t length);
 int vfs_close(int fd);
 int vfs_stat(int fd, vfs_stat_t *st);
+struct file_s* vfs_get_file(int fd);
+int vfs_install(struct file_s* f);
 
 #endif //OS_VFS_V2_H

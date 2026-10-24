@@ -229,3 +229,10 @@ void netif_link_state_change(struct netif* nif, const uint32_t link_state)
     // TODO: on NETIF_LINK_UP start dhcp_start / nd6_dad_start once those exist,
     // on NETIF_LINK_DOWN flush the ARP and neighbour caches
 }
+
+void netif_poll_all()
+{
+    for (struct netif* nif = netif_first(); nif; nif = netif_next(nif))
+        if ((nif->flags & NETIF_UP) && nif->ops && nif->ops->poll)
+            nif->ops->poll(nif);
+}

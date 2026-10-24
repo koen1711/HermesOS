@@ -1,13 +1,13 @@
 #include <drivers/net/socket/sockbuf.h>
 
 #include <drivers/net/core/netbuf.h>
+#include <drivers/net/core/netif.h>
 #include <drivers/net/core/netisr.h>
+#include <drivers/timer/callout.h>
 #include <hardware/interrupts/irq.h>
+#include <scheduler/process.h>
 #include <hardware/memory/alloc.h>
 #include <os/errno.h>
-
-// Records are linked through next_pkt, the data of one record through next. A datagram
-// record starts with a NETBUF_SOCKADDR buffer holding the sender's address.
 
 static bool sockbuf_is_addr(const struct netbuf* nb)
 {
@@ -33,7 +33,6 @@ void sockbuf_init(struct sockbuf* sb, const size_t hiwat)
     spinlock_init(&sb->lock, "sockbuf");
 }
 
-// Free everything in the buffer
 void sockbuf_release(struct sockbuf* sb)
 {
     uint64_t flags;
@@ -67,7 +66,6 @@ void sockbuf_append(struct sockbuf* sb, struct netbuf* nb)
     spinlock_release_irqrestore(&sb->lock, flags);
 }
 
-// False (and nb still owned by the caller) when the datagram doesn't fit
 bool sockbuf_append_addr(struct sockbuf* sb, const struct sockaddr* from, const socklen_t from_len, struct netbuf* nb)
 {
     const size_t len = nb ? sockbuf_chain_len(nb) : 0;
@@ -107,14 +105,13 @@ bool sockbuf_append_addr(struct sockbuf* sb, const struct sockaddr* from, const 
     return true;
 }
 
-// Remove len data bytes from the front, across records (stream sockets)
 void sockbuf_drop(struct sockbuf* sb, size_t len)
 {
-    struct netbuf* freed = nullptr;     // used-up buffers, freed outside the lock
+    struct netbuf* freed = nullptr;
     uint64_t flags;
     spinlock_acquire_irqsave(&sb->lock, &flags);
     while (len && sb->head) {
-        struct netbuf* b = sb->head;    // first buffer of the first record
+        struct netbuf* b = sb->head;
         if (!sockbuf_is_addr(b) && b->len > len) {
             b->data += len;
             b->len -= len;
@@ -125,7 +122,7 @@ void sockbuf_drop(struct sockbuf* sb, size_t len)
             len -= b->len;
             sb->cc -= b->len;
         }
-        // the rest of the record (if any) becomes the record head
+
         struct netbuf* rest = b->next;
         if (rest) {
             rest->next_pkt = b->next_pkt;
@@ -172,7 +169,6 @@ size_t sockbuf_space(const struct sockbuf* sb)
     return sb->cc < sb->hiwat ? sb->hiwat - sb->cc : 0;
 }
 
-// Copy data bytes [offset, offset + len) without removing them; skips sender addresses
 void sockbuf_copy(const struct sockbuf* sb, size_t offset, size_t len, void* out)
 {
     uint8_t* dst = out;
@@ -193,23 +189,71 @@ void sockbuf_copy(const struct sockbuf* sb, size_t offset, size_t len, void* out
     }
 }
 
-// Wait until something happens to the buffer. There is no scheduler yet, so this halts
-// until the next interrupt and runs the deferred protocol work it queued. Returns
-// -EWOULDBLOCK when interrupts are off, since nothing could ever wake us then.
-// TODO: sleep on a wait queue once there are threads
-int sockbuf_wait(struct sockbuf* sb)
+// A process sleeps on the sockbuf (FreeBSD sbwait -> msleep). The kernel itself (no process
+// yet, the idle loop, interrupt context) can't sleep and polls the NICs, queues and timers instead.
+static int sockbuf_wait_id(const struct sockbuf* sb)
+{
+    // positive and above every pid, INIT_PROC_ID and WAIT_KEY_INT; a collision is only a spurious wakeup
+    return (int)(((uintptr_t)sb >> 4) & 0x3FFFFFFF) | 0x40000000;
+}
+
+static bool sockbuf_can_sleep()
+{
+    const process_t* current = scheduler_get()->current;
+    return current && current->pid != IDLE_PROC_PID && !irq_in_interrupt();
+}
+
+static void sockbuf_poll_once()
 {
     const uint64_t rflags = irq_save();
     irq_restore(rflags);
-    if (!(rflags & 0x200))     // IF
-        return -EWOULDBLOCK;
-    sb->flags |= SB_WAIT;
-    asm volatile("hlt");
+    if (rflags & 0x200)     // IF
+        asm volatile("hlt");
+    else
+        netif_poll_all();
     netisr_poll();
+    callout_poll();
+}
+
+static void sockbuf_timeout(void* arg)
+{
+    sockbuf_wakeup(arg);
+}
+
+// Callers re-check their condition after every return: wakeups can be spurious
+int sockbuf_timedwait(struct sockbuf* sb, const uint64_t timeout)
+{
+    // packets still queued (loopback, or what the caller just sent) may be what it waits for
+    if (netisr_poll_pending())
+        return 0;
+    if (!sockbuf_can_sleep()) {
+        sb->flags |= SB_WAIT;
+        sockbuf_poll_once();
+        return 0;
+    }
+
+    // interrupts stay off from the caller's check until we are on the wait list: no lost wakeup
+    const uint64_t flags = irq_save();
+    struct callout timer;
+    callout_init(&timer);
+    if (timeout)
+        callout_reset(&timer, timeout, sockbuf_timeout, sb);
+    sb->flags |= SB_WAIT;
+    process_sleep(sockbuf_wait_id(sb));
+    callout_stop(&timer);
+    irq_restore(flags);
     return 0;
+}
+
+int sockbuf_wait(struct sockbuf* sb)
+{
+    return sockbuf_timedwait(sb, 0);
 }
 
 void sockbuf_wakeup(struct sockbuf* sb)
 {
+    if (!(sb->flags & SB_WAIT))
+        return;
     sb->flags &= ~SB_WAIT;
+    process_wakeup(sockbuf_wait_id(sb));
 }

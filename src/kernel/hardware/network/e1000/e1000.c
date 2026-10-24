@@ -10,11 +10,8 @@
 #include <hardware/port/ports.h>
 #include <os/errno.h>
 
-// DMA assumes the heap is identity mapped (virtual == physical), which holds for
-// the first 1 GiB set up by setup_identity_mapping.
 static inline uint64_t dma_addr(const void* p) { return (uint64_t)(uintptr_t)p; }
 
-// malloc with the alignment the NIC needs; the raw pointer is not kept, rings live forever
 static void* malloc_aligned(const size_t size, const size_t align)
 {
     auto raw = (uintptr_t)malloc(size + align);
@@ -27,6 +24,7 @@ static const struct netif_ops e1000_netif_ops = {
     .transmit = e1000_transmit,
     .ioctl = e1000_ioctl,
     .qflush = e1000_qflush,
+    .poll = e1000_poll,
 };
 
 static bool e1000_supported(const pci_device* pci)
@@ -59,14 +57,13 @@ void e1000_initialize()
     }
 }
 
-struct e1000_device* e1000_probe(pci_device* pci)
+struct e1000_device* e1000_probe(const pci_device* pci)
 {
     struct e1000_device* dev = malloc(sizeof(struct e1000_device));
     if (!dev) return nullptr;
     memset(dev, 0, sizeof(*dev));
     dev->pci = *pci;
 
-    // BAR0 is the register window: MMIO on the 8254x, possibly 64-bit
     const uint32_t bar0 = pci_config_read_u32(pci->bus, pci->device, pci->function, PCI_BAR0);
     dev->bar_type = bar0 & 1;
     if (dev->bar_type == 0) {
@@ -75,12 +72,10 @@ struct e1000_device* e1000_probe(pci_device* pci)
             base |= (uint64_t)pci_config_read_u32(pci->bus, pci->device, pci->function, PCI_BAR1) << 32;
         dev->mem_base = base;
 
-        // identity-map the 128 KiB register window, uncached
         for (uint64_t off = 0; off < E1000_MMIO_SIZE; off += 0x1000)
             map_page(base + off, base + off, MMU_PRESENT | MMU_WRITABLE | MMU_CACHE_DISABLE);
     }
 
-    // the I/O window (IOADDR/IODATA) is the first I/O BAR
     for (uint8_t bar = PCI_BAR1; bar <= PCI_BAR5; bar += 4) {
         const uint32_t value = pci_config_read_u32(pci->bus, pci->device, pci->function, bar);
         if (value & 1) {
@@ -93,7 +88,6 @@ struct e1000_device* e1000_probe(pci_device* pci)
 
     pci_enable_bus_master(&dev->pci);
 
-    // reset, then mask everything until the rings exist
     e1000_write_command(dev, REG_CTRL, e1000_read_command(dev, REG_CTRL) | CTRL_RST);
     for (int i = 0; i < 100000 && (e1000_read_command(dev, REG_CTRL) & CTRL_RST); i++) {}
     e1000_disable_interrupts(dev);
@@ -171,7 +165,6 @@ bool e1000_read_mac_address(struct e1000_device* dev)
     }
     else
     {
-        // no EEPROM (e1000e): firmware left the address in receive address register 0
         const uint32_t low = e1000_read_command(dev, REG_RAL);
         const uint32_t high = e1000_read_command(dev, REG_RAH);
         if (low == 0)
@@ -182,7 +175,6 @@ bool e1000_read_mac_address(struct e1000_device* dev)
         dev->mac[5] = (high >> 8) & 0xff;
     }
 
-    // program it as the unicast filter address
     e1000_write_command(dev, REG_RAL, dev->mac[0] | dev->mac[1] << 8 | dev->mac[2] << 16 | (uint32_t)dev->mac[3] << 24);
     e1000_write_command(dev, REG_RAH, dev->mac[4] | dev->mac[5] << 8 | RAH_AV);
     return true;
@@ -194,7 +186,6 @@ bool e1000_start_link(struct e1000_device* dev)
     if (!e1000_read_mac_address(dev))
         return false;
 
-    // set link up with auto speed detection, take the PHY and link out of reset
     uint32_t ctrl = e1000_read_command(dev, REG_CTRL);
     ctrl |= CTRL_SLU | CTRL_ASDE;
     ctrl &= ~(CTRL_LRST | CTRL_PHY_RST | CTRL_ILOS | CTRL_VME);
@@ -206,7 +197,6 @@ bool e1000_start_link(struct e1000_device* dev)
     e1000_rx_init(dev);
     e1000_tx_init(dev);
 
-    // without an IRQ the driver still works when polled (e1000_handle_receive / e1000_reclaim_tx)
     if (!dev->irq_registered && irq_register_handler(dev->pci.interrupt_line, e1000_interrupt, dev) == 0)
         dev->irq_registered = true;
     if (dev->irq_registered)
@@ -214,15 +204,14 @@ bool e1000_start_link(struct e1000_device* dev)
     return true;
 }
 
-bool e1000_link_up(struct e1000_device* dev)
+bool e1000_link_up(const struct e1000_device* dev)
 {
     return e1000_read_command(dev, REG_STATUS) & STATUS_LU;
 }
 
 void e1000_rx_init(struct e1000_device* dev)
 {
-    // base 16-byte aligned, length a multiple of 128
-    auto descs = (struct e1000_rx_desc*)malloc_aligned(sizeof(struct e1000_rx_desc) * E1000_NUM_RX_DESC, 128);
+    const auto descs = (struct e1000_rx_desc*)malloc_aligned(sizeof(struct e1000_rx_desc) * E1000_NUM_RX_DESC, 128);
     for(int i = 0; i < E1000_NUM_RX_DESC; i++)
     {
         dev->rx_buffers[i] = malloc_aligned(E1000_RX_BUF_SIZE, 16);
@@ -239,7 +228,6 @@ void e1000_rx_init(struct e1000_device* dev)
     e1000_write_command(dev, REG_RXDESCHEAD, 0);
     e1000_write_command(dev, REG_RXDESCTAIL, E1000_NUM_RX_DESC-1);
     dev->rx_cur = 0;
-    // unicast to our address, broadcast, and multicast through the MTA; promiscuous via ioctl
     e1000_write_command(dev, REG_RCTRL, RCTL_EN | RCTL_LBM_NONE | RCTL_RDMTS_HALF | RCTL_BAM | RCTL_SECRC | RCTL_BSIZE_2048);
 }
 
@@ -267,7 +255,6 @@ void e1000_tx_init(struct e1000_device* dev)
     dev->tx_clean = 0;
 
     if (dev->pci.device_id == E1000_I217 || dev->pci.device_id == E1000_82577LM) {
-        // packets are not sent on the I217 and 82577LM unless TCTL is configured with these bits
         e1000_write_command(dev, REG_TCTRL,  0b0110000000000111111000011111010);
     } else {
         e1000_write_command(dev, REG_TCTRL,  TCTL_EN
@@ -291,13 +278,12 @@ void e1000_disable_interrupts(struct e1000_device* dev)
     e1000_read_command(dev, REG_ICR);
 }
 
-void e1000_interrupt(uint8_t irq, void* ctx)
+void e1000_interrupt(const uint8_t irq, void* ctx)
 {
-    auto dev = (struct e1000_device*)ctx;
+    const auto dev = (struct e1000_device*)ctx;
     if (irq != dev->pci.interrupt_line)
         return;
 
-    // reading ICR acknowledges every cause; the line may be shared, so 0 means "not us"
     const uint32_t status = e1000_read_command(dev, REG_ICR);
     if (status & ICR_LSC)
         netif_link_state_change(dev->nif, e1000_link_up(dev) ? NETIF_LINK_UP : NETIF_LINK_DOWN);
@@ -317,11 +303,9 @@ void e1000_handle_receive(struct e1000_device* dev)
         const uint8_t* buf = dev->rx_buffers[dev->rx_cur];
         const uint16_t len = desc->length;
 
-        // a 2 KiB buffer holds any non-jumbo frame, so EOP is always set on good frames
         if (desc->errors || !(desc->status & RX_STATUS_EOP)) {
             nif->stats.rx_errors++;
         } else {
-            // copy out so the descriptor buffer can be handed straight back to the NIC
             struct netbuf* nb = netbuf_alloc(true);
             if (nb && netbuf_append(nb, buf, len)) {
                 nb->rcvif = nif;
@@ -348,7 +332,6 @@ void e1000_reclaim_tx(struct e1000_device* dev)
 {
     while (dev->tx_clean != dev->tx_cur && (dev->tx_descs[dev->tx_clean]->status & TSTA_DD))
     {
-        // the chain is stored on its last descriptor, so it is freed once all of it is sent
         if (dev->tx_netbufs[dev->tx_clean]) {
             netbuf_free_chain(dev->tx_netbufs[dev->tx_clean]);
             dev->tx_netbufs[dev->tx_clean] = nullptr;
@@ -359,7 +342,6 @@ void e1000_reclaim_tx(struct e1000_device* dev)
 
 static uint16_t e1000_tx_free(const struct e1000_device* dev)
 {
-    // one slot stays empty so a full ring can be told apart from an empty one
     const uint16_t used = (dev->tx_cur + E1000_NUM_TX_DESC - dev->tx_clean) % E1000_NUM_TX_DESC;
     return E1000_NUM_TX_DESC - 1 - used;
 }
@@ -459,4 +441,11 @@ void e1000_qflush(struct netif* nif)
 {
     netqueue_drain(&nif->send_queue);
     e1000_reclaim_tx(nif->softc);
+}
+
+void e1000_poll(struct netif* nif)
+{
+    struct e1000_device* dev = nif->softc;
+    e1000_handle_receive(dev);
+    e1000_reclaim_tx(dev);
 }

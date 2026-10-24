@@ -5,6 +5,7 @@
 
 
 #define IRQ_MAX_HANDLERS 4      // per line; PCI lines are often shared
+#define IRQ_MAX_SOFTINTR 4
 
 struct irq_action {
     irq_handler_t handler;
@@ -12,6 +13,8 @@ struct irq_action {
 };
 
 static struct irq_action actions[IRQ_MAX_LINES][IRQ_MAX_HANDLERS];
+static softintr_handler_t softintrs[IRQ_MAX_SOFTINTR];
+static uint32_t irq_depth;
 
 // one entry stub per PIC line, in interrupt.asm
 extern void irq_interrupt_0(), irq_interrupt_1(), irq_interrupt_2(), irq_interrupt_3(),
@@ -66,16 +69,44 @@ void irq_unregister_handler(const uint8_t irq, const irq_handler_t handler)
     irq_restore(flags);
 }
 
+int irq_register_softintr(const softintr_handler_t handler)
+{
+    if (!handler)
+        return -EINVAL;
+    const uint64_t flags = irq_save();
+    for (int i = 0; i < IRQ_MAX_SOFTINTR; i++) {
+        if (softintrs[i] == handler || !softintrs[i]) {
+            softintrs[i] = handler;
+            irq_restore(flags);
+            return 0;
+        }
+    }
+    irq_restore(flags);
+    return -ENOSPC;
+}
+
+bool irq_in_interrupt()
+{
+    return irq_depth != 0;
+}
+
 void irq_dispatch(const uint8_t irq)
 {
     if (irq >= IRQ_MAX_LINES)
         return;
 
+    irq_depth++;
     for (int i = 0; i < IRQ_MAX_HANDLERS; i++) {
         const struct irq_action action = actions[irq][i];
         if (action.handler)
             action.handler(irq, action.ctx);
     }
+    if (irq_depth == 1) {
+        for (int i = 0; i < IRQ_MAX_SOFTINTR; i++)
+            if (softintrs[i])
+                softintrs[i]();
+    }
+    irq_depth--;
 }
 
 uint64_t irq_save()
