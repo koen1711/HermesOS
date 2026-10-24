@@ -84,7 +84,7 @@ void ipv4_forward(struct netbuf* nb);
 int ipv4_fragment(struct netbuf* nb, struct netif* nif, uint32_t mtu, struct netbuf** out_list);
 
 struct netbuf* ipv4_reassemble(struct netbuf* nb);
-void ipv4_reass_timer(void* arg);
+void ipv4_reassemble_timer(void* arg);
 
 typedef void (*ipv4_proto_input_t)(struct netbuf* nb, size_t header_len);
 int ipv4_register_protocol(uint8_t protocol, ipv4_proto_input_t input);
