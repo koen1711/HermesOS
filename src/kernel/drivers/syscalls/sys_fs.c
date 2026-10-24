@@ -17,7 +17,7 @@
 #define AT_EMPTY_PATH 0x1000
 #define FD_CLOEXEC 1
 #define IOV_MAX 1024
-#define W_OK 2
+#define RENAME_NOREPLACE 1
 
 enum linux_open_flags {
     LO_ACCMODE = 0x3,
@@ -105,11 +105,6 @@ static struct proc_files* files()
     return scheduler_get()->current->files;
 }
 
-static bool is_fat_node(const struct file_s* f)
-{
-    return f->node->type == INODE_FILE || f->node->type == INODE_DIR;
-}
-
 static long resolve_at(const int dirfd, const char* upath, char* out, const bool allow_empty)
 {
     char path[VFS_PATH_MAX];
@@ -159,11 +154,13 @@ long sys_read(const int fd, void* buf, const size_t len)
 
 long sys_write(const int fd, const void* buf, const size_t len)
 {
-    const struct file_s* f = fd_get(fd);
+    struct file_s* f = fd_get(fd);
     if (f == nullptr)
         return -EBADF;
     if (!uaccess_ok(buf, len))
         return -EFAULT;
+    if ((f->status_flags & LO_APPEND) && f->node->type == INODE_FILE)
+        f->file_position = f->node->size;
     return vfs_write((int)f->id, buf, len);
 }
 
@@ -177,20 +174,30 @@ long sys_openat(const int dirfd, const char* upath, const int flags, const uint3
     if ((flags & LO_ACCMODE) == LO_ACCMODE)
         return -EINVAL;
 
-    const bool writing = (flags & LO_ACCMODE) != 0 || (flags & LO_TRUNC);
-    const int id = vfs_open(path, flags & LO_PATH ? 0 : vfs_access_flags(flags));
+    const bool writing = (flags & LO_ACCMODE) != 0;
+    const int access = flags & LO_PATH ? 0 : vfs_access_flags(flags);
+    int id = vfs_open(path, access);
+    bool created = false;
+    if (id == -ENOENT && (flags & LO_CREAT) && !(flags & LO_DIRECTORY)) {
+        err = vfs_create(path, false);
+        if (err && err != -EEXIST)
+            return err;
+        created = err == 0;
+        err = 0;
+        id = vfs_open(path, access);
+    }
     if (id < 0)
-        return id == -ENOENT && (flags & LO_CREAT) ? -EROFS : id;
+        return id;
 
     struct file_s* f = vfs_get_file(id);
-    if ((flags & LO_CREAT) && (flags & LO_EXCL))
+    if ((flags & LO_CREAT) && (flags & LO_EXCL) && !created)
         err = -EEXIST;
     else if ((flags & LO_DIRECTORY) && f->node->type != INODE_DIR)
         err = -ENOTDIR;
     else if (writing && f->node->type == INODE_DIR)
         err = -EISDIR;
-    else if (writing && !(flags & LO_PATH) && is_fat_node(f))
-        err = -EROFS;
+    else if ((flags & LO_TRUNC) && writing && f->node->type == INODE_FILE && !created)
+        err = vfs_truncate(id, 0);
     if (err) {
         vfs_close(id);
         return err;
@@ -600,9 +607,9 @@ long sys_faccessat(const int dirfd, const char* upath, const int mode, const int
     char path[VFS_PATH_MAX];
     size_t type;
     const long err = path_lookup(dirfd, upath, path, &type);
-    if (err)
-        return err;
-    return (mode & W_OK) && (type == INODE_FILE || type == INODE_DIR) ? -EROFS : 0;
+    (void)mode;
+    (void)type;
+    return err;
 }
 
 long sys_readlinkat(const int dirfd, const char* upath, char* buf, const size_t size)
@@ -619,33 +626,68 @@ long sys_mkdirat(const int dirfd, const char* upath, const uint32_t mode)
 {
     (void)mode;
     char path[VFS_PATH_MAX];
-    const long err = path_lookup(dirfd, upath, path, nullptr);
-    if (err == 0)
-        return -EEXIST;
-    return err == -ENOENT ? -EROFS : err;
+    const long err = resolve_at(dirfd, upath, path, false);
+    return err ? err : vfs_create(path, true);
 }
 
 long sys_unlinkat(const int dirfd, const char* upath, const int flags)
 {
+    if (flags & ~AT_REMOVEDIR)
+        return -EINVAL;
     char path[VFS_PATH_MAX];
-    size_t type;
-    const long err = path_lookup(dirfd, upath, path, &type);
-    if (err)
-        return err;
-    if (!(flags & AT_REMOVEDIR) && type == INODE_DIR)
-        return -EISDIR;
-    if ((flags & AT_REMOVEDIR) && type != INODE_DIR)
-        return -ENOTDIR;
-    return -EROFS;
+    const long err = resolve_at(dirfd, upath, path, false);
+    return err ? err : vfs_unlink(path, flags & AT_REMOVEDIR);
 }
 
-long sys_read_only_fs(const int dirfd, const char* upath)
+long sys_renameat(const int olddirfd, const char* uold, const int newdirfd, const char* unew, const unsigned int flags)
+{
+    if (flags & ~RENAME_NOREPLACE)
+        return -EINVAL;
+    char old_path[VFS_PATH_MAX];
+    char new_path[VFS_PATH_MAX];
+    long err = resolve_at(olddirfd, uold, old_path, false);
+    if (err == 0)
+        err = resolve_at(newdirfd, unew, new_path, false);
+    return err ? err : vfs_rename(old_path, new_path, flags & RENAME_NOREPLACE);
+}
+
+static long truncate_file(struct file_s* f, const int64_t length)
+{
+    if (length < 0)
+        return -EINVAL;
+    if (f->node->type == INODE_DIR)
+        return -EISDIR;
+    if (f->node->type != INODE_FILE || !(f->flags & O_WRONLY))
+        return -EINVAL;
+    return vfs_truncate((int)f->id, (size_t)length);
+}
+
+long sys_ftruncate(const int fd, const int64_t length)
+{
+    struct file_s* f = fd_get(fd);
+    return f ? truncate_file(f, length) : -EBADF;
+}
+
+long sys_truncate(const char* upath, const int64_t length)
+{
+    char path[VFS_PATH_MAX];
+    const long err = resolve_at(AT_FDCWD, upath, path, false);
+    if (err)
+        return err;
+    const int id = vfs_open(path, O_WRONLY);
+    if (id < 0)
+        return id;
+    const long r = truncate_file(vfs_get_file(id), length);
+    vfs_close(id);
+    return r;
+}
+
+long sys_path_exists(const int dirfd, const char* upath)
 {
     if (upath == nullptr)
-        return -EROFS;
+        return fd_get(dirfd) ? 0 : -EBADF;
     char path[VFS_PATH_MAX];
-    const long err = path_lookup(dirfd, upath, path, nullptr);
-    return err ? err : -EROFS;
+    return path_lookup(dirfd, upath, path, nullptr);
 }
 
 long sys_umask(const uint32_t mask)
@@ -657,7 +699,7 @@ long sys_umask(const uint32_t mask)
 
 long sys_fsync(const int fd)
 {
-    return fd_get(fd) ? 0 : -EBADF;
+    return fd_get(fd) ? vfs_sync() : -EBADF;
 }
 
 long sys_pipe2(int* ufds, const int flags)

@@ -152,7 +152,7 @@ int vfs_install(struct file_s* f)
 }
 
 
-int vfs_open(const char* path, const int flags)
+static int vfs_walk(const char* path, mounted_file_system_t** mount_out, struct inode_s** out)
 {
     const char* rest;
     mounted_file_system_t* mount = find_mount(path, &rest);
@@ -184,6 +184,18 @@ int vfs_open(const char* path, const int flags)
 
         rest += n;
     }
+    *mount_out = mount;
+    *out = current;
+    return 0;
+}
+
+int vfs_open(const char* path, const int flags)
+{
+    mounted_file_system_t* mount;
+    struct inode_s* current;
+    const int err = vfs_walk(path, &mount, &current);
+    if (err)
+        return err;
     if (current->fops == nullptr || current->fops->open == nullptr)
     {
         release_node(mount, current);
@@ -259,6 +271,103 @@ ssize_t vfs_write(const int fd, const void* buf, const size_t length)
     if (f->node->fops == nullptr || f->node->fops->write == nullptr)
         return -EROFS;
     return f->node->fops->write(f, buf, length);
+}
+
+// The directory holding path and the last component of path, which points into path
+static int vfs_parent(const char* path, mounted_file_system_t** mount, struct inode_s** dir, const char** name)
+{
+    const char* slash = nullptr;
+    for (const char* p = path; *p; p++)
+        if (*p == '/') slash = p;
+    if (slash == nullptr || slash[1] == '\0')
+        return -EBUSY;
+
+    char parent[VFS_PATH_MAX];
+    const size_t len = slash == path ? 1 : (size_t)(slash - path);
+    if (len >= sizeof(parent))
+        return -ENAMETOOLONG;
+    memcpy(parent, path, len);
+    parent[len] = '\0';
+
+    const int err = vfs_walk(parent, mount, dir);
+    if (err)
+        return err;
+    if ((*dir)->type != INODE_DIR)
+    {
+        release_node(*mount, *dir);
+        return -ENOTDIR;
+    }
+    *name = slash + 1;
+    return 0;
+}
+
+int vfs_create(const char* path, const bool directory)
+{
+    mounted_file_system_t* mount;
+    struct inode_s* dir;
+    const char* name;
+    int err = vfs_parent(path, &mount, &dir, &name);
+    if (err)
+        return err;
+    err = dir->iops && dir->iops->create ? dir->iops->create(dir, name, directory) : -EROFS;
+    release_node(mount, dir);
+    return err;
+}
+
+int vfs_unlink(const char* path, const bool directory)
+{
+    mounted_file_system_t* mount;
+    struct inode_s* dir;
+    const char* name;
+    int err = vfs_parent(path, &mount, &dir, &name);
+    if (err)
+        return err;
+    err = dir->iops && dir->iops->unlink ? dir->iops->unlink(dir, name, directory) : -EROFS;
+    release_node(mount, dir);
+    return err;
+}
+
+int vfs_rename(const char* old_path, const char* new_path, const bool no_replace)
+{
+    const size_t old_len = strlen(old_path);
+    if (strncmp(new_path, old_path, old_len) == 0 && new_path[old_len] == '/')
+        return -EINVAL;
+
+    mounted_file_system_t* old_mount;
+    mounted_file_system_t* new_mount;
+    struct inode_s* old_dir;
+    struct inode_s* new_dir;
+    const char* old_name;
+    const char* new_name;
+    int err = vfs_parent(old_path, &old_mount, &old_dir, &old_name);
+    if (err)
+        return err;
+    if ((err = vfs_parent(new_path, &new_mount, &new_dir, &new_name)) != 0)
+    {
+        release_node(old_mount, old_dir);
+        return err;
+    }
+    if (old_mount != new_mount)
+        err = -EXDEV;
+    else if (!old_dir->iops || !old_dir->iops->rename)
+        err = -EROFS;
+    else
+        err = old_dir->iops->rename(old_dir, old_name, new_dir, new_name, no_replace);
+    release_node(new_mount, new_dir);
+    release_node(old_mount, old_dir);
+    return err;
+}
+
+int vfs_truncate(const int fd, const size_t size)
+{
+    struct file_s* f = get_file(fd);
+    if (f == nullptr)
+        return -EBADF;
+    if (f->node->type == INODE_DIR)
+        return -EISDIR;
+    if (f->node->fops == nullptr || f->node->fops->truncate == nullptr)
+        return -EINVAL;
+    return f->node->fops->truncate(f, size);
 }
 
 int64_t vfs_seek(const int fd, const int64_t offset, const enum seek_origin origin)
@@ -373,4 +482,16 @@ int vfs_close(const int fd)
         fd_table[fd] = nullptr;
     }
     return 0;
+}
+
+int vfs_sync()
+{
+    int err = 0;
+    for (int i = 0; i < MAX_MOUNTED_FILESYSTEMS; i++)
+    {
+        const mounted_file_system_t* m = &mount_table[i];
+        if (m->root != nullptr && m->driver->fsd->sync != nullptr && m->driver->fsd->sync(m->root) < 0)
+            err = -EIO;
+    }
+    return err;
 }

@@ -2,6 +2,7 @@
 #include <hardware/memory/mmu.h>
 #include <hardware/memory/pmm.h>
 #include <hardware/gdt/tss.h>
+#include <hardware/smp/smp.h>
 #include <drivers/fs/vfs/vfs.h>
 #include <drivers/elf/ELF.h>
 #include <drivers/scheduler/futex.h>
@@ -57,7 +58,9 @@ enum auxv_type {
 
 static process_t processes[MAXIMUM_NUMBER_OF_PROCESSES];
 static int next_pid = 1;
+// run queues are shared; each CPU has its own current process
 static scheduler_t scheduler;
+static scheduler_t per_cpu[MAX_CPUS];
 static uint8_t fpu_default[512] __attribute__((aligned(16)));
 
 static process_t *find_free_process_slot();
@@ -88,7 +91,7 @@ void process_initialize() {
 }
 
 scheduler_t *scheduler_get() {
-    return &scheduler;
+    return &per_cpu[cpu_this()->index];
 }
 
 void process_yield() {
@@ -96,7 +99,7 @@ void process_yield() {
         return;
     }
 
-    process_t *proc = scheduler.current;
+    process_t *proc = scheduler_get()->current;
     proc->state = PROC_SLOT_READY;
 
     if (proc->pid != IDLE_PROC_PID) {
@@ -107,7 +110,7 @@ void process_yield() {
 }
 
 void process_sleep(const int wait_id) {
-    process_t *proc = scheduler.current;
+    process_t *proc = scheduler_get()->current;
     proc->state = PROC_SLOT_SLEEPING;
     proc->wait_id = wait_id;
 
@@ -144,7 +147,7 @@ void process_wake(process_t *proc) {
 }
 
 int process_sleep_interruptible(const int wait_id) {
-    process_t *proc = scheduler.current;
+    process_t *proc = scheduler_get()->current;
     if (proc->sig_pending & (~proc->sig_blocked | proc->sig_waiting)) {
         return -EINTR;
     }
@@ -161,7 +164,7 @@ static void sleep_timeout(void *arg) {
 }
 
 int process_sleep_timeout(const int wait_id, const uint64_t ticks) {
-    process_t *proc = scheduler.current;
+    process_t *proc = scheduler_get()->current;
     proc->timed_out = false;
     struct callout timer;
     callout_init(&timer);
@@ -209,7 +212,7 @@ int process_count() {
 
 void process_set_fs_base(process_t *proc, const uint64_t base) {
     proc->fs_base = base;
-    if (proc == scheduler.current) {
+    if (proc == scheduler_get()->current) {
         wrmsr(MSR_FS_BASE, base);
     }
 }
@@ -255,7 +258,7 @@ static bool parent_ignores_children(const process_t *parent) {
 }
 
 void process_exit() {
-    process_t *proc = scheduler.current;
+    process_t *proc = scheduler_get()->current;
     callout_stop(&proc->itimer);
 
     if (proc->clear_child_tid && proc->vm != nullptr) {
@@ -300,7 +303,7 @@ void process_exit() {
 }
 
 void process_exit_status(const int status) {
-    scheduler.current->exit_status = status;
+    scheduler_get()->current->exit_status = status;
     process_exit();
 }
 
@@ -318,14 +321,14 @@ static void kill_other_threads(const process_t *proc, const int status) {
 }
 
 void process_exit_group(const int status) {
-    process_t *proc = scheduler.current;
+    process_t *proc = scheduler_get()->current;
     proc->group_exit = true;
     kill_other_threads(proc, status);
     process_exit_status(status);
 }
 
 long process_wait4(const int pid, int *status, const int options) {
-    const process_t *current = scheduler.current;
+    const process_t *current = scheduler_get()->current;
     for (;;) {
         bool have_child = false;
         for (int i = 0; i<MAXIMUM_NUMBER_OF_PROCESSES; i++) {
@@ -358,7 +361,7 @@ long process_wait4(const int pid, int *status, const int options) {
 }
 
 long process_clone(const uint64_t flags, const uint64_t stack, int *parent_tid, int *child_tid, const uint64_t tls) {
-    process_t *current = scheduler.current;
+    process_t *current = scheduler_get()->current;
     if (current->vm == nullptr || current->files == nullptr) {
         return -EINVAL;
     }
@@ -592,7 +595,7 @@ int process_exec(process_t *proc, const char *path, char *const argv[], char *co
     struct vm_space *old = proc->vm;
     proc->vm = vm;
     proc->page_map = vm->page_map;
-    if (proc == scheduler.current) {
+    if (proc == scheduler_get()->current) {
         switch_vm(vm->page_map);
     }
     vm_release(old);
@@ -622,7 +625,7 @@ int process_exec(process_t *proc, const char *path, char *const argv[], char *co
     proc->clear_child_tid = 0;
     process_set_fs_base(proc, 0);
     memcpy(proc->fpu_state, fpu_default, sizeof(fpu_default));
-    if (proc == scheduler.current) {
+    if (proc == scheduler_get()->current) {
         asm volatile("fxrstor64 %0" : : "m"(proc->fpu_state));
     }
 
@@ -646,7 +649,7 @@ static process_t *find_free_process_slot() {
 }
 
 static void set_tss(const process_t *proc) {
-    task_state_segment.rsp0 = proc->stack + KERNEL_STACK_SIZE;
+    cpu_this()->tss->rsp0 = proc->stack + KERNEL_STACK_SIZE;
 }
 
 static void reap_detached() {
@@ -654,7 +657,7 @@ static void reap_detached() {
     while (node) {
         struct dlist_node *next = dlist_next(node);
         process_t *proc = dlist_entry(node, process_t, link);
-        if (proc->detached && proc != scheduler.current) {
+        if (proc->detached && proc != scheduler_get()->current) {
             dlist_remove(&scheduler.killed, node);
             process_free(proc);
         }
@@ -663,11 +666,11 @@ static void reap_detached() {
 }
 
 static void schedule() {
-    process_t *prev = scheduler.current;
+    process_t *prev = scheduler_get()->current;
     process_t *next;
 
     if (dlist_empty(&scheduler.ready)) {
-        next = &processes[IDLE_PROC_PID];
+        next = per_cpu[cpu_this()->index].idle;
     }
     else {
         struct dlist_node *node = dlist_first(&scheduler.ready);
@@ -676,7 +679,7 @@ static void schedule() {
     }
 
     next->state = PROC_SLOT_RUNNING;
-    scheduler.current = next;
+    scheduler_get()->current = next;
 
     if (prev != next) {
         switch_process(prev, next);
@@ -710,7 +713,22 @@ static void init_idle_process() {
     proc->page_map = read_cr3();
     proc->state = PROC_SLOT_RUNNING;
     memcpy(proc->fpu_state, fpu_default, sizeof(fpu_default));
-    scheduler.current = proc;
+    per_cpu[0].current = per_cpu[0].idle = proc;
+}
+
+bool process_create_idle(const int cpu_index, const uint64_t stack) {
+    process_t *proc = find_free_process_slot();
+    if (proc == nullptr) {
+        return false;
+    }
+    memset(proc, 0, sizeof(process_t));
+    proc->pid = IDLE_PROC_PID;
+    proc->stack = stack;
+    proc->page_map = mmu_kernel_page_map();
+    proc->state = PROC_SLOT_RUNNING;
+    memcpy(proc->fpu_state, fpu_default, sizeof(fpu_default));
+    per_cpu[cpu_index].current = per_cpu[cpu_index].idle = proc;
+    return true;
 }
 
 static void init_shell_process() {
@@ -766,7 +784,7 @@ static process_t *create_process() {
     const uint64_t stack_top = proc->stack + KERNEL_STACK_SIZE;
 
     proc->context = stack_top - sizeof(interrupt_context) - 7*8;
-    *(uint64_t*)(proc->context + 6*8) = (uint64_t)trap_return;
+    *(uint64_t*)(proc->context + 6*8) = (uint64_t)process_entry;
 
     proc->frame = (interrupt_context*)(stack_top - sizeof(interrupt_context));
 

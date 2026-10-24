@@ -134,29 +134,37 @@ static long file_syscall(const interrupt_context* c)
         case SYSCALL_UNLINKAT:
             return sys_unlinkat((int)c->rdi, (const char*)c->rsi, (int)c->rdx);
         case SYSCALL_RENAME:
+            return sys_renameat(AT_FDCWD, (const char*)c->rdi, AT_FDCWD, (const char*)c->rsi, 0);
+        case SYSCALL_RENAMEAT:
+            return sys_renameat((int)c->rdi, (const char*)c->rsi, (int)c->rdx, (const char*)c->r10, 0);
+        case SYSCALL_RENAMEAT2:
+            return sys_renameat((int)c->rdi, (const char*)c->rsi, (int)c->rdx, (const char*)c->r10,
+                                (unsigned int)c->r8);
         case SYSCALL_LINK:
+        case SYSCALL_SYMLINK:
+            return -EPERM;
         case SYSCALL_TRUNCATE:
+            return sys_truncate((const char*)c->rdi, (int64_t)c->rsi);
+        case SYSCALL_FTRUNCATE:
+            return sys_ftruncate((int)c->rdi, (int64_t)c->rsi);
         case SYSCALL_CHMOD:
         case SYSCALL_CHOWN:
-            return sys_read_only_fs(AT_FDCWD, (const char*)c->rdi);
-        case SYSCALL_SYMLINK:
-            return sys_read_only_fs(AT_FDCWD, nullptr);
-        case SYSCALL_RENAMEAT:
-        case SYSCALL_RENAMEAT2:
+            return sys_path_exists(AT_FDCWD, (const char*)c->rdi);
         case SYSCALL_FCHMODAT:
         case SYSCALL_UTIMENSAT:
-            return sys_read_only_fs((int)c->rdi, (const char*)c->rsi);
-        case SYSCALL_FTRUNCATE:
+            return sys_path_exists((int)c->rdi, (const char*)c->rsi);
         case SYSCALL_FCHMOD:
         case SYSCALL_FCHOWN:
-            return fd_get((int)c->rdi) ? -EROFS : -EBADF;
+            return fd_get((int)c->rdi) ? 0 : -EBADF;
         case SYSCALL_UMASK:
             return sys_umask((uint32_t)c->rdi);
         case SYSCALL_FSYNC:
         case SYSCALL_FDATASYNC:
-        case SYSCALL_FLOCK:
             return sys_fsync((int)c->rdi);
+        case SYSCALL_FLOCK:
+            return fd_get((int)c->rdi) ? 0 : -EBADF;
         case SYSCALL_SYNC:
+            vfs_sync();
             return 0;
         case SYSCALL_PIPE:
             return sys_pipe2((int*)c->rdi, 0);
@@ -174,6 +182,24 @@ static long file_syscall(const interrupt_context* c)
         case SYSCALL_PSELECT6:
             return sys_pselect6((int)c->rdi, (uint64_t*)c->rsi, (uint64_t*)c->rdx, (uint64_t*)c->r10,
                                 (const struct timespec_k*)c->r8, (const void*)c->r9);
+        case SYSCALL_EPOLL_CREATE:
+            return (int)c->rdi <= 0 ? -EINVAL : sys_epoll_create1(0);
+        case SYSCALL_EPOLL_CREATE1:
+            return sys_epoll_create1((int)c->rdi);
+        case SYSCALL_EPOLL_CTL:
+            return sys_epoll_ctl((int)c->rdi, (int)c->rsi, (int)c->rdx, (const void*)c->r10);
+        case SYSCALL_EPOLL_WAIT:
+        case SYSCALL_EPOLL_PWAIT:
+            return sys_epoll_pwait((int)c->rdi, (void*)c->rsi, (int)c->rdx,
+                                   (int)c->r10 < 0 ? -1 : (int64_t)(int)c->r10 * 1000000,
+                                   c->rax == SYSCALL_EPOLL_PWAIT ? (const uint64_t*)c->r8 : nullptr, c->r9);
+        case SYSCALL_EPOLL_PWAIT2:
+            return sys_epoll_pwait2((int)c->rdi, (void*)c->rsi, (int)c->rdx, (const struct timespec_k*)c->r10,
+                                    (const uint64_t*)c->r8, c->r9);
+        case SYSCALL_EVENTFD:
+            return sys_eventfd2((unsigned int)c->rdi, 0);
+        case SYSCALL_EVENTFD2:
+            return sys_eventfd2((unsigned int)c->rdi, (int)c->rsi);
         default:
             return -ENOSYS;
     }

@@ -14,7 +14,7 @@ static inline uint64_t dma_addr(const void* p) { return (uint64_t)(uintptr_t)p; 
 
 static void* malloc_aligned(const size_t size, const size_t align)
 {
-    auto raw = (uintptr_t)malloc(size + align);
+    const auto raw = (uintptr_t)malloc(size + align);
     if (!raw) return nullptr;
     return (void*)((raw + align - 1) & ~(uintptr_t)(align - 1));
 }
@@ -70,10 +70,15 @@ struct e1000_device* e1000_probe(const pci_device* pci)
         uint64_t base = bar0 & ~0xFULL;
         if (((bar0 >> 1) & 3) == 2)
             base |= (uint64_t)pci_config_read_u32(pci->bus, pci->device, pci->function, PCI_BAR1) << 32;
-        dev->mem_base = base;
 
+        const uint64_t virt = vmm_alloc_mmio_region(E1000_MMIO_SIZE);
+        if (!virt) {
+            free(dev);
+            return nullptr;
+        }
         for (uint64_t off = 0; off < E1000_MMIO_SIZE; off += 0x1000)
-            map_page(base + off, base + off, MMU_PRESENT | MMU_WRITABLE | MMU_CACHE_DISABLE);
+            map_page(virt + off, base + off, MMU_PRESENT | MMU_WRITABLE | MMU_CACHE_DISABLE);
+        dev->mem_base = virt;
     }
 
     for (uint8_t bar = PCI_BAR1; bar <= PCI_BAR5; bar += 4) {
@@ -272,7 +277,7 @@ void e1000_enable_interrupts(const struct e1000_device* dev)
     e1000_read_command(dev, REG_ICR);
 }
 
-void e1000_disable_interrupts(struct e1000_device* dev)
+void e1000_disable_interrupts(const struct e1000_device* dev)
 {
     e1000_write_command(dev, REG_IMC, 0xFFFFFFFF);
     e1000_read_command(dev, REG_ICR);
@@ -348,7 +353,7 @@ static uint16_t e1000_tx_free(const struct e1000_device* dev)
 
 int e1000_netif_init(struct netif* nif)
 {
-    struct e1000_device* dev = (struct e1000_device*)nif->softc;
+    const auto dev = (struct e1000_device*)nif->softc;
     if (!dev || !dev->rx_descs[0] || !dev->tx_descs[0])
         return -EIO;
     e1000_write_command(dev, REG_RCTRL, e1000_read_command(dev, REG_RCTRL) | RCTL_EN);

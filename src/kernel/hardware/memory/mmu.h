@@ -38,6 +38,7 @@ void  free_vm(uint64_t pml4_addr);
 int      map_page_in(uint64_t pml4_addr, uint64_t virtual_addr, uint64_t physical_addr, uint64_t flags);
 uint64_t setup_kvm(void);
 uint64_t mmu_kernel_page_map(void);
+uint64_t vmm_alloc_mmio_region(size_t size);
 uint64_t* mmu_find_pte(uint64_t pml4_addr, uint64_t virtual_addr);
 void     switch_vm(uint64_t pml4_addr);
 uint64_t read_cr3(void);

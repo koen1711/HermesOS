@@ -13,7 +13,7 @@ diff --color -ruN a/config.sub b/config.sub
 diff --color -ruN a/gcc/config/hermes.h b/gcc/config/hermes.h
 --- a/gcc/config/hermes.h	1970-01-01 01:00:00.000000000 +0100
 +++ b/gcc/config/hermes.h	2026-10-06 09:37:28.746290494 +0200
-@@ -0,0 +1,27 @@
+@@ -0,0 +1,28 @@
 +/* Target definitions for HermesOS (mlibc-based userspace).  */
 +
 +#undef TARGET_HERMES
@@ -22,15 +22,16 @@ diff --color -ruN a/gcc/config/hermes.h b/gcc/config/hermes.h
 +#undef LIB_SPEC
 +#define LIB_SPEC "-lc"
 +
-+/* mlibc's hermes sysdeps provide crt1.o; x86_64 uses .init_array, so no crti/crtn.  */
++/* mlibc's hermes sysdeps provide crt1.o; x86_64 uses .init_array, so no crti/crtn.
++   Executables start at 1GB: the kernel identity-maps the first gigabyte.  */
 +#undef STARTFILE_SPEC
-+#define STARTFILE_SPEC "%{!shared:crt1.o%s} %{shared:crtbeginS.o%s;:crtbegin.o%s}"
++#define STARTFILE_SPEC "%{!shared:crt1.o%s} %{shared|pie:crtbeginS.o%s;:crtbegin.o%s}"
 +
 +#undef ENDFILE_SPEC
-+#define ENDFILE_SPEC "%{shared:crtendS.o%s;:crtend.o%s}"
++#define ENDFILE_SPEC "%{shared|pie:crtendS.o%s;:crtend.o%s}"
 +
 +#undef LINK_SPEC
-+#define LINK_SPEC "%{shared:-shared} %{static:-static} %{!shared:%{!static:%{rdynamic:-export-dynamic} -dynamic-linker /usr/lib/ld.so}}"
++#define LINK_SPEC "%{shared:-shared} %{static:-static} %{!shared:%{!static:%{rdynamic:-export-dynamic} -dynamic-linker /usr/lib/ld.so}} %{!shared:%{!pie:-Ttext-segment=0x40000000}} -z max-page-size=0x1000"
 +
 +#undef TARGET_OS_CPP_BUILTINS
 +#define TARGET_OS_CPP_BUILTINS()          \

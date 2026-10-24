@@ -2,6 +2,7 @@
 
 #include "alloc.h"
 #include "pmm.h"
+#include <hardware/smp/smp.h>
 #include <os/errno.h>
 
 #define PTE_FRAME 0x000FFFFFFFFFF000ULL
@@ -147,6 +148,14 @@ struct vm_space* vm_clone(const struct vm_space* src)
             const uint64_t* pte = mmu_find_pte(src->page_map, va);
             if (!pte || !(*pte & PTE_FRAME))
                 continue;
+            if (a->flags & VMA_SHARED) {
+                if (map_page_in(vm->page_map, va, *pte & PTE_FRAME, *pte & ~PTE_FRAME) < 0) {
+                    vm_release(vm);
+                    return nullptr;
+                }
+                pmm_share_page((void*)(*pte & PTE_FRAME));
+                continue;
+            }
             void* page = alloc_physical_page();
             if (!page) {
                 vm_release(vm);
@@ -270,6 +279,7 @@ int vm_unmap(struct vm_space* vm, const uint64_t addr, const size_t len)
         }
         n = next;
     }
+    smp_tlb_shootdown();
     return 0;
 }
 
@@ -305,6 +315,7 @@ int vm_protect(struct vm_space* vm, const uint64_t addr, const size_t len, const
             invalidate(va);
         }
     }
+    smp_tlb_shootdown();
     return 0;
 }
 
@@ -319,9 +330,12 @@ int vm_discard(struct vm_space* vm, const uint64_t addr, const size_t len)
         if (!a)
             return -ENOMEM;
         const uint64_t stop = a->end < end ? a->end : end;
-        free_frames(vm, va, stop);
+
+        if (!(a->flags & VMA_SHARED))
+            free_frames(vm, va, stop);
         va = stop;
     }
+    smp_tlb_shootdown();
     return 0;
 }
 

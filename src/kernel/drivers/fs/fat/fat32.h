@@ -12,6 +12,7 @@ struct block_device;
 struct block_device_ops {
     int (*read_bytes)(struct block_device *bdev, uint64_t off, uint32_t len, void *buf);
     int (*write_bytes)(struct block_device *bdev, uint64_t off, uint32_t len, const void *buf);
+    int (*flush)(struct block_device *bdev);
 };
 
 struct block_device {
@@ -106,18 +107,34 @@ typedef struct fat32_sb_info {
     uint32_t sectors_per_cluster;
     uint32_t root_cluster;
     uint32_t bytes_per_sector;
+    uint32_t total_clusters;
+    bool     fsinfo_dirty;
+
+    uint32_t fat_cache_sector;     /* one FAT sector kept in memory */
+    bool     fat_cache_valid;
+    uint8_t  fat_cache[512];
+
+    struct fat32_inode_info *open_nodes;
 } fat32_sb_info;
 
-/* inode_t.private_data of every FAT32 inode */
+/* inode_t.private_data of every FAT32 inode; one per file, shared by all its opens */
 typedef struct fat32_inode_info {
-    fat32_sb_info *sbi;     /* filesystem the inode belongs to */
+    fat32_sb_info *sbi;
+    inode_t *inode;
+    struct fat32_inode_info *next;
+    int      refs;
     uint32_t first_cluster;
     uint32_t size;
     uint8_t  attr;
-    bool     is_root;       /* the root inode lives until unmount, others until close */
+    bool     is_root;
+    bool     orphan;        /* unlinked while open, the chain is freed by the last release */
 
-    uint32_t parent_dir_cluster;
-    uint32_t dirent_offset;
+    uint32_t dir_cluster;   /* first cluster of the parent directory */
+    uint32_t dirent_pos;    /* byte offset of the 8.3 entry in the parent */
+    uint32_t lfn_pos;       /* first long name entry, dirent_pos without one */
+
+    uint32_t cache_index;   /* last cluster looked up in the chain */
+    uint32_t cache_cluster;
 } fat32_inode_info;
 
 /* ── VFS interface ────────────────────────────────────────────── */

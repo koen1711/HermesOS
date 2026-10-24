@@ -55,7 +55,7 @@ typedef struct
 } __attribute__((packed)) full_gpt;
 
 static const uint8_t GUIDS[][16] = {
-    { 0xEB, 0xD0, 0xA0, 0xA2, 0xB9, 0xE5, 0x44, 0x33, 0x87, 0xC0, 0x68, 0xB6, 0xB7, 0x26, 0x99, 0xC8 }, // FAT32
+    { 0xEB, 0xD0, 0xA0, 0xA2, 0xB9, 0xE5, 0x44, 0x33, 0x87, 0xC0, 0x68, 0xB6, 0xB7, 0x26, 0x99, 0xC7 }, // FAT32
     { 0x0F, 0xC6, 0x3D, 0xAF, 0x84, 0x83, 0x47, 0x72, 0x8E, 0x79, 0x3D, 0x69, 0xD8, 0x47, 0x7D, 0xE4 }, // EXT4
     { 0x0F, 0xC6, 0x3D, 0xAF, 0x84, 0x83, 0x47, 0x72, 0x8E, 0x79, 0x3D, 0x69, 0xD8, 0x47, 0x7D, 0xE3 }, // EXT3
     { 0xC1, 0x2A, 0x73, 0x28, 0xF8, 0x1F, 0x11, 0xD2, 0xBA, 0x4B, 0x00, 0xA0, 0xC9, 0x3E, 0xC9, 0x3B }, // EFI System
@@ -66,22 +66,18 @@ static const partition_type TYPES[] = {
     FS_FAT32, FS_EXT4, FS_EXT3, FS_EFI_SYSTEM, FS_BIOS_BOOT
 };
 
-// Converts a GUID from little-endian to big-endian format
 static void swap_guid_endian(const uint8_t* guid, uint8_t* out) {
-    // Swap first 3 fields (little-endian -> big-endian)
     out[0] = guid[3]; out[1] = guid[2]; out[2] = guid[1]; out[3] = guid[0];  // uint32_t
     out[4] = guid[5]; out[5] = guid[4];  // uint16_t
     out[6] = guid[7]; out[7] = guid[6];  // uint16_t
-    // Last 8 bytes stay the same
+
     memcpy(&out[8], (void*)&guid[8], 8);
 }
 
-// Function to map GPT partition type to filesystem type
 static partition_type gpt_partition_fs_type(const gpt_entry* entry) {
     uint8_t guid_fixed[16];
     swap_guid_endian(entry->partition_type_guid, guid_fixed);  // Fix endianness
 
-    // Check which FULL GUID matches
     for (size_t i = 0; i < sizeof(GUIDS) / sizeof(GUIDS[0]); i++)
         if (memcmp(guid_fixed, GUIDS[i], sizeof(GUIDS[0])) == 0)
             return TYPES[i];

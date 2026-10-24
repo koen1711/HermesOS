@@ -13,7 +13,7 @@
 #define STACK_SIZE      PAGE_SIZE
 #define KERNEL_STACK_PAGES 4
 #define KERNEL_STACK_SIZE (KERNEL_STACK_PAGES * PAGE_SIZE)
-#define MAXIMUM_NUMBER_OF_PROCESSES 64
+#define MAXIMUM_NUMBER_OF_PROCESSES 128
 #define USER_STACK_START    (USER_VIRTUAL_BASE + USER_MEMORY_SIZE)
 #define NORMAL_PROC_ID -1
 #define INIT_PROC_ID 1
@@ -81,12 +81,15 @@ typedef struct {
 
 typedef struct {
     process_t *current;
+    process_t *idle;
     struct dlist ready;
     struct dlist waiting;
     struct dlist killed;
 } scheduler_t;
 
 void process_initialize();
+bool process_create_idle(int cpu_index, uint64_t stack);
+extern void process_entry();
 scheduler_t *scheduler_get();
 
 void process_yield();

@@ -81,11 +81,14 @@ long sys_mmap(const uint64_t addr, const size_t len, const int prot, const int f
             return -EACCES;
     }
 
+    const bool shared = type != MAP_PRIVATE;
     uint64_t start;
-    long err = vm_map(vm, addr & PAGE_MASK, len, (uint32_t)prot, 0, fixed, &start);
+    long err = vm_map(vm, addr & PAGE_MASK, len, (uint32_t)prot, shared ? VMA_SHARED : 0, fixed, &start);
     if (err)
         return err;
-    if (f)
+    if (shared)
+        err = vm_write(vm, start, nullptr, PAGE_ALIGN_UP(len));
+    if (err == 0 && f)
         err = map_file(vm, f, start, len, offset);
     if (err == 0 && (flags & MAP_POPULATE))
         vm_populate(vm, start, len, false);

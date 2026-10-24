@@ -70,7 +70,7 @@ int map_page_in(uint64_t pml4_addr, uint64_t virtual_addr, uint64_t physical_add
     return 0;
 }
 
-int map_page(uint64_t virtual_addr, uint64_t physical_addr, uint64_t flags) {
+int map_page(const uint64_t virtual_addr, const uint64_t physical_addr, const uint64_t flags) {
     return map_page_in((uint64_t)kernel_mmu.pml4, virtual_addr, physical_addr, flags);
 }
 
@@ -95,7 +95,7 @@ void unmap_page(uint64_t virtual_addr) {
 }
 
 void setup_kernel_mapping(const mmu_context_t* mmu) {
-    const uint64_t size = 0x40000000ULL;
+    constexpr uint64_t size = 0x40000000ULL;
 
     uint64_t* high_pdpt = allocate_page_table();
     mmu->pml4[511] = (uint64_t)high_pdpt | MMU_PRESENT | MMU_WRITABLE;
@@ -104,14 +104,14 @@ void setup_kernel_mapping(const mmu_context_t* mmu) {
     high_pdpt[510] = (uint64_t)kernel_pd | MMU_PRESENT | MMU_WRITABLE;
 
     for (uint64_t i = 0; i < (size / TWO_MEGABYTES); i++) {
-        const uint64_t phys_start = 0x400000ULL;
+        constexpr uint64_t phys_start = 0x400000ULL;
         const uint64_t phys_addr = phys_start + (i * TWO_MEGABYTES);
         kernel_pd[i] = phys_addr | MMU_PRESENT | MMU_WRITABLE | MMU_PDE_TWO_MB;
     }
 }
 
 void setup_identity_mapping(const mmu_context_t* mmu) {
-    const uint64_t size = 0x40000000ULL;
+    constexpr uint64_t size = 0x40000000ULL;
 
     uint64_t* pdpt = allocate_page_table();
     mmu->pml4[0] = (uint64_t)pdpt | MMU_PRESENT | MMU_WRITABLE;
@@ -120,15 +120,15 @@ void setup_identity_mapping(const mmu_context_t* mmu) {
     pdpt[0] = (uint64_t)pd | MMU_PRESENT | MMU_WRITABLE;
 
     for (uint64_t i = 0; i < (size / TWO_MEGABYTES); i++) {
-        const uint64_t phys_start = 0x00000000ULL;
+        constexpr uint64_t phys_start = 0x00000000ULL;
         const uint64_t phys_addr = phys_start + (i * TWO_MEGABYTES);
         pd[i] = phys_addr | MMU_PRESENT | MMU_WRITABLE | MMU_PDE_TWO_MB;
     }
 }
 
 void setup_device_mappings(mmu_context_t* mmu) {
-    const uint64_t virtual_addr = 0xFFFFFFFFFEC00000ULL;
-    const uint64_t phys = 0xFEC00000ULL;
+    constexpr uint64_t virtual_addr = 0xFFFFFFFFFEC00000ULL;
+    constexpr uint64_t phys = 0xFEC00000ULL;
     map_page(virtual_addr, phys, MMU_PRESENT | MMU_WRITABLE | MMU_CACHE_DISABLE);
 }
 
@@ -164,29 +164,29 @@ void* vmalloc(size_t size) {
 void vfree(void* ptr) {
     if (!ptr) return;
 
-    uintptr_t addr = (uintptr_t)ptr;
+    const uintptr_t addr = (uintptr_t)ptr;
     for (size_t i = 0; i < 0x1000; i += 0x1000) {
         unmap_page(addr + i);
     }
     free_physical_page(ptr);
 }
 
-void free_vm(uint64_t pml4_addr) {
-    uint64_t* pml4 = (uint64_t*)pml4_addr;
+void free_vm(const uint64_t pml4_addr) {
+    const auto pml4 = (uint64_t*)pml4_addr;
     if (!pml4) return;
 
-    const uint64_t* kernel_low = (const uint64_t*)(kernel_mmu.pml4[0] & ~0xFFFULL);
+    const auto kernel_low = (const uint64_t*)(kernel_mmu.pml4[0] & ~0xFFFULL);
     for (int i = 0; i < 512; i++) {
         if (!(pml4[i] & MMU_PRESENT) || pml4[i] == kernel_mmu.pml4[i]) continue;
-        uint64_t* pdpt = (uint64_t*)(pml4[i] & ~0xFFFULL);
+        const auto pdpt = (uint64_t*)(pml4[i] & ~0xFFFULL);
 
         for (int j = 0; j < 512; j++) {
             if (!(pdpt[j] & MMU_PRESENT) || (i == 0 && pdpt[j] == kernel_low[j])) continue;
-            uint64_t* pd = (uint64_t*)(pdpt[j] & ~0xFFFULL);
+            const auto pd = (uint64_t*)(pdpt[j] & ~0xFFFULL);
 
             for (int k = 0; k < 512; k++) {
                 if (!(pd[k] & MMU_PRESENT) || (pd[k] & MMU_PDE_TWO_MB)) continue;
-                uint64_t* pt = (uint64_t*)(pd[k] & ~0xFFFULL);
+                const auto pt = (uint64_t*)(pd[k] & ~0xFFFULL);
 
                 for (int l = 0; l < 512; l++) {
                     if ((pt[l] & MMU_USER) && (pt[l] & 0x000FFFFFFFFFF000ULL)) {
@@ -202,8 +202,8 @@ void free_vm(uint64_t pml4_addr) {
     free_physical_page(pml4);
 }
 
-uint64_t* mmu_find_pte(uint64_t pml4_addr, uint64_t virtual_addr) {
-    uint64_t* table = (uint64_t*)pml4_addr;
+uint64_t* mmu_find_pte(const uint64_t pml4_addr, const uint64_t virtual_addr) {
+    auto table = (uint64_t*)pml4_addr;
     for (int shift = 39; shift > 12; shift -= 9) {
         const uint64_t entry = table[(virtual_addr >> shift) & 0x1FF];
         if (!(entry & MMU_PRESENT) || (entry & MMU_PDE_TWO_MB)) return nullptr;
@@ -212,6 +212,18 @@ uint64_t* mmu_find_pte(uint64_t pml4_addr, uint64_t virtual_addr) {
     return &table[(virtual_addr >> 12) & 0x1FF];
 }
 
+
+#define MMIO_VIRTUAL_BASE  0xFFFFFFFFC0000000ULL
+#define MMIO_VIRTUAL_LIMIT 0xFFFFFFFFFEC00000ULL
+
+uint64_t vmm_alloc_mmio_region(size_t size) {
+    static uint64_t next = MMIO_VIRTUAL_BASE;
+    size = (size + 0xFFF) & ~0xFFFULL;
+    if (size == 0 || next + size > MMIO_VIRTUAL_LIMIT) return 0;
+    const uint64_t region = next;
+    next += size;
+    return region;
+}
 
 uint64_t mmu_kernel_page_map(void) {
     return (uint64_t)kernel_mmu.pml4;

@@ -1,6 +1,8 @@
 #include <drivers/net/core/netif.h>
 
 #include <drivers/net/core/netbuf.h>
+#include <drivers/net/arp/arp.h>
+#include <drivers/net/dhcp/dhcp.h>
 #include <os/errno.h>
 
 #include "hardware/memory/alloc.h"
@@ -226,8 +228,11 @@ void netif_link_state_change(struct netif* nif, const uint32_t link_state)
         return;
     nif->link_state = link_state;
 
-    // TODO: on NETIF_LINK_UP start dhcp_start / nd6_dad_start once those exist,
-    // on NETIF_LINK_DOWN flush the ARP and neighbour caches
+    // TODO: nd6_dad_start for IPv6, flush the neighbour cache on link down
+    if (link_state == NETIF_LINK_UP && !(nif->flags & NETIF_LOOPBACK))
+        dhcp_start(nif);
+    else if (link_state == NETIF_LINK_DOWN)
+        arp_cache_flush(nif);
 }
 
 void netif_poll_all()

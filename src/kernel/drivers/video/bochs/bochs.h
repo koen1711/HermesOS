@@ -3,6 +3,6 @@
 #include "hardware/port/pci.h"
 
 int bochs_detect(pci_device *dev);
-int bochs_init(pci_device *dev);
+int bochs_init(const pci_device *dev);
 
 #endif //OS_BOCHS_H

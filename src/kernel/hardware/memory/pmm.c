@@ -10,6 +10,7 @@ extern void* _kernel_virtual_end;
 #define MAX_PHYSICAL_PAGES 65536 // Support up to 256MB (65536 * 4K)
 
 static uint64_t physical_pages[MAX_PHYSICAL_PAGES / 64]; // Bitmap
+static uint16_t shared_refs[MAX_PHYSICAL_PAGES];
 static uintptr_t physical_base = 0;
 static size_t total_pages = 0;
 
@@ -64,7 +65,21 @@ void free_physical_page(void* page) {
 
     const size_t addr = (address - physical_base) / 0x1000;
     if (addr < total_pages) {
+        if (shared_refs[addr]) {
+            shared_refs[addr]--;
+            return;
+        }
         CLEAR_BIT(physical_pages, addr);
+    }
+}
+
+void pmm_share_page(void* page) {
+    const uintptr_t address = (uintptr_t)page;
+    if (address < physical_base) return;
+
+    const size_t addr = (address - physical_base) / 0x1000;
+    if (addr < total_pages && shared_refs[addr] < 0xFFFF) {
+        shared_refs[addr]++;
     }
 }
 

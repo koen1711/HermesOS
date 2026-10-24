@@ -44,7 +44,7 @@ bool e1000_link_up(const struct e1000_device* dev);
 void e1000_rx_init(struct e1000_device* dev);
 void e1000_tx_init(struct e1000_device* dev);
 void e1000_enable_interrupts(const struct e1000_device* dev);
-void e1000_disable_interrupts(struct e1000_device* dev);
+void e1000_disable_interrupts(const struct e1000_device* dev);
 
 void e1000_interrupt(uint8_t irq, void* ctx);
 void e1000_handle_receive(struct e1000_device* dev);

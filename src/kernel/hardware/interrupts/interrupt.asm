@@ -87,6 +87,9 @@ TRAP_NOERR irq_interrupt_14, 0x2e      # primary ATA
 TRAP_NOERR irq_interrupt_15, 0x2f      # secondary ATA, also the slave's spurious IRQ
 
 TRAP_NOERR irq_interrupt_syscall, 0x80 # SYSCALL_VECTOR, syscalls_initialize puts it in the IDT
+TRAP_NOERR irq_lapic_timer, 0x40       # LAPIC_TIMER_VECTOR, smp_initialize puts these in the IDT
+TRAP_NOERR irq_tlb_shootdown, 0x41
+TRAP_NOERR irq_lapic_spurious, 0xff
 
 # Stub address for every exception 0-31, idt_initialize puts them in the IDT
 .section .data

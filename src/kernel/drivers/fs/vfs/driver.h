@@ -3,6 +3,7 @@
 
 #include "os/stddef.h"
 #include "os/types.h"
+#include "os/stdbool.h"
 
 #define O_RDONLY 0x01
 #define O_WRONLY 0x02
@@ -11,6 +12,7 @@
 #define INODE_SOCKET 3
 #define INODE_PIPE 4
 #define INODE_CHAR 5
+#define INODE_ANON 6
 
 #define MAX_FILE_PATH 256
 #define MAX_PATH_LENGTH 256
@@ -37,11 +39,16 @@ enum vfs_poll_events {
 typedef struct file_system_driver_ts {
     struct inode_s* (*mount)(void* blob);
     void (*unmount)(struct inode_s* root);
+    int (*sync)(struct inode_s* root);
 } file_system_driver_t;
 
 typedef struct inode_operations_s {
-    struct inode_s* (*lookup)(struct inode_s* dir, const char* name);
+    struct inode_s* (*lookup)(const struct inode_s* dir, const char* name);
     void (*release)(struct inode_s* node);
+    int (*create)(struct inode_s* dir, const char* name, bool directory);
+    int (*unlink)(struct inode_s* dir, const char* name, bool directory);
+    int (*rename)(struct inode_s* old_dir, const char* old_name, struct inode_s* new_dir, const char* new_name,
+                  bool no_replace);
 } inode_operations_t;
 
 typedef struct file_operations_s {
@@ -52,6 +59,7 @@ typedef struct file_operations_s {
     int (*readdir)(struct file_s* f, struct vfs_dirent* out);
     int (*poll)(struct file_s* f);
     int (*ioctl)(struct file_s* f, unsigned long request, void* arg);
+    int (*truncate)(struct file_s* f, size_t size);
 } file_operations_t;
 
 typedef struct inode_s {

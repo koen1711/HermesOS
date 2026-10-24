@@ -30,12 +30,17 @@ static int ata_bdev_write(struct block_device *bdev, uint64_t off,
     return ata_write(bdev->unique_id, abs_off, abs_off + len, (const uint8_t *)buf);
 }
 
+static int ata_bdev_flush(struct block_device *bdev)
+{
+    return ata_flush_device(bdev->unique_id);
+}
+
 static const struct block_device_ops ata_bdev_ops = {
     .read_bytes  = ata_bdev_read,
     .write_bytes = ata_bdev_write,
+    .flush       = ata_bdev_flush,
 };
 
-// Create a linked list for the registry
 full_map* ata_disk_registry = NULL;
 uintptr_t pci_ata_controller = 0;
 
@@ -82,15 +87,23 @@ int ata_read_sector(const ata_device * dev, const uint32_t lba, uint16_t * buffe
         if (!(status & ATA_SR_BSY) && (status & ATA_SR_DRQ)) break;
     }
 
-    for (int i = 0; i < 256; i++) {
-        const uint16_t data = port_read_u16(dev->io_base + ATA_REG_DATA);
-        buffer[i] = data;
-    }
+    asm volatile("rep insw" : "+D"(buffer), "+c"((uint64_t){256}) : "d"((uint16_t)(dev->io_base + ATA_REG_DATA)) : "memory");
 
     const uint8_t status = port_read_u8(dev->io_base + ATA_REG_STATUS);
     if (status & ATA_SR_ERR) return -4;
 
     return 0;
+}
+
+#define ATA_CMD_CACHE_FLUSH 0xE7
+
+static int ata_wait_ready(const ata_device * dev, const bool need_drq)
+{
+    for (;;) {
+        const uint8_t status = port_read_u8(dev->io_base + ATA_REG_STATUS);
+        if (status & (ATA_SR_ERR | ATA_SR_DF)) return -2;
+        if (!(status & ATA_SR_BSY) && (!need_drq || (status & ATA_SR_DRQ))) return 0;
+    }
 }
 
 int ata_write_sector(const ata_device * dev, const uint32_t lba, const uint16_t * buffer)
@@ -106,16 +119,18 @@ int ata_write_sector(const ata_device * dev, const uint32_t lba, const uint16_t 
     port_write_u8(dev->io_base + ATA_REG_LBA2, (lba >> 16) & 0xFF);
     port_write_u8(dev->io_base + ATA_REG_COMMAND, ATA_CMD_WRITE_PIO);
 
-    // Write data
-    for (int i = 0; i < 256; i++) {
-        port_write_u16(dev->io_base + ATA_REG_DATA, buffer[i]);
-    }
+    if (ata_wait_ready(dev, true) != 0) return -2;
+    asm volatile("rep outsw" : "+S"(buffer), "+c"((uint64_t){256}) : "d"((uint16_t)(dev->io_base + ATA_REG_DATA)) : "memory");
 
-    // Verify successful completion
-    const uint8_t status = port_read_u8(dev->io_base + ATA_REG_STATUS);
-    if (status & ATA_SR_ERR) return -4;
+    return ata_wait_ready(dev, false) == 0 ? 0 : -4;
+}
 
-    return 0;
+static int ata_flush(const ata_device * dev)
+{
+    port_write_u8(dev->io_base + ATA_REG_HDDEVSEL, 0xE0 | (dev->slave << 4));
+    port_io_wait();
+    port_write_u8(dev->io_base + ATA_REG_COMMAND, ATA_CMD_CACHE_FLUSH);
+    return ata_wait_ready(dev, false);
 }
 
 int ata_read_until(const ata_device * dev, const uint32_t lba, const uint32_t n_bytes, uint8_t *buffer)
@@ -154,7 +169,7 @@ int ata_read(const uint32_t unique_id, const uint64_t begin_byte, const uint64_t
     const ata_device* dev = map_get(ata_disk_registry, (void*)unique_id);
     if (dev == NULL) return -2;
 
-    if (begin_byte >= end_byte) return 0; // Nothing to read
+    if (begin_byte >= end_byte) return 0;
 
     const uint64_t start_lba = begin_byte / ATA_SECTOR_SIZE;
     const uint64_t end_lba = (end_byte - 1) / ATA_SECTOR_SIZE;
@@ -162,9 +177,20 @@ int ata_read(const uint32_t unique_id, const uint64_t begin_byte, const uint64_t
 
     size_t buffer_pos = 0;
 
+    uint8_t* temp_buffer = malloc(ATA_SECTOR_SIZE);
+    if (temp_buffer == NULL) return -1;
+
     for (uint64_t i = 0; i < n_sectors; i++) {
-        uint8_t* temp_buffer = malloc(ATA_SECTOR_SIZE);
-        if (temp_buffer == NULL) return -1;
+        const uint64_t sector_start = (start_lba + i) * ATA_SECTOR_SIZE;
+        if (sector_start >= begin_byte && sector_start + ATA_SECTOR_SIZE <= end_byte) {
+            const int result = ata_read_sector(dev, start_lba + i, (uint16_t*)(buffer + buffer_pos));
+            if (result != 0) {
+                free(temp_buffer);
+                return result;
+            }
+            buffer_pos += ATA_SECTOR_SIZE;
+            continue;
+        }
 
         const int result = ata_read_sector(dev, start_lba + i, (uint16_t*)temp_buffer);
         if (result != 0) {
@@ -184,10 +210,8 @@ int ata_read(const uint32_t unique_id, const uint64_t begin_byte, const uint64_t
             const size_t last_byte_offset = (end_byte - 1) % ATA_SECTOR_SIZE;
 
             if (i == 0) {
-                // If this is both the first and last sector
                 copy_size = last_byte_offset - begin_byte % ATA_SECTOR_SIZE + 1;
             } else {
-                // Just the last sector
                 copy_size = last_byte_offset + 1;
             }
         }
@@ -198,53 +222,48 @@ int ata_read(const uint32_t unique_id, const uint64_t begin_byte, const uint64_t
 
         memcpy(buffer + buffer_pos, temp_buffer + copy_offset, copy_size);
         buffer_pos += copy_size;
-
-        free(temp_buffer);
     }
 
+    free(temp_buffer);
     return 0;
 }
 
 int ata_write(const uint32_t unique_id, const uint64_t begin_byte, const uint64_t end_byte, const uint8_t *buffer)
 {
     const ata_device* dev = map_get(ata_disk_registry, (void*)unique_id);
+    if (dev == NULL) return -2;
+    if (begin_byte >= end_byte) return 0;
 
-    const uint64_t n_sectors = (end_byte - begin_byte + ATA_SECTOR_SIZE - 1) / ATA_SECTOR_SIZE;
-    const uint64_t lba = begin_byte / ATA_SECTOR_SIZE;
+    uint8_t* sector = malloc(ATA_SECTOR_SIZE);
+    if (sector == NULL) return -1;
 
-    for (uint64_t i = 0; i < n_sectors; i++) {
-        uint8_t* temp_buffer = malloc(ATA_SECTOR_SIZE);
-        if (temp_buffer == NULL) return -1;
+    int result = 0;
+    for (uint64_t lba = begin_byte / ATA_SECTOR_SIZE; result == 0 && lba <= (end_byte - 1) / ATA_SECTOR_SIZE; lba++) {
+        const uint64_t sector_start = lba * ATA_SECTOR_SIZE;
+        const uint64_t from = begin_byte > sector_start ? begin_byte : sector_start;
+        const uint64_t to = end_byte < sector_start + ATA_SECTOR_SIZE ? end_byte : sector_start + ATA_SECTOR_SIZE;
 
-        size_t copy_offset = 0;
-        size_t copy_size = ATA_SECTOR_SIZE;
-
-        if (i == 0) {
-            copy_offset = begin_byte % ATA_SECTOR_SIZE;
-            copy_size = ATA_SECTOR_SIZE - copy_offset;
+        if (from != sector_start || to != sector_start + ATA_SECTOR_SIZE)
+            result = ata_read_sector(dev, (uint32_t)lba, (uint16_t*)sector);
+        if (result == 0) {
+            memcpy(sector + (from - sector_start), buffer + (from - begin_byte), to - from);
+            result = ata_write_sector(dev, (uint32_t)lba, (const uint16_t*)sector);
         }
-        if (i == n_sectors - 1) {
-            copy_size = end_byte % ATA_SECTOR_SIZE;
-            if (copy_size == 0) copy_size = ATA_SECTOR_SIZE; // Handle full-sector case
-        }
-
-        memcpy(temp_buffer + copy_offset,
-               buffer + (i * ATA_SECTOR_SIZE),
-               copy_size);
-
-        ata_write_sector(dev, lba + i, (uint16_t*)temp_buffer);
-
-        free(temp_buffer);
     }
+    free(sector);
+    return result;
+}
 
-    return 0;
+int ata_flush_device(const uint32_t unique_id)
+{
+    const ata_device* dev = map_get(ata_disk_registry, (void*)(uintptr_t)unique_id);
+    return dev ? ata_flush(dev) : -2;
 }
 
 boot_type detect_boot_type(const ata_device* dev) {
-    uint8_t* sector = malloc(512);  // Allocate buffer for a full ISO sector
+    uint8_t* sector = malloc(512);
     if (!sector) return BOOT_UNKNOWN;
 
-    // Read sector 17 for El Torito check
     if (ata_read_sector(dev, 17, (uint16_t*)sector) == 0) {
         if (is_el_torito(sector)) {
             free(sector);
@@ -252,7 +271,6 @@ boot_type detect_boot_type(const ata_device* dev) {
         }
     }
 
-    // Read sector 1 for GPT check (512-byte sector offset)
     if (ata_read_sector(dev, 1, (uint16_t*)sector) == 0) {
         if (is_gpt(sector)) {
             free(sector);
@@ -284,11 +302,9 @@ void ata_get_gpt(const ata_device * dev, full_gpt* gpt)
         const uint32_t sector_offset = i / entries_per_sector;
         const uint32_t entry_offset = i % entries_per_sector;
 
-        // Only read a new sector when needed
         if (entry_offset == 0)
             ata_read_sector(dev, entries_lba + sector_offset, sector_buffer);
 
-        // Copy the entry from the buffer
         gpt_entry* tmp_entry = malloc(sizeof(gpt_entry));
         if (tmp_entry == NULL) panic("Failed to allocate memory for GPT entry", __FILE__, __LINE__);
         memcpy(tmp_entry,
@@ -302,7 +318,6 @@ void ata_get_gpt(const ata_device * dev, full_gpt* gpt)
         gpt->entries[i] = tmp_entry;
 
         if (gpt->entries[i]->part_type == FS_UNKNOWN) {
-            // Print the partition GUID
             terminal_printf("Unknown partition type: ");
             for (int j = 0; j < 16; j++) {
                 terminal_printf("%02X", gpt->entries[i]->partition_guid[j]);
@@ -397,10 +412,9 @@ void atapi_device_initialize(ata_device * dev)
 
 void ata_device_detect(ata_device * dev)
 {
-    port_write_u8(dev->io_base + ATA_REG_HDDEVSEL, 0xA0 | dev->slave << 4); // Select the drive
+    port_write_u8(dev->io_base + ATA_REG_HDDEVSEL, 0xA0 | dev->slave << 4);
     ata_io_wait(dev);
 
-    // Send the identify command
     port_write_u8(dev->io_base + ATA_REG_COMMAND, ATA_CMD_IDENTIFY);
     ata_io_wait(dev);
 
@@ -414,8 +428,8 @@ void ata_device_detect(ata_device * dev)
     }
 
     if (could_be_atapi) {
-        const uint8_t cl = port_read_u8(dev->io_base + ATA_REG_LBA1); // CYL_LO
-        const uint8_t ch = port_read_u8(dev->io_base + ATA_REG_LBA2); // CYL_HI
+        const uint8_t cl = port_read_u8(dev->io_base + ATA_REG_LBA1);
+        const uint8_t ch = port_read_u8(dev->io_base + ATA_REG_LBA2);
 
         if ((cl == 0x14 && ch == 0xEB) || (cl == 0x69 && ch == 0x96))
             dev->is_atapi = true;
@@ -429,15 +443,12 @@ void ata_device_detect(ata_device * dev)
     for (int i = 0; i < 256; ++i)
         identity[i] = port_read_u16(dev->io_base);
 
-    // Validate identity data
-    // For ATA devices, words 0 and 1 must not be zero
-    if (!dev->is_atapi && (identity[0] == 0 || identity[1] == 0)) return; // Invalid identification data
-    // For ATAPI devices, word 0 should have bit 15 set (0x8000) and bits 8-15 should be 0x85
-    if (dev->is_atapi && ((identity[0] & 0x8000) == 0 || (identity[0] & 0xFF00) != 0x8500)) return; // Invalid ATAPI identification data
+    if (!dev->is_atapi && (identity[0] == 0 || identity[1] == 0)) return;
+    if (dev->is_atapi && ((identity[0] & 0x8000) == 0 || (identity[0] & 0xFF00) != 0x8500)) return;
 
-    dev->identity = *(ata_identify *)identity; // Copy the identification data
+    dev->identity = *(ata_identify *)identity;
 
-    if (!(dev->identity.capabilities[0] & 0x200)) return; // Check if the device supports LBA, else return (we don't support CHS)
+    if (!(dev->identity.capabilities[0] & 0x200)) return;
 
     if (dev->is_atapi) atapi_device_initialize(dev);
     else ata_device_initialize(dev);
@@ -446,7 +457,6 @@ void ata_device_detect(ata_device * dev)
 void ata_initialize() {
     ata_disk_registry = map_create(16, NULL, NULL, NULL, NULL);
 
-    // Register the ATAPI disks
     const scan_result *result = pci_scan(-1);
 
     for (int i = 0; i < result->count; i++)

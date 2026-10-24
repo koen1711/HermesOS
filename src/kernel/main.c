@@ -14,26 +14,32 @@
 
 #include <multiboot.h>
 #include <hardware/memory/pmm.h>
+#include <hardware/smp/smp.h>
+#include <drivers/net/net.h>
+#include <hardware/interrupts/irq.h>
 
 
 
 void kernel_main(void* multiboot_info_ptr)
 {
-    terminal_initialize(VGA_TEXT_MODE);
     const multiboot_info_t pmm_info = parse_multiboot_info(multiboot_info_ptr);
     memory_initialize(pmm_info);
+    terminal_initialize(VGA_TEXT_MODE);
     pci_initialize();
     fs_init();
     ata_initialize();
     
     register_drivers();
+    net_initialize();
 
     tss_initialize();
-    process_initialize();
     idt_initialize();
+    process_initialize();
 
     lfb_initialize();
+    smp_initialize();
 
+    irq_restore(0x200);
     while (1)
     {
         asm volatile("hlt");

@@ -32,7 +32,10 @@ long sys_faccessat(int dirfd, const char* path, int mode, int flags);
 long sys_readlinkat(int dirfd, const char* path, char* buf, size_t size);
 long sys_mkdirat(int dirfd, const char* path, uint32_t mode);
 long sys_unlinkat(int dirfd, const char* path, int flags);
-long sys_read_only_fs(int dirfd, const char* path);
+long sys_renameat(int olddirfd, const char* old_path, int newdirfd, const char* new_path, unsigned int flags);
+long sys_truncate(const char* path, int64_t length);
+long sys_ftruncate(int fd, int64_t length);
+long sys_path_exists(int dirfd, const char* path);
 long sys_umask(uint32_t mask);
 long sys_fsync(int fd);
 long sys_pipe2(int* fds, int flags);
@@ -43,6 +46,21 @@ long sys_ppoll(void* fds, uint64_t nfds, const struct timespec_k* timeout, const
 long sys_select(int nfds, uint64_t* rfds, uint64_t* wfds, uint64_t* efds, struct timeval_k* timeout);
 long sys_pselect6(int nfds, uint64_t* rfds, uint64_t* wfds, uint64_t* efds, const struct timespec_k* timeout,
                   const void* sigmask);
+
+struct file_s;
+typedef long (*poll_scan_t)(void* ctx);
+int poll_file(struct file_s* f);
+long poll_wait(poll_scan_t scan, void* ctx, int64_t timeout_ns);
+long poll_wait_sigmask(const uint64_t* umask, size_t sigsetsize, poll_scan_t scan, void* ctx, int64_t timeout_ns);
+long poll_timespec_ns(const struct timespec_k* uts, int64_t* ns);
+
+long sys_epoll_create1(int flags);
+long sys_epoll_ctl(int epfd, int op, int fd, const void* event);
+long sys_epoll_pwait(int epfd, void* events, int maxevents, int64_t timeout_ns, const uint64_t* sigmask,
+                     size_t sigsetsize);
+long sys_epoll_pwait2(int epfd, void* events, int maxevents, const struct timespec_k* timeout,
+                      const uint64_t* sigmask, size_t sigsetsize);
+long sys_eventfd2(unsigned int initval, int flags);
 
 long sys_mmap(uint64_t addr, size_t len, int prot, int flags, int fd, int64_t offset);
 long sys_munmap(uint64_t addr, size_t len);

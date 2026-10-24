@@ -21,3 +21,8 @@ context_switch:
     popq %rbx
 
     ret
+
+.global process_entry
+process_entry:
+    call kernel_lock_release_for_new_process
+    jmp trap_return

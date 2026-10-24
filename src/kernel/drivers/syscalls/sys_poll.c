@@ -26,6 +26,21 @@ struct pselect_sigmask {
     size_t ss_len;
 };
 
+struct pollfd_set {
+    struct pollfd_k* fds;
+    uint64_t nfds;
+};
+
+int poll_file(struct file_s* f)
+{
+    int ready = f->node->fops && f->node->fops->poll ? f->node->fops->poll(f) : VFS_POLLIN | VFS_POLLOUT;
+    if (ready & VFS_POLLIN)
+        ready |= POLLRDNORM;
+    if (ready & VFS_POLLOUT)
+        ready |= POLLWRNORM;
+    return ready;
+}
+
 static int16_t poll_one(const struct pollfd_k* p)
 {
     if (p->fd < 0)
@@ -33,26 +48,27 @@ static int16_t poll_one(const struct pollfd_k* p)
     struct file_s* f = fd_get(p->fd);
     if (f == nullptr)
         return VFS_POLLNVAL;
-
-    int ready = f->node->fops && f->node->fops->poll ? f->node->fops->poll(f) : VFS_POLLIN | VFS_POLLOUT;
-    if (ready & VFS_POLLIN)
-        ready |= POLLRDNORM;
-    if (ready & VFS_POLLOUT)
-        ready |= POLLWRNORM;
-    return (int16_t)(ready & (p->events | VFS_POLLERR | VFS_POLLHUP));
+    return (int16_t)(poll_file(f) & (p->events | VFS_POLLERR | VFS_POLLHUP));
 }
 
-static long do_poll(struct pollfd_k* fds, const uint64_t nfds, const int64_t timeout_ns)
+static long scan_pollfds(void* ctx)
+{
+    const struct pollfd_set* set = ctx;
+    long count = 0;
+    for (uint64_t i = 0; i < set->nfds; i++) {
+        set->fds[i].revents = poll_one(&set->fds[i]);
+        if (set->fds[i].revents)
+            count++;
+    }
+    return count;
+}
+
+long poll_wait(const poll_scan_t scan, void* ctx, const int64_t timeout_ns)
 {
     const uint64_t start = clock_monotonic_ns();
     for (;;) {
         netisr_poll();
-        long count = 0;
-        for (uint64_t i = 0; i < nfds; i++) {
-            fds[i].revents = poll_one(&fds[i]);
-            if (fds[i].revents)
-                count++;
-        }
+        const long count = scan(ctx);
         if (count || timeout_ns == 0)
             return count;
 
@@ -72,8 +88,8 @@ static long do_poll(struct pollfd_k* fds, const uint64_t nfds, const int64_t tim
     }
 }
 
-static long with_sigmask(const uint64_t* umask, const size_t sigsetsize, struct pollfd_k* fds, const uint64_t nfds,
-                         const int64_t timeout_ns)
+long poll_wait_sigmask(const uint64_t* umask, const size_t sigsetsize, const poll_scan_t scan, void* ctx,
+                       const int64_t timeout_ns)
 {
     process_t* current = scheduler_get()->current;
     uint64_t mask = 0;
@@ -87,7 +103,7 @@ static long with_sigmask(const uint64_t* umask, const size_t sigsetsize, struct 
     if (umask)
         current->sig_blocked = mask & ~((1ULL << (SIGKILL - 1)) | (1ULL << (SIGSTOP - 1)));
 
-    const long r = do_poll(fds, nfds, timeout_ns);
+    const long r = poll_wait(scan, ctx, timeout_ns);
     if (umask) {
         if (r == -EINTR) {
             current->sig_saved_blocked = saved;
@@ -99,7 +115,14 @@ static long with_sigmask(const uint64_t* umask, const size_t sigsetsize, struct 
     return r;
 }
 
-static long timespec_ns(const struct timespec_k* uts, int64_t* ns)
+static long with_sigmask(const uint64_t* umask, const size_t sigsetsize, struct pollfd_k* fds, const uint64_t nfds,
+                         const int64_t timeout_ns)
+{
+    struct pollfd_set set = { fds, nfds };
+    return poll_wait_sigmask(umask, sigsetsize, scan_pollfds, &set, timeout_ns);
+}
+
+long poll_timespec_ns(const struct timespec_k* uts, int64_t* ns)
 {
     if (uts == nullptr) {
         *ns = -1;
@@ -145,7 +168,7 @@ long sys_ppoll(void* fds, const uint64_t nfds, const struct timespec_k* timeout,
                const size_t sigsetsize)
 {
     int64_t ns;
-    const long err = timespec_ns(timeout, &ns);
+    const long err = poll_timespec_ns(timeout, &ns);
     return err ? err : poll_user(fds, nfds, ns, sigmask, sigsetsize);
 }
 
@@ -237,7 +260,7 @@ long sys_pselect6(const int nfds, uint64_t* rfds, uint64_t* wfds, uint64_t* efds
                   const void* usigmask)
 {
     int64_t ns;
-    const long err = timespec_ns(timeout, &ns);
+    const long err = poll_timespec_ns(timeout, &ns);
     if (err)
         return err;
     struct pselect_sigmask sm = { nullptr, 0 };

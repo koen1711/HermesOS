@@ -10,6 +10,8 @@
 #include <drivers/scheduler/process.h> // timer: process_yield, exceptions: process_exit
 #include <drivers/scheduler/signal.h>
 #include <hardware/memory/vm.h>
+#include <hardware/smp/lapic.h>
+#include <hardware/smp/smp.h>
 
 #define EXCEPTION_COUNT   32
 #define PAGE_FAULT_VECTOR 14
@@ -90,10 +92,24 @@ static bool should_preempt(const interrupt_context* context)
 
 void trap_handler(interrupt_context* context)
 {
+    // answered without the kernel lock: its holder may be the CPU waiting for this
+    if (context->interrupt_number == TLB_SHOOTDOWN_VECTOR) {
+        smp_tlb_interrupt();
+        return;
+    }
+    if (context->interrupt_number == LAPIC_SPURIOUS_VECTOR)
+        return;
+
+    const bool locked = kernel_lock_enter();
     if (context->interrupt_number < EXCEPTION_COUNT)
         handle_exception(context);
     else if (context->interrupt_number == SYSCALL_VECTOR)
         handle_syscall(context);
+    else if (context->interrupt_number == LAPIC_TIMER_VECTOR) {
+        lapic_eoi();
+        if (should_preempt(context))
+            process_yield();
+    }
     else if (context->interrupt_number >= IRQ_OFFSET && context->interrupt_number < IRQ_OFFSET + IRQ_MAX_LINES) {
         handle_pic_interrupt(context);
 
@@ -101,6 +117,8 @@ void trap_handler(interrupt_context* context)
             process_yield();
     }
     signal_deliver(context);
+    if (locked)
+        kernel_lock_exit();
 }
 
 
@@ -132,5 +150,4 @@ void idt_initialize()
     pic_remap(IRQ_OFFSET, IRQ_OFFSET + 8);
 
     asm volatile("lidt %0" : : "m"(idtr));
-    irq_restore(0x200);
 }
