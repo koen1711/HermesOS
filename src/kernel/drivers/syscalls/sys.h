@@ -67,6 +67,8 @@ long sys_munmap(uint64_t addr, size_t len);
 long sys_mprotect(uint64_t addr, size_t len, int prot);
 long sys_brk(uint64_t addr);
 long sys_madvise(uint64_t addr, size_t len, int advice);
+long sys_mremap(uint64_t old_addr, size_t old_len, size_t new_len, int flags,
+    uint64_t new_addr);
 
 long sys_exit(int code);
 long sys_exit_group(int code);

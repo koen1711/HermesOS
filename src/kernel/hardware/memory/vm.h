@@ -33,6 +33,12 @@ enum vm_area_flags {
     VMA_SHARED = 0x4
 };
 
+enum mmremap_flags {
+    MREMAP_MAYMOVE = 1,
+    MREMAP_FIXED = 2,
+    MREMAP_DONTUNMAP = 4
+};
+
 struct vm_area {
     struct dlist_node link;
     uint64_t start;
@@ -65,6 +71,10 @@ int vm_unmap(struct vm_space* vm, uint64_t addr, size_t len);
 int vm_protect(struct vm_space* vm, uint64_t addr, size_t len, uint32_t prot);
 int vm_discard(struct vm_space* vm, uint64_t addr, size_t len);
 uint64_t vm_brk(struct vm_space* vm, uint64_t new_brk);
+
+int vm_remap(struct vm_space* vm, uint64_t old_addr, size_t old_len, size_t new_len, int flags, uint64_t* out);
+int vm_remap_fixed(struct vm_space* vm, uint64_t old_addr, size_t old_len, size_t new_len, int flags,
+                   uint64_t new_addr, uint64_t* out);
 
 bool vm_fault(struct vm_space* vm, uint64_t addr, bool write);
 bool vm_populate(struct vm_space* vm, uint64_t addr, size_t len, bool write);

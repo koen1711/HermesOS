@@ -308,14 +308,18 @@ static long stat_out(const struct file_s* f, void* ust)
     if (vfs_stat((int)f->id, &vs) < 0)
         return -EBADF;
 
-    struct stat_k st;
-    memset(&st, 0, sizeof(st));
+    struct stat_k st = {0};
+
     st.st_dev = 1;
     st.st_ino = vs.ino ? vs.ino : f->id + 1;
     st.st_nlink = vs.type == INODE_DIR ? 2 : 1;
     st.st_size = (int64_t)vs.size;
     st.st_blksize = PAGE_SIZE;
     st.st_blocks = (int64_t)((vs.size + 511) / 512);
+    st.st_mtim.tv_sec = (int64_t)vs.mtime;
+    st.st_atim = st.st_mtim;
+    st.st_ctim = st.st_mtim;
+
     switch (vs.type) {
     case INODE_DIR:
         st.st_mode = S_IFDIR | 0755;

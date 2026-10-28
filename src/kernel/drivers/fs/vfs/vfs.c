@@ -425,6 +425,7 @@ int vfs_stat(const int fd, vfs_stat_t* st)
     st->size = f->node->size;
     st->type = f->node->type;
     st->ino = f->node->id;
+    st->mtime = f->node->mtime;
     return 0;
 }
 

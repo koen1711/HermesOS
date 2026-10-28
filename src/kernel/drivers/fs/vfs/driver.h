@@ -67,6 +67,7 @@ typedef struct inode_s {
     size_t type;
     size_t size;
     size_t data_offset;
+    uint64_t mtime;
     char path[MAX_FILE_PATH];
     file_operations_t* fops;
     inode_operations_t* iops;

@@ -124,3 +124,15 @@ long sys_madvise(const uint64_t addr, const size_t len, const int advice)
         return vm_discard(current_vm(), addr, len);
     return 0;
 }
+
+long sys_mremap(const uint64_t old_addr, const size_t old_len, const size_t new_len, const int flags,
+               const uint64_t new_addr)
+{
+    if (flags & ~(MREMAP_MAYMOVE | MREMAP_FIXED))
+        return -EINVAL;
+    uint64_t addr = 0;
+    const int err = flags & MREMAP_FIXED
+        ? vm_remap_fixed(current_vm(), old_addr, old_len, new_len, flags, new_addr, &addr)
+        : vm_remap(current_vm(), old_addr, old_len, new_len, flags, &addr);
+    return err ? err : (long)addr;
+}

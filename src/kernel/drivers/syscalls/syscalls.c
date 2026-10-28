@@ -250,7 +250,7 @@ static long process_syscall(interrupt_context* c, process_t* current)
         case SYSCALL_MSYNC:
             return 0;
         case SYSCALL_MREMAP:
-            return -ENOMEM;
+            return sys_mremap(c->rdi, c->rsi, c->rdx, (int)c->r10, c->r8);
         case SYSCALL_CLONE:
             return process_clone(c->rdi, c->rsi, (int*)c->rdx, (int*)c->r10, c->r8);
         case SYSCALL_FORK:

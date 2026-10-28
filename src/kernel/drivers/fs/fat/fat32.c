@@ -257,6 +257,22 @@ static uint16_t fat_time()
     return (uint16_t)(((s / 3600) << 11) | (((s / 60) % 60) << 5) | ((s % 60) / 2));
 }
 
+static uint64_t fat_to_unix(const uint16_t date, const uint16_t time)
+{
+    const int64_t year = 1980 + (date >> 9);
+    const unsigned month = (date >> 5) & 0xF;
+    const unsigned day = date & 0x1F;
+    if (month < 1 || month > 12 || day < 1)
+        return 0;
+    const int64_t y = year - (month <= 2);
+    const int64_t era = y / 400;
+    const unsigned yoe = (unsigned)(y - era * 400);
+    const unsigned doy = (153 * (month > 2 ? month - 3 : month + 9) + 2) / 5 + day - 1;
+    const unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    const int64_t days = era * 146097 + (int64_t)doe - 719468;
+    return (uint64_t)days * 86400 + (time >> 11) * 3600 + ((time >> 5) & 0x3F) * 60 + (time & 0x1F) * 2;
+}
+
 static int dir_entry_io(fat32_sb_info *sbi, const uint32_t dir_first, const uint32_t pos,
                         fat32_directory_entry *de, const bool write)
 {
@@ -730,6 +746,7 @@ static inode_t *fat32_make_inode(fat32_sb_info *sbi, const char *name, const fat
     inode->id           = fi->first_cluster ? fi->first_cluster
                                             : ((uint64_t)1 << 40) | ((uint64_t)dir_cluster << 20) | pos;
     inode->size         = fi->attr & FAT_ATTR_DIRECTORY ? 0 : fi->size;
+    inode->mtime        = fat_to_unix(de->modification_date, de->modification_time);
     inode->private_data = fi;
     strncpy(inode->path, name, MAX_FILE_PATH - 1);
 
@@ -774,6 +791,7 @@ static int dirent_update(fat32_inode_info *fi)
     de.modification_date = fat_date();
     de.modification_time = fat_time();
     de.access_date = de.modification_date;
+    fi->inode->mtime = fat_to_unix(de.modification_date, de.modification_time);
     err = dir_entry_io(fi->sbi, fi->dir_cluster, fi->dirent_pos, &de, true);
     fsinfo_sync(fi->sbi);
     return err;

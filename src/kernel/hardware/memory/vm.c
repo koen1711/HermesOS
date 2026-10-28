@@ -374,6 +374,119 @@ static uint64_t brk_locked(struct vm_space* vm, const uint64_t new_brk)
     return vm->brk;
 }
 
+static int move_locked(struct vm_space* vm, const uint64_t old_addr, const size_t len, const uint64_t new_addr,
+                       const size_t new_len)
+{
+    const int err = range_isolate(vm, old_addr, old_addr + len);
+    if (err)
+        return err;
+    struct vm_area* src = vm_find(vm, old_addr);
+    struct vm_area* dst = area_new(new_addr, new_addr + new_len, src->prot, src->flags);
+    if (!dst)
+        return -ENOMEM;
+
+    uint64_t off = 0;
+    for (; off < len; off += PAGE_SIZE) {
+        uint64_t* pte = mmu_find_pte(vm->page_map, old_addr + off);
+        if (!pte || !(*pte & PTE_FRAME))
+            continue;
+        if (map_page_in(vm->page_map, new_addr + off, *pte & PTE_FRAME, *pte & ~PTE_FRAME) < 0)
+            break;
+        *pte = 0;
+        invalidate(old_addr + off);
+    }
+    if (off < len) {
+        for (uint64_t back = 0; back < off; back += PAGE_SIZE) {
+            uint64_t* pte = mmu_find_pte(vm->page_map, new_addr + back);
+            if (!pte || !(*pte & PTE_FRAME))
+                continue;
+            *mmu_find_pte(vm->page_map, old_addr + back) = *pte;
+            *pte = 0;
+            invalidate(new_addr + back);
+        }
+        free(dst);
+        smp_tlb_shootdown();
+        return -ENOMEM;
+    }
+
+    dlist_remove(&vm->areas, &src->link);
+    free(src);
+    area_insert(vm, dst);
+    smp_tlb_shootdown();
+    return 0;
+}
+
+static int remap_locked(struct vm_space* vm, const uint64_t old_addr, size_t old_len, size_t new_len, const int flags,
+                        uint64_t* out)
+{
+    old_len = PAGE_ALIGN_UP(old_len);
+    new_len = PAGE_ALIGN_UP(new_len);
+    const uint64_t old_end = old_addr + old_len;
+    if ((old_addr & ~PAGE_MASK) || old_len == 0 || new_len == 0 || old_end < old_addr)
+        return -EINVAL;
+    struct vm_area* a = vm_find(vm, old_addr);
+    if (!a || old_end > a->end)
+        return -EFAULT;
+
+    if (new_len <= old_len) {
+        if (new_len < old_len) {
+            const int err = unmap_locked(vm, old_addr + new_len, old_len - new_len);
+            if (err)
+                return err;
+        }
+        *out = old_addr;
+        return 0;
+    }
+
+    const uint64_t new_end = old_addr + new_len;
+    if (old_end == a->end && user_range(old_addr, new_end) && vm_range_free(vm, old_end, new_end)) {
+        a->end = new_end;
+        *out = old_addr;
+        return 0;
+    }
+    if (!(flags & MREMAP_MAYMOVE))
+        return -ENOMEM;
+
+    const uint64_t new_addr = find_gap(vm, new_len);
+    if (!new_addr)
+        return -ENOMEM;
+    const int err = move_locked(vm, old_addr, old_len, new_addr, new_len);
+    if (err == 0)
+        *out = new_addr;
+    return err;
+}
+
+static int remap_fixed_locked(struct vm_space* vm, const uint64_t old_addr, size_t old_len, size_t new_len,
+                              const int flags, const uint64_t new_addr, uint64_t* out)
+{
+    old_len = PAGE_ALIGN_UP(old_len);
+    new_len = PAGE_ALIGN_UP(new_len);
+    const uint64_t old_end = old_addr + old_len;
+    const uint64_t new_end = new_addr + new_len;
+    if ((old_addr & ~PAGE_MASK) || (new_addr & ~PAGE_MASK) || old_len == 0 || new_len == 0 || old_end < old_addr
+        || !(flags & MREMAP_MAYMOVE) || !user_range(new_addr, new_end))
+        return -EINVAL;
+    if (new_addr < old_end && old_addr < new_end)
+        return -EINVAL;
+    const struct vm_area* a = vm_find(vm, old_addr);
+    if (!a || old_end > a->end)
+        return -EFAULT;
+
+    int err = unmap_locked(vm, new_addr, new_len);
+    if (err)
+        return err;
+    if (new_len < old_len) {
+        err = unmap_locked(vm, old_addr + new_len, old_len - new_len);
+        if (err)
+            return err;
+        old_len = new_len;
+    }
+    err = move_locked(vm, old_addr, old_len, new_addr, new_len);
+    if (err == 0)
+        *out = new_addr;
+    return err;
+}
+
 static bool fault_locked(struct vm_space* vm, const uint64_t addr, const bool write)
 {
     const struct vm_area* a = vm_find(vm, addr);
@@ -490,6 +603,24 @@ uint64_t vm_brk(struct vm_space* vm, const uint64_t new_brk)
     const uint64_t brk = brk_locked(vm, new_brk);
     spinlock_release(&vm->lock);
     return brk;
+}
+
+int vm_remap(struct vm_space* vm, const uint64_t old_addr, const size_t old_len, const size_t new_len, const int flags,
+             uint64_t* out)
+{
+    spinlock_acquire(&vm->lock);
+    const int err = remap_locked(vm, old_addr, old_len, new_len, flags, out);
+    spinlock_release(&vm->lock);
+    return err;
+}
+
+int vm_remap_fixed(struct vm_space* vm, const uint64_t old_addr, const size_t old_len, const size_t new_len,
+                   const int flags, const uint64_t new_addr, uint64_t* out)
+{
+    spinlock_acquire(&vm->lock);
+    const int err = remap_fixed_locked(vm, old_addr, old_len, new_len, flags, new_addr, out);
+    spinlock_release(&vm->lock);
+    return err;
 }
 
 bool vm_fault(struct vm_space* vm, const uint64_t addr, const bool write)

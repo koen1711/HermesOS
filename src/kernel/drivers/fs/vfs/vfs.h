@@ -19,6 +19,7 @@ typedef struct vfs_stat_s {
     size_t size;
     size_t type;
     uint64_t ino;
+    uint64_t mtime;
 } vfs_stat_t;
 
 typedef struct registered_driver_s {
