@@ -9,7 +9,7 @@ cd ${SCRIPT_DIR}/mlibc && meson \
     setup \
     --cross-file=${SCRIPT_DIR}/x86-64.cross-file \
     --prefix=/usr \
-    -Ddefault_library=static \
+    -Ddefault_library=both \
     -Dno_headers=true \
     -Dc_args="-isystem ${GCC_INCLUDE}" \
     -Dcpp_args="-isystem ${GCC_INCLUDE} -D_GNU_SOURCE" \

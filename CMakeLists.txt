@@ -54,9 +54,18 @@ target_compile_options(${PROJECT_NAME} PRIVATE
 target_link_options(${PROJECT_NAME} PRIVATE
     -m64 -nostdlib -no-pie -static -z max-page-size=0x1000)
 
+set(MLIBC_LIB_DIR ${CMAKE_SOURCE_DIR}/buildtools/cross/usr/lib)
+set(MLIBC_SHARED_LIBS ld.so libc.so libdl.so libm.so libpthread.so libresolv.so librt.so libssp.so libutil.so)
+set(MLIBC_IMAGE_LIBS ${MLIBC_SHARED_LIBS})
+list(TRANSFORM MLIBC_SHARED_LIBS PREPEND ${MLIBC_LIB_DIR}/)
+list(TRANSFORM MLIBC_IMAGE_LIBS PREPEND ${CMAKE_BINARY_DIR}/isodir/usr/lib/)
+
 add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_BINARY_DIR}/isodir/boot/grub
         COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_SOURCE_DIR}/assets/root_dir ${CMAKE_BINARY_DIR}/isodir/
+        COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_BINARY_DIR}/isodir/usr/lib
+        COMMAND ${CMAKE_COMMAND} -E copy ${MLIBC_SHARED_LIBS} ${CMAKE_BINARY_DIR}/isodir/usr/lib/
+        COMMAND ${CMAKE_STRIP} --strip-unneeded ${MLIBC_IMAGE_LIBS}
         COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_BINARY_DIR}/${PROJECT_NAME} ${CMAKE_BINARY_DIR}/isodir/boot/${PROJECT_NAME}
         COMMENT "Generating your .iso file"
 )

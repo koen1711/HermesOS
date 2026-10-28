@@ -53,6 +53,7 @@ set(CMAKE_ASM_COMPILER ${TC_PATH}${TC_PREFIX}as${TC_EXT})
 set(CMAKE_LINKER       ${TC_PATH}${TC_PREFIX}ld${TC_EXT})
 set(CMAKE_OBJCOPY      ${TC_PATH}${TC_PREFIX}objcopy${TC_EXT})
 set(CMAKE_OBJDUMP      ${TC_PATH}${TC_PREFIX}objdump${TC_EXT})
+set(CMAKE_STRIP        ${TC_PATH}${TC_PREFIX}strip${TC_EXT})
 
 # The project's CMakeLists.txt drives compile/link flags via target_*_options.
 # Empty CMake's default per-config flags so they don't double up or fight ours.
