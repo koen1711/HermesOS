@@ -171,6 +171,8 @@ static long file_syscall(const interrupt_context* c)
                                 (unsigned int)c->r8);
         case SYSCALL_LINK:
         case SYSCALL_SYMLINK:
+        case SYSCALL_LINKAT:
+        case SYSCALL_SYMLINKAT:
             return -EPERM;
         case SYSCALL_TRUNCATE:
             return sys_truncate((const char*)c->rdi, (int64_t)c->rsi);
@@ -178,8 +180,10 @@ static long file_syscall(const interrupt_context* c)
             return sys_ftruncate((int)c->rdi, (int64_t)c->rsi);
         case SYSCALL_CHMOD:
         case SYSCALL_CHOWN:
+        case SYSCALL_LCHOWN:
             return sys_path_exists(AT_FDCWD, (const char*)c->rdi);
         case SYSCALL_FCHMODAT:
+        case SYSCALL_FCHOWNAT:
         case SYSCALL_UTIMENSAT:
             return sys_path_exists((int)c->rdi, (const char*)c->rsi);
         case SYSCALL_FCHMOD:
@@ -191,7 +195,21 @@ static long file_syscall(const interrupt_context* c)
         case SYSCALL_FDATASYNC:
             return sys_fsync((int)c->rdi);
         case SYSCALL_FLOCK:
+        case SYSCALL_FADVISE64:
             return fd_get((int)c->rdi) ? 0 : -EBADF;
+        case SYSCALL_SETXATTR:
+        case SYSCALL_LSETXATTR:
+        case SYSCALL_FSETXATTR:
+        case SYSCALL_GETXATTR:
+        case SYSCALL_LGETXATTR:
+        case SYSCALL_FGETXATTR:
+        case SYSCALL_LISTXATTR:
+        case SYSCALL_LLISTXATTR:
+        case SYSCALL_FLISTXATTR:
+        case SYSCALL_REMOVEXATTR:
+        case SYSCALL_LREMOVEXATTR:
+        case SYSCALL_FREMOVEXATTR:
+            return -EOPNOTSUPP;
         case SYSCALL_SYNC:
             vfs_sync();
             return 0;
@@ -229,9 +247,47 @@ static long file_syscall(const interrupt_context* c)
             return sys_eventfd2((unsigned int)c->rdi, 0);
         case SYSCALL_EVENTFD2:
             return sys_eventfd2((unsigned int)c->rdi, (int)c->rsi);
+        // TODO: For CPython: os.statvfs/fstatvfs and shutil.disk_usage (mlibc statvfs goes through statfs)
+        case SYSCALL_STATFS:
+        case SYSCALL_FSTATFS:
+        // TODO: For CPython: os.mknod/os.mkfifo (mkfifo needs a FIFO inode type, FAT32 can't store one)
+        case SYSCALL_MKNOD:
+        case SYSCALL_MKNODAT:
+        // TODO: For CPython: os.posix_fallocate (extend the file)
+        case SYSCALL_FALLOCATE:
+        // TODO: For CPython: os.preadv/os.pwritev; the 2 variants only need flags == 0
+        case SYSCALL_PREADV:
+        case SYSCALL_PWRITEV:
+        case SYSCALL_PREADV2:
+        case SYSCALL_PWRITEV2:
+        // TODO: For CPython: os.splice and os.copy_file_range
+        case SYSCALL_SPLICE:
+        case SYSCALL_COPY_FILE_RANGE:
+        // TODO: For CPython: os.closerange and subprocess close_fds use close_range, falling back on -ENOSYS
+        case SYSCALL_CLOSE_RANGE:
+        // TODO: For CPython: os.memfd_create
+        case SYSCALL_MEMFD_CREATE:
+        // TODO: For CPython: os.chroot
+        case SYSCALL_CHROOT:
+            return -ENOSYS;
         default:
             return -ENOSYS;
     }
+}
+
+static bool root_ids(const uint64_t id)
+{
+    return (uint32_t)id == 0 || (uint32_t)id == (uint32_t)-1;
+}
+
+static long put_root_ids(uint32_t* a, uint32_t* b, uint32_t* c)
+{
+    constexpr uint32_t zero = 0;
+    uint32_t* const ids[] = {a, b, c};
+    for (size_t i = 0; i < 3; i++)
+        if (ids[i] && copy_to_user(ids[i], &zero, sizeof(zero)) != 0)
+            return -EFAULT;
+    return 0;
 }
 
 static long process_syscall(interrupt_context* c, process_t* current)
@@ -279,6 +335,15 @@ static long process_syscall(interrupt_context* c, process_t* current)
         case SYSCALL_SETUID:
         case SYSCALL_SETGID:
             return c->rdi == 0 ? 0 : -EPERM;
+        case SYSCALL_SETREUID:
+        case SYSCALL_SETREGID:
+            return root_ids(c->rdi) && root_ids(c->rsi) ? 0 : -EPERM;
+        case SYSCALL_SETRESUID:
+        case SYSCALL_SETRESGID:
+            return root_ids(c->rdi) && root_ids(c->rsi) && root_ids(c->rdx) ? 0 : -EPERM;
+        case SYSCALL_GETRESUID:
+        case SYSCALL_GETRESGID:
+            return put_root_ids((uint32_t*)c->rdi, (uint32_t*)c->rsi, (uint32_t*)c->rdx);
         case SYSCALL_GETGROUPS:
             return sys_getgroups((int)c->rdi, (uint32_t*)c->rsi);
         case SYSCALL_GETPGRP:
@@ -305,6 +370,17 @@ static long process_syscall(interrupt_context* c, process_t* current)
             return 0;
         case SYSCALL_SCHED_GETAFFINITY:
             return sys_sched_getaffinity((int)c->rdi, c->rsi, (void*)c->rdx);
+        case SYSCALL_GETPRIORITY:
+            return 20;
+        case SYSCALL_SETPRIORITY:
+            return (int)c->rdx == 0 ? 0 : -EPERM;
+        case SYSCALL_SCHED_GETSCHEDULER:
+            return 0;
+        case SYSCALL_SCHED_GET_PRIORITY_MAX:
+        case SYSCALL_SCHED_GET_PRIORITY_MIN:
+            return c->rdi == 0 ? 0 : -EINVAL;
+        case SYSCALL_SCHED_GETPARAM:
+            return put_root_ids((uint32_t*)c->rsi, nullptr, nullptr);
         case SYSCALL_UNAME:
             return sys_uname((void*)c->rdi);
         case SYSCALL_SYSINFO:
@@ -362,6 +438,21 @@ static long process_syscall(interrupt_context* c, process_t* current)
             return sys_tgkill(0, (int)c->rdi, (int)c->rsi);
         case SYSCALL_TGKILL:
             return sys_tgkill((int)c->rdi, (int)c->rsi, (int)c->rdx);
+        // TODO: For CPython: os.setgroups/initgroups; needs a group list per process for getgroups to report
+        case SYSCALL_SETGROUPS:
+        // TODO: For CPython: os.sched_setscheduler/sched_setparam (accept SCHED_OTHER with priority 0),
+        // os.sched_rr_get_interval and os.sched_setaffinity
+        case SYSCALL_SCHED_SETPARAM:
+        case SYSCALL_SCHED_SETSCHEDULER:
+        case SYSCALL_SCHED_RR_GET_INTERVAL:
+        case SYSCALL_SCHED_SETAFFINITY:
+        // TODO: For CPython: time.clock_settime
+        case SYSCALL_CLOCK_SETTIME:
+        // TODO: For CPython: os.waitid (subprocess and multiprocessing use wait4)
+        case SYSCALL_WAITID:
+        // TODO: For CPython: os.pidfd_open; asyncio falls back to another child watcher on error
+        case SYSCALL_PIDFD_OPEN:
+            return -ENOSYS;
         default:
             return file_syscall(c);
     }
