@@ -64,8 +64,16 @@ cd $GCC-objs || exit
   --disable-multilib \
   --enable-languages=c,c++ \
   --with-sysroot="$SYSROOT"
-make -j "$THREADS" all-gcc all-target-libgcc
-make install-gcc install-target-libgcc
+make -j "$THREADS" all-gcc
+make install-gcc
+
+make configure-target-libgcc
+make -C $TARGET/libgcc -j "$THREADS" enable_shared=no
+make -C $TARGET/libgcc enable_shared=no install
+bash "$CUR_DIR/mlibc-build.sh"
+
+make -j "$THREADS" all-target-libgcc all-target-libstdc++-v3
+make install-target-libgcc install-target-libstdc++-v3
 cd ..
 
 

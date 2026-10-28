@@ -56,9 +56,11 @@ target_link_options(${PROJECT_NAME} PRIVATE
 
 set(MLIBC_LIB_DIR ${CMAKE_SOURCE_DIR}/buildtools/cross/usr/lib)
 set(MLIBC_SHARED_LIBS ld.so libc.so libdl.so libm.so libpthread.so libresolv.so librt.so libssp.so libutil.so)
-set(MLIBC_IMAGE_LIBS ${MLIBC_SHARED_LIBS})
 list(TRANSFORM MLIBC_SHARED_LIBS PREPEND ${MLIBC_LIB_DIR}/)
-list(TRANSFORM MLIBC_IMAGE_LIBS PREPEND ${CMAKE_BINARY_DIR}/isodir/usr/lib/)
+list(APPEND MLIBC_SHARED_LIBS ${CMAKE_SOURCE_DIR}/buildtools/cross/x86_64-hermes/lib/libgcc_s.so.1
+                              ${CMAKE_SOURCE_DIR}/buildtools/cross/x86_64-hermes/lib/libstdc++.so.6)
+set(MLIBC_IMAGE_LIBS ${MLIBC_SHARED_LIBS})
+list(TRANSFORM MLIBC_IMAGE_LIBS REPLACE "^.*/" ${CMAKE_BINARY_DIR}/isodir/usr/lib/)
 
 add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_BINARY_DIR}/isodir/boot/grub
