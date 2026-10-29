@@ -39,6 +39,20 @@ long sys_clock_gettime(const int clock, struct timespec_k* uts)
     return copy_to_user(uts, &ts, sizeof(ts));
 }
 
+long sys_clock_settime(const int clock, const struct timespec_k* uts)
+{
+    if (clock != CLOCK_REALTIME_K)
+        return -EINVAL;
+    struct timespec_k ts;
+    if (copy_from_user(&ts, uts, sizeof(ts)) < 0)
+        return -EFAULT;
+    if (ts.tv_sec < 0 || ts.tv_sec > (int64_t)(0x7FFFFFFFFFFFFFFFULL / NS_PER_SEC) || ts.tv_nsec < 0
+        || ts.tv_nsec >= (int64_t)NS_PER_SEC)
+        return -EINVAL;
+    clock_set_realtime_ns((uint64_t)ts.tv_sec * NS_PER_SEC + (uint64_t)ts.tv_nsec);
+    return 0;
+}
+
 long sys_clock_getres(const int clock, struct timespec_k* uts)
 {
     uint64_t ns;

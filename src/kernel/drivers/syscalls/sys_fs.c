@@ -18,6 +18,13 @@
 #define FD_CLOEXEC 1
 #define IOV_MAX 1024
 #define RENAME_NOREPLACE 1
+#define COPY_CHUNK (64 * 1024)
+#define SPLICE_F_ALL 0xF
+#define MFD_CLOEXEC 0x1
+#define MFD_ALLOW_SEALING 0x2
+#define MFD_NAME_MAX 249
+#define CLOSE_RANGE_UNSHARE 0x2
+#define CLOSE_RANGE_CLOEXEC 0x4
 
 enum linux_open_flags {
     LO_ACCMODE = 0x3,
@@ -143,7 +150,7 @@ static long resolve_at(const int dirfd, const char* upath, char* out, const bool
             return -ENOTDIR;
         base = dir->filename;
     }
-    return vfs_normalize_path(base, path, out);
+    return vfs_resolve_root(files()->root, base, path, out);
 }
 
 static int vfs_access_flags(const int flags)
@@ -231,17 +238,17 @@ long sys_close(const int fd)
     return fd_close(fd);
 }
 
-static long iov_in(const void* uiov, const int iovcnt, struct iovec_k** out)
+static long iov_in(const void* uiov, const int iov_cnt, struct iovec_k** out)
 {
     *out = nullptr;
-    if (iovcnt < 0 || iovcnt > IOV_MAX)
+    if (iov_cnt < 0 || iov_cnt > IOV_MAX)
         return -EINVAL;
-    if (iovcnt == 0)
+    if (iov_cnt == 0)
         return 0;
-    struct iovec_k* iov = malloc(iovcnt * sizeof(struct iovec_k));
+    struct iovec_k* iov = malloc(iov_cnt * sizeof(struct iovec_k));
     if (iov == nullptr)
         return -ENOMEM;
-    if (copy_from_user(iov, uiov, iovcnt * sizeof(struct iovec_k)) < 0) {
+    if (copy_from_user(iov, uiov, iov_cnt * sizeof(struct iovec_k)) < 0) {
         free(iov);
         return -EFAULT;
     }
@@ -249,14 +256,23 @@ static long iov_in(const void* uiov, const int iovcnt, struct iovec_k** out)
     return 0;
 }
 
-static long rw_vector(const int fd, const void* uiov, const int iovcnt, const bool write)
+static long rw_vector(const int fd, const void* uiov, const int iov_cnt, const int64_t offset, const bool write)
 {
+    struct file_s* f = fd_get(fd);
+    if (f == nullptr)
+        return -EBADF;
+    if (offset >= 0 && f->node->type != INODE_FILE)
+        return -ESPIPE;
     struct iovec_k* iov;
-    const long err = iov_in(uiov, iovcnt, &iov);
+    const long err = iov_in(uiov, iov_cnt, &iov);
     if (err)
         return err;
+
+    const size_t saved = f->file_position;
+    if (offset >= 0)
+        f->file_position = (size_t)offset;
     long total = 0;
-    for (int i = 0; i < iovcnt; i++) {
+    for (int i = 0; i < iov_cnt; i++) {
         if (iov[i].iov_len == 0)
             continue;
         const long n = write ? sys_write(fd, iov[i].iov_base, iov[i].iov_len)
@@ -270,18 +286,44 @@ static long rw_vector(const int fd, const void* uiov, const int iovcnt, const bo
         if ((size_t)n < iov[i].iov_len)
             break;
     }
+    if (offset >= 0)
+        f->file_position = saved;
     free(iov);
     return total;
 }
 
-long sys_readv(const int fd, const void* iov, const int iovcnt)
+long sys_readv(const int fd, const void* iov, const int iov_cnt)
 {
-    return rw_vector(fd, iov, iovcnt, false);
+    return rw_vector(fd, iov, iov_cnt, -1, false);
 }
 
-long sys_writev(const int fd, const void* iov, const int iovcnt)
+long sys_writev(const int fd, const void* iov, const int iov_cnt)
 {
-    return rw_vector(fd, iov, iovcnt, true);
+    return rw_vector(fd, iov, iov_cnt, -1, true);
+}
+
+long sys_preadv(const int fd, const void* iov, const int iov_cnt, const int64_t offset)
+{
+    return offset < 0 ? -EINVAL : rw_vector(fd, iov, iov_cnt, offset, false);
+}
+
+long sys_pwritev(const int fd, const void* iov, const int iov_cnt, const int64_t offset)
+{
+    return offset < 0 ? -EINVAL : rw_vector(fd, iov, iov_cnt, offset, true);
+}
+
+long sys_preadv2(const int fd, const void* iov, const int iov_cnt, const int64_t offset, const int flags)
+{
+    if (flags != 0)
+        return -EOPNOTSUPP;
+    return offset < -1 ? -EINVAL : rw_vector(fd, iov, iov_cnt, offset, false);
+}
+
+long sys_pwritev2(const int fd, const void* iov, const int iov_cnt, const int64_t offset, const int flags)
+{
+    if (flags != 0)
+        return -EOPNOTSUPP;
+    return offset < -1 ? -EINVAL : rw_vector(fd, iov, iov_cnt, offset, true);
 }
 
 static long rw_at(const int fd, void* buf, const size_t len, const int64_t offset, const bool write)
@@ -508,7 +550,9 @@ long sys_getdents64(const int fd, void* dirp, const size_t count)
 
 long sys_getcwd(char* buf, const size_t size)
 {
-    const char* cwd = files()->cwd;
+    const char* cwd = vfs_strip_root(files()->root, files()->cwd);
+    if (cwd == nullptr)
+        cwd = "/";
     const size_t len = strlen(cwd) + 1;
     if (size < len)
         return -ERANGE;
@@ -855,6 +899,70 @@ long sys_sendfile(const int out_fd, const int in_fd, int64_t* uoffset, const siz
     return done ? (long)done : err;
 }
 
+long sys_memfd_create(const char* uname, const unsigned int flags)
+{
+    if (flags & ~(MFD_CLOEXEC | MFD_ALLOW_SEALING))
+        return -EINVAL;
+    char name[MFD_NAME_MAX + 1];
+    const long len = copy_string_from_user(name, uname, sizeof(name));
+    if (len < 0)
+        return len == -ENAMETOOLONG ? -EINVAL : len;
+
+    const int id = vfs_memfd_create(name);
+    if (id < 0)
+        return id;
+    const int fd = fd_install_from(vfs_get_file(id), 0, flags & MFD_CLOEXEC);
+    if (fd < 0)
+        vfs_close(id);
+    return fd;
+}
+
+long sys_chroot(const char* upath)
+{
+    char path[VFS_PATH_MAX];
+    const long err = resolve_at(AT_FDCWD, upath, path, false);
+    if (err)
+        return err;
+    const int id = vfs_open(path, 0);
+    if (id < 0)
+        return id;
+    const bool dir = vfs_get_file(id)->node->type == INODE_DIR;
+    vfs_close(id);
+    if (!dir)
+        return -ENOTDIR;
+    strncpy(files()->root, path, VFS_PATH_MAX - 1);
+    return 0;
+}
+
+long sys_close_range(const unsigned int first, unsigned int last, const unsigned int flags)
+{
+    if (flags & ~(CLOSE_RANGE_UNSHARE | CLOSE_RANGE_CLOEXEC))
+        return -EINVAL;
+    if (first > last)
+        return -EINVAL;
+
+    process_t* current = scheduler_get()->current;
+    if ((flags & CLOSE_RANGE_UNSHARE) && current->files->ref_count > 1) {
+        struct proc_files* own = files_clone(current->files);
+        if (own == nullptr)
+            return -ENOMEM;
+        files_release(current->files);
+        current->files = own;
+    }
+
+    if (first >= PROC_MAX_FILE_DESCRIPTORS)
+        return 0;
+    if (last >= PROC_MAX_FILE_DESCRIPTORS)
+        last = PROC_MAX_FILE_DESCRIPTORS - 1;
+    for (unsigned int fd = first; fd <= last; fd++) {
+        if (flags & CLOSE_RANGE_CLOEXEC)
+            fd_set_cloexec((int)fd, true);
+        else if (fd_get((int)fd))
+            fd_close((int)fd);
+    }
+    return 0;
+}
+
 long sys_mknodat(const int dirfd, const char* upath, const uint32_t mode, const uint32_t dev)
 {
     (void)dev;
@@ -893,4 +1001,148 @@ long sys_fallocate(const int fd, const int mode, const int64_t offset, const int
         return -ENODEV;
     }
     return vfs_fallocate((int)file->id, mode, offset, len);
+}
+
+static long copy_range(struct file_s* in, int64_t* in_pos, struct file_s* out, int64_t* out_pos, const size_t len,
+                       const bool once)
+{
+    uint8_t* buf = malloc(COPY_CHUNK);
+    if (buf == nullptr)
+        return -ENOMEM;
+    size_t done = 0;
+    long err = 0;
+    while (done < len) {
+        const size_t want = len - done < COPY_CHUNK ? len - done : COPY_CHUNK;
+        const size_t in_saved = in->file_position;
+        if (in_pos)
+            in->file_position = (size_t)*in_pos;
+        const ssize_t n = vfs_read((int)in->id, buf, want);
+        if (in_pos)
+            in->file_position = in_saved;
+        if (n <= 0) {
+            err = n;
+            break;
+        }
+        if (in_pos)
+            *in_pos += n;
+
+        size_t put = 0;
+        while (put < (size_t)n) {
+            const size_t out_saved = out->file_position;
+            if (out_pos)
+                out->file_position = (size_t)*out_pos;
+            const ssize_t w = vfs_write((int)out->id, buf + put, (size_t)n - put);
+            if (out_pos)
+                out->file_position = out_saved;
+            if (w <= 0) {
+                err = w ? w : -EIO;
+                break;
+            }
+            if (out_pos)
+                *out_pos += w;
+            put += (size_t)w;
+        }
+        done += put;
+        if (put < (size_t)n) {
+            if (in_pos)
+                *in_pos -= (int64_t)((size_t)n - put);
+            else if (in->node->type == INODE_FILE)
+                in->file_position -= (size_t)n - put;
+            break;
+        }
+        if (once || (size_t)n < want)
+            break;
+    }
+    free(buf);
+    return done ? (long)done : err;
+}
+
+static long offset_in(const int64_t* uoff, int64_t* off)
+{
+    if (uoff == nullptr)
+        return 0;
+    if (copy_from_user(off, uoff, sizeof(*off)) < 0)
+        return -EFAULT;
+    return *off < 0 ? -EINVAL : 0;
+}
+
+static long offsets_out(int64_t* uoff_in, const int64_t* in_pos, int64_t* uoff_out, const int64_t* out_pos)
+{
+    if (uoff_in && copy_to_user(uoff_in, in_pos, sizeof(*in_pos)) < 0)
+        return -EFAULT;
+    if (uoff_out && copy_to_user(uoff_out, out_pos, sizeof(*out_pos)) < 0)
+        return -EFAULT;
+    return 0;
+}
+
+long sys_splice(const int fd_in, int64_t* off_in, const int fd_out, int64_t* off_out, const size_t len,
+                const unsigned int flags)
+{
+    struct file_s* in = fd_get(fd_in);
+    struct file_s* out = fd_get(fd_out);
+    if (in == nullptr || out == nullptr || !(in->flags & O_RDONLY) || !(out->flags & O_WRONLY))
+        return -EBADF;
+    if (flags & ~SPLICE_F_ALL)
+        return -EINVAL;
+    const bool in_pipe = in->node->type == INODE_PIPE;
+    const bool out_pipe = out->node->type == INODE_PIPE;
+    if (!in_pipe && !out_pipe)
+        return -EINVAL;
+    if ((in_pipe && off_in) || (out_pipe && off_out))
+        return -ESPIPE;
+    if (out->status_flags & LO_APPEND)
+        return -EINVAL;
+    if (len == 0)
+        return 0;
+
+    int64_t in_pos = 0;
+    int64_t out_pos = 0;
+    long err = offset_in(off_in, &in_pos);
+    if (err == 0)
+        err = offset_in(off_out, &out_pos);
+    if (err)
+        return err;
+    const long r = copy_range(in, off_in ? &in_pos : nullptr, out, off_out ? &out_pos : nullptr, len, true);
+    if (r > 0 && offsets_out(off_in, &in_pos, off_out, &out_pos) < 0)
+        return -EFAULT;
+    return r;
+}
+
+long sys_copy_file_range(const int fd_in, int64_t* off_in, const int fd_out, int64_t* off_out, const size_t len,
+                         const uint32_t flags)
+{
+    struct file_s* in = fd_get(fd_in);
+    struct file_s* out = fd_get(fd_out);
+    if (in == nullptr || out == nullptr || !(in->flags & O_RDONLY) || !(out->flags & O_WRONLY)
+        || (out->status_flags & LO_APPEND))
+        return -EBADF;
+    if (flags != 0)
+        return -EINVAL;
+    if (in->node->type == INODE_DIR || out->node->type == INODE_DIR)
+        return -EISDIR;
+    if (in->node->type != INODE_FILE || out->node->type != INODE_FILE)
+        return -EINVAL;
+
+    int64_t in_pos = (int64_t)in->file_position;
+    int64_t out_pos = (int64_t)out->file_position;
+    long err = offset_in(off_in, &in_pos);
+    if (err == 0)
+        err = offset_in(off_out, &out_pos);
+    if (err)
+        return err;
+    if (in->node == out->node && in_pos < out_pos + (int64_t)len && out_pos < in_pos + (int64_t)len)
+        return -EINVAL;
+    if (len == 0)
+        return 0;
+
+    const long r = copy_range(in, &in_pos, out, &out_pos, len, false);
+    if (r > 0) {
+        if (!off_in)
+            in->file_position = (size_t)in_pos;
+        if (!off_out)
+            out->file_position = (size_t)out_pos;
+        if (offsets_out(off_in, &in_pos, off_out, &out_pos) < 0)
+            return -EFAULT;
+    }
+    return r;
 }

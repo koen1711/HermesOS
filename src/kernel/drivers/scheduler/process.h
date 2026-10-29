@@ -20,6 +20,7 @@
 #define IDLE_PROC_PID 0
 #define WAIT_KEY_INT -2
 #define PROC_MAX_FILE_DESCRIPTORS 256
+#define PROC_MAX_GROUPS 32
 
 #define WAIT_CHANNEL_FUTEX 0x10000000
 #define WAIT_CHANNEL_CHILD 0x20000000
@@ -40,6 +41,7 @@ struct proc_files {
     struct file_s *file[PROC_MAX_FILE_DESCRIPTORS];
     bool cloexec[PROC_MAX_FILE_DESCRIPTORS];
     char cwd[VFS_PATH_MAX];
+    char root[VFS_PATH_MAX];
     uint32_t umask;
 };
 
@@ -76,6 +78,9 @@ typedef struct {
     bool interruptible;
     struct callout itimer;
     uint64_t itimer_interval;
+    uint32_t groups[PROC_MAX_GROUPS];
+    int group_count;
+    uint64_t affinity;
     uint8_t fpu_state[512] __attribute__((aligned(16)));
 } process_t;
 

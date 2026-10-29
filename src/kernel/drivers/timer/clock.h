@@ -26,6 +26,7 @@ struct timeval_k {
 
 uint64_t clock_monotonic_ns();
 int clock_get_ns(int clock, uint64_t* ns);
+void clock_set_realtime_ns(uint64_t ns);
 int64_t clock_ns_until(int clock, const struct timespec_k* deadline);
 uint64_t clock_ticks_from_ns(uint64_t ns);
 uint64_t clock_ticks_from_timespec(const struct timespec_k* ts);

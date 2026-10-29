@@ -23,6 +23,7 @@
 #define MSR_FS_BASE 0xC0000100
 #define EXEC_ARG_MAX (128 * 1024)
 #define WNOHANG 1
+#define WNOWAIT 0x01000000
 
 enum clone_flags {
     CLONE_VM = 0x00000100,
@@ -264,6 +265,7 @@ struct proc_files *files_create() {
     memset(files, 0, sizeof(*files));
     files->ref_count = 1;
     files->cwd[0] = '/';
+    files->root[0] = '/';
     files->umask = 022;
     return files;
 }
@@ -339,6 +341,8 @@ void process_exit() {
         signal_send(proc->ppid, SIGCHLD);
         process_wakeup(WAIT_CHANNEL_CHILD | proc->ppid);
     }
+    if (leader)
+        process_wakeup(WAIT_CHANNEL_POLL);
 
     uint64_t flags;
     spinlock_acquire_irqsave(&sched_lock, &flags);
@@ -388,6 +392,10 @@ long process_wait4(const int pid, int *status, const int options) {
                 if (status != nullptr) {
                     *status = proc->exit_status;
                 }
+
+                if (options & WNOWAIT)
+                    return child;
+
                 uint64_t flags;
                 spinlock_acquire_irqsave(&sched_lock, &flags);
                 dlist_remove(&scheduler.killed, &proc->link);
@@ -453,6 +461,9 @@ long process_clone(const uint64_t flags, const uint64_t stack, int *parent_tid, 
 
     memcpy(proc->sig_actions, current->sig_actions, sizeof(proc->sig_actions));
     proc->sig_blocked = current->sig_blocked;
+    memcpy(proc->groups, current->groups, sizeof(proc->groups));
+    proc->group_count = current->group_count;
+    proc->affinity = current->affinity;
     if (!share_vm) {
         proc->altstack_sp = current->altstack_sp;
         proc->altstack_size = current->altstack_size;
@@ -559,7 +570,7 @@ static int setup_stack(struct vm_space *vm, const char *path, char *const argv[]
     if (bytes > EXEC_ARG_MAX) {
         return -E2BIG;
     }
-    const size_t auxc = 18;
+    constexpr size_t auxc = 18;
     const size_t words = 1 + argc + 1 + envc + 1 + auxc * 2;
     const size_t total = PAGE_ALIGN_UP(bytes + words * 8 + 64);
 
@@ -646,7 +657,7 @@ int process_exec(process_t *proc, const char *path, char *const argv[], char *co
     uint64_t sp = 0;
     if (err == 0 && elf_is_elf(magic, sizeof(magic))) {
         struct elf_image img = {0};
-        err = elf_load(vm, fd, &img);
+        err = elf_load(vm, fd, proc->files ? proc->files->root : "/", &img);
         if (err == 0) {
             err = setup_stack(vm, path, argv, envp, &img, &sp);
         }

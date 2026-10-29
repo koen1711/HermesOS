@@ -251,28 +251,31 @@ static long file_syscall(const interrupt_context* c)
             return sys_statfs((const char*)c->rdi, (void*)c->rsi);
         case SYSCALL_FSTATFS:
             return sys_fstatfs((int)c->rdi, (void*)c->rsi);
-        // TODO: For CPython: os.mknod/os.mkfifo (mkfifo needs a FIFO inode type, FAT32 can't store one)
         case SYSCALL_MKNOD:
             return sys_mknodat(AT_FDCWD, (const char*)c->rdi, (uint32_t)c->rsi, (uint32_t)c->rdx);
         case SYSCALL_MKNODAT:
             return sys_mknodat((int)c->rdi, (const char*)c->rsi, (uint32_t)c->rdx, (uint32_t)c->r10);
         case SYSCALL_FALLOCATE:
             return sys_fallocate((int)c->rdi, (int)c->rsi, (int64_t)c->rdx, (int64_t)c->r10);
-        // TODO: For CPython: os.preadv/os.pwritev; the 2 variants only need flags == 0
         case SYSCALL_PREADV:
+            return sys_preadv((int)c->rdi, (const void*)c->rsi, (int)c->rdx, (int64_t)c->r10);
         case SYSCALL_PWRITEV:
+            return sys_pwritev((int)c->rdi, (const void*)c->rsi, (int)c->rdx, (int64_t)c->r10);
         case SYSCALL_PREADV2:
+            return sys_preadv2((int)c->rdi, (const void*)c->rsi, (int)c->rdx, (int64_t)c->r10, (int)c->r9);
         case SYSCALL_PWRITEV2:
-        // TODO: For CPython: os.splice and os.copy_file_range
+            return sys_pwritev2((int)c->rdi, (const void*)c->rsi, (int)c->rdx, (int64_t)c->r10, (int)c->r9);
         case SYSCALL_SPLICE:
+            return sys_splice((int)c->rdi, (int64_t*)c->rsi, (int)c->rdx, (int64_t*)c->r10, (size_t)c->r8,
+                              (unsigned int)c->r9);
         case SYSCALL_COPY_FILE_RANGE:
-        // TODO: For CPython: os.closerange and subprocess close_fds use close_range, falling back on -ENOSYS
+            return sys_copy_file_range((int)c->rdi, (int64_t*)c->rsi, (int)c->rdx, (int64_t*)c->r10, (size_t)c->r8, (uint32_t)c->r9);
         case SYSCALL_CLOSE_RANGE:
-        // TODO: For CPython: os.memfd_create
+            return sys_close_range((unsigned int)c->rdi, (unsigned int)c->rsi, (unsigned int)c->rdx);
         case SYSCALL_MEMFD_CREATE:
-        // TODO: For CPython: os.chroot
+            return sys_memfd_create((const char*)c->rdi, (unsigned int)c->rsi);
         case SYSCALL_CHROOT:
-            return -ENOSYS;
+            return sys_chroot((const char*)c->rdi);
         default:
             return -ENOSYS;
     }
@@ -441,21 +444,22 @@ static long process_syscall(interrupt_context* c, process_t* current)
             return sys_tgkill(0, (int)c->rdi, (int)c->rsi);
         case SYSCALL_TGKILL:
             return sys_tgkill((int)c->rdi, (int)c->rsi, (int)c->rdx);
-        // TODO: For CPython: os.setgroups/initgroups; needs a group list per process for getgroups to report
         case SYSCALL_SETGROUPS:
-        // TODO: For CPython: os.sched_setscheduler/sched_setparam (accept SCHED_OTHER with priority 0),
-        // os.sched_rr_get_interval and os.sched_setaffinity
+            return sys_setgroups((int)c->rdi, (const uint32_t*)c->rsi);
         case SYSCALL_SCHED_SETPARAM:
+            return sys_sched_setparam((int)c->rdi, (const void*)c->rsi);
         case SYSCALL_SCHED_SETSCHEDULER:
+            return sys_sched_setscheduler((int)c->rdi, (int)c->rsi, (const void*)c->rdx);
         case SYSCALL_SCHED_RR_GET_INTERVAL:
+            return sys_sched_rr_get_interval((int)c->rdi, (struct timespec_k*)c->rsi);
         case SYSCALL_SCHED_SETAFFINITY:
-        // TODO: For CPython: time.clock_settime
+            return sys_sched_setaffinity((int)c->rdi, c->rsi, (const void*)c->rdx);
         case SYSCALL_CLOCK_SETTIME:
-        // TODO: For CPython: os.waitid (subprocess and multiprocessing use wait4)
+            return sys_clock_settime((int)c->rdi, (const struct timespec_k*)c->rsi);
         case SYSCALL_WAITID:
-        // TODO: For CPython: os.pidfd_open; asyncio falls back to another child watcher on error
+            return sys_waitid((int)c->rdi, (int)c->rsi, (void*)c->rdx, (int)c->r10, (void*)c->r8);
         case SYSCALL_PIDFD_OPEN:
-            return -ENOSYS;
+            return sys_pidfd_open((int)c->rdi, (unsigned int)c->rsi);
         default:
             return file_syscall(c);
     }

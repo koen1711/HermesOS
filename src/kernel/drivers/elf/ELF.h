@@ -60,6 +60,6 @@ struct elf_image {
 };
 
 bool elf_is_elf(const uint8_t* header, size_t len);
-int elf_load(struct vm_space* vm, int fd, struct elf_image* out);
+int elf_load(struct vm_space* vm, int fd, const char* root, struct elf_image* out);
 
 #endif //OS_ELF_H

@@ -25,6 +25,7 @@
 #define EFD_NONBLOCK 0x800
 #define EFD_CLOEXEC 0x80000
 #define EVENTFD_MAX 0xFFFFFFFFFFFFFFFEULL
+#define PIDFD_NONBLOCK 0x800
 
 struct epoll_event_k {
     uint32_t events;
@@ -389,4 +390,39 @@ long sys_eventfd2(const unsigned int initval, const int flags)
     if (fd < 0)
         free(e);
     return fd;
+}
+
+static int pidfd_poll(struct file_s* f)
+{
+    return process_find((int)(intptr_t)f->node->private_data) ? 0 : VFS_POLLIN;
+}
+
+static int pidfd_close(struct file_s* f)
+{
+    free(f->node);
+    return 0;
+}
+
+static file_operations_t pidfd_fops = {
+    .poll = pidfd_poll,
+    .close = pidfd_close,
+};
+
+int pidfd_pid(const struct file_s* f)
+{
+    return f->node->fops == &pidfd_fops ? (int)(intptr_t)f->node->private_data : -EBADF;
+}
+
+long sys_pidfd_open(const int pid, const unsigned int flags)
+{
+    if (flags & ~PIDFD_NONBLOCK)
+        return -EINVAL;
+    if (pid <= 0)
+        return -EINVAL;
+    const process_t* proc = process_find(pid);
+    if (proc == nullptr)
+        return -ESRCH;
+    if (proc->pid != proc->tgid)
+        return -EINVAL;
+    return anon_install(&pidfd_fops, (void*)(intptr_t)pid, true, (int)(flags & PIDFD_NONBLOCK));
 }

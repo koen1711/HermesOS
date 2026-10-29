@@ -33,6 +33,12 @@ static uint64_t realtime_ns()
     return boot_epoch_ns + clock_monotonic_ns();
 }
 
+void clock_set_realtime_ns(const uint64_t ns)
+{
+    boot_epoch_ns = ns - clock_monotonic_ns();
+    boot_epoch_known = true;
+}
+
 uint64_t clock_monotonic_ns()
 {
     return tsc_micros() * 1000;

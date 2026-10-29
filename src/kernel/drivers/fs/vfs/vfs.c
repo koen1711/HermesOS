@@ -471,6 +471,36 @@ int vfs_normalize_path(const char* base, const char* path, char* out)
     return 0;
 }
 
+const char* vfs_strip_root(const char* root, const char* path)
+{
+    const size_t len = strlen(root);
+    if (len <= 1)
+        return path;
+    if (strncmp(path, root, len) != 0 || (path[len] != '/' && path[len] != '\0'))
+        return nullptr;
+    return path[len] ? path + len : "/";
+}
+
+int vfs_resolve_root(const char* root, const char* base, const char* path, char* out)
+{
+    const char* user_base = vfs_strip_root(root, base);
+    char user[VFS_PATH_MAX];
+    const int err = vfs_normalize_path(user_base ? user_base : "/", path, user);
+    if (err)
+        return err;
+    const size_t len = strlen(root);
+    if (len <= 1) {
+        memcpy(out, user, strlen(user) + 1);
+        return 0;
+    }
+    const size_t user_len = user[1] ? strlen(user) : 0;
+    if (len + user_len >= VFS_PATH_MAX)
+        return -ENAMETOOLONG;
+    memcpy(out, root, len);
+    memcpy(out + len, user, user_len);
+    out[len + user_len] = '\0';
+    return 0;
+}
 
 int vfs_close(const int fd)
 {

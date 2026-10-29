@@ -1,5 +1,6 @@
 #include "sys.h"
 
+#include "fd.h"
 #include "uaccess.h"
 #include <drivers/fs/vfs/vfs.h>
 #include <drivers/scheduler/process.h>
@@ -17,6 +18,33 @@
 #define ARCH_GET_FS 0x1003
 #define RLIM_INFINITY (~0ULL)
 #define GETRANDOM_MAX (32 * 1024 * 1024)
+#define SCHED_RESET_ON_FORK 0x40000000
+#define WNOHANG 1
+#define WSTOPPED 2
+#define WEXITED 4
+#define WCONTINUED 8
+#define WNOWAIT 0x01000000
+
+enum sched_policy {
+    SCHED_OTHER = 0,
+    SCHED_FIFO = 1,
+    SCHED_RR = 2,
+    SCHED_BATCH = 3,
+    SCHED_IDLE = 5
+};
+
+enum waitid_type {
+    P_ALL = 0,
+    P_PID = 1,
+    P_PGID = 2,
+    P_PIDFD = 3
+};
+
+enum cld_code {
+    CLD_EXITED = 1,
+    CLD_KILLED = 2,
+    CLD_DUMPED = 3
+};
 
 enum prctl_option {
     PR_SET_PDEATHSIG = 1,
@@ -67,6 +95,20 @@ struct rusage_k {
     struct timeval_k ru_utime;
     struct timeval_k ru_stime;
     int64_t fields[14];
+};
+
+struct waitid_info_k {
+    int32_t si_signo;
+    int32_t si_errno;
+    int32_t si_code;
+    int32_t pad;
+    int32_t si_pid;
+    uint32_t si_uid;
+    int32_t si_status;
+    int32_t pad2;
+    int64_t si_utime;
+    int64_t si_stime;
+    uint8_t rest[80];
 };
 
 static process_t* current()
@@ -139,6 +181,62 @@ static long copy_string_array(char* const* uarray, char*** out, size_t* budget)
     return 0;
 }
 
+long sys_waitid(const int idtype, const int id, void* uinfo, const int options, void* rusage)
+{
+    if (options & ~(WNOHANG | WSTOPPED | WEXITED | WCONTINUED | WNOWAIT))
+        return -EINVAL;
+    if (!(options & WEXITED))
+        return -EINVAL;
+
+    int pid;
+    switch (idtype) {
+    case P_ALL:
+        pid = -1;
+        break;
+    case P_PID:
+    case P_PGID:
+        if (id < 0 || (idtype == P_PID && id == 0))
+            return -EINVAL;
+        pid = id ? id : current()->tgid;
+        break;
+    case P_PIDFD: {
+        const struct file_s* f = fd_get(id);
+        pid = f ? pidfd_pid(f) : -EBADF;
+        if (pid < 0)
+            return pid;
+        break;
+    }
+    default:
+        return -EINVAL;
+    }
+
+    int status = 0;
+    const long r = process_wait4(pid, &status, options & (WNOHANG | WNOWAIT));
+    if (r < 0)
+        return r;
+
+    struct waitid_info_k info = {0};
+    if (r > 0) {
+        info.si_signo = SIGCHLD;
+        info.si_pid = (int32_t)r;
+        if ((status & 0x7F) == 0) {
+            info.si_code = CLD_EXITED;
+            info.si_status = (status >> 8) & 0xFF;
+        } else {
+            info.si_code = status & 0x80 ? CLD_DUMPED : CLD_KILLED;
+            info.si_status = status & 0x7F;
+        }
+    }
+    if (uinfo && copy_to_user(uinfo, &info, sizeof(info)) < 0)
+        return -EFAULT;
+    if (rusage) {
+        const struct rusage_k ru = {0};
+        if (copy_to_user(rusage, &ru, sizeof(ru)) < 0)
+            return -EFAULT;
+    }
+    return 0;
+}
+
 long sys_execve(const char* upath, char* const* uargv, char* const* uenvp)
 {
     char raw[VFS_PATH_MAX];
@@ -148,7 +246,7 @@ long sys_execve(const char* upath, char* const* uargv, char* const* uenvp)
         return err;
     if (err == 0)
         return -ENOENT;
-    err = vfs_normalize_path(current()->files->cwd, raw, path);
+    err = vfs_resolve_root(current()->files->root, current()->files->cwd, raw, path);
     if (err)
         return err;
 
@@ -271,16 +369,100 @@ long sys_getrusage(const int who, void* usage)
     return copy_to_user(usage, &ru, sizeof(ru));
 }
 
+static uint64_t online_cpus()
+{
+    return cpu_count() >= 64 ? ~0ULL : (1ULL << cpu_count()) - 1;
+}
+
+static process_t* sched_target(const int pid)
+{
+    return pid == 0 ? current() : process_find(pid);
+}
+
 long sys_sched_getaffinity(const int pid, const size_t len, void* mask)
 {
-    if (pid != 0 && process_find(pid) == nullptr)
+    if (pid < 0)
+        return -EINVAL;
+    const process_t* proc = sched_target(pid);
+    if (proc == nullptr)
         return -ESRCH;
     if (len < sizeof(uint64_t))
         return -EINVAL;
-    const uint64_t cpus = cpu_count() >= 64 ? ~0ULL : (1ULL << cpu_count()) - 1;
+    const uint64_t cpus = proc->affinity ? proc->affinity : online_cpus();
     if (copy_to_user(mask, &cpus, sizeof(cpus)) < 0)
         return -EFAULT;
     return sizeof(uint64_t);
+}
+
+long sys_sched_setaffinity(const int pid, const size_t len, const void* mask)
+{
+    if (pid < 0)
+        return -EINVAL;
+    process_t* proc = sched_target(pid);
+    if (proc == nullptr)
+        return -ESRCH;
+    uint64_t cpus = 0;
+    if (copy_from_user(&cpus, mask, len < sizeof(cpus) ? len : sizeof(cpus)) < 0)
+        return -EFAULT;
+    cpus &= online_cpus();
+    if (cpus == 0)
+        return -EINVAL;
+    proc->affinity = cpus;
+    return 0;
+}
+
+static long sched_param_in(const void* uparam, int* priority)
+{
+    if (uparam == nullptr)
+        return -EINVAL;
+    return copy_from_user(priority, uparam, sizeof(*priority)) < 0 ? -EFAULT : 0;
+}
+
+long sys_sched_setparam(const int pid, const void* param)
+{
+    if (pid < 0)
+        return -EINVAL;
+    if (sched_target(pid) == nullptr)
+        return -ESRCH;
+    int priority;
+    const long err = sched_param_in(param, &priority);
+    if (err)
+        return err;
+    return priority == 0 ? 0 : -EINVAL;
+}
+
+long sys_sched_setscheduler(const int pid, const int policy, const void* param)
+{
+    if (pid < 0)
+        return -EINVAL;
+    if (sched_target(pid) == nullptr)
+        return -ESRCH;
+    int priority;
+    const long err = sched_param_in(param, &priority);
+    if (err)
+        return err;
+    switch (policy & ~SCHED_RESET_ON_FORK) {
+    case SCHED_OTHER:
+        return priority == 0 ? 0 : -EINVAL;
+    case SCHED_BATCH:
+    case SCHED_IDLE:
+        return priority == 0 ? -EPERM : -EINVAL;
+    case SCHED_FIFO:
+    case SCHED_RR:
+        return priority >= 1 && priority <= 99 ? -EPERM : -EINVAL;
+    default:
+        return -EINVAL;
+    }
+}
+
+long sys_sched_rr_get_interval(const int pid, struct timespec_k* uts)
+{
+    if (pid < 0)
+        return -EINVAL;
+    if (sched_target(pid) == nullptr)
+        return -ESRCH;
+    const struct timespec_k ts = { .tv_sec = 0, .tv_nsec = 1000000000LL / ticks_hz() };
+    return copy_to_user(uts, &ts, sizeof(ts));
 }
 
 long sys_getrandom(void* buf, size_t len, const unsigned int flags)
@@ -296,6 +478,27 @@ long sys_getrandom(void* buf, size_t len, const unsigned int flags)
 
 long sys_getgroups(const int size, uint32_t* list)
 {
-    (void)list;
-    return size < 0 ? -EINVAL : 0;
+    const process_t* proc = current();
+    if (size < 0)
+        return -EINVAL;
+    if (size == 0)
+        return proc->group_count;
+    if (size < proc->group_count)
+        return -EINVAL;
+    if (copy_to_user(list, proc->groups, proc->group_count * sizeof(uint32_t)) < 0)
+        return -EFAULT;
+    return proc->group_count;
+}
+
+long sys_setgroups(const int size, const uint32_t* list)
+{
+    if (size < 0 || size > PROC_MAX_GROUPS)
+        return -EINVAL;
+    uint32_t groups[PROC_MAX_GROUPS];
+    if (size && copy_from_user(groups, list, size * sizeof(uint32_t)) < 0)
+        return -EFAULT;
+    process_t* proc = current();
+    memcpy(proc->groups, groups, size * sizeof(uint32_t));
+    proc->group_count = size;
+    return 0;
 }

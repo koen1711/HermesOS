@@ -127,16 +127,19 @@ static int load_object(struct vm_space* vm, const int fd, const uint64_t dyn_bas
     return 0;
 }
 
-int elf_load(struct vm_space* vm, const int fd, struct elf_image* out)
+int elf_load(struct vm_space* vm, const int fd, const char* root, struct elf_image* out)
 {
-    char* interp = malloc(MAX_PATH_LENGTH);
+    char* interp = malloc(2 * MAX_PATH_LENGTH);
     if (!interp)
         return -ENOMEM;
     interp[0] = '\0';
+    char* interp_path = interp + MAX_PATH_LENGTH;
 
     int err = load_object(vm, fd, USER_PIE_BASE, true, out, interp, MAX_PATH_LENGTH);
+    if (err == 0 && interp[0] != '\0')
+        err = vfs_resolve_root(root, "/", interp, interp_path);
     if (err == 0 && interp[0] != '\0') {
-        const int ifd = vfs_open(interp, O_RDONLY);
+        const int ifd = vfs_open(interp_path, O_RDONLY);
         struct elf_image ld = {0};
         err = ifd < 0 ? -ENOENT : load_object(vm, ifd, USER_INTERP_BASE, false, &ld, nullptr, 0);
         if (ifd >= 0)
