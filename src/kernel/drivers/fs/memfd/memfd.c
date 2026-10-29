@@ -3,6 +3,7 @@
 #include <drivers/fs/vfs/vfs.h>
 #include <hardware/memory/alloc.h>
 #include <hardware/memory/mmu.h>
+#include <hardware/memory/pmm.h>
 #include <utils/str/str.h>
 #include <os/errno.h>
 
@@ -42,7 +43,7 @@ static uint8_t* page_get(struct memfd* m, const size_t index, const bool create)
         m->page_count = count;
     }
     if (m->pages[index] == nullptr && create) {
-        m->pages[index] = malloc(PAGE_SIZE);
+        m->pages[index] = alloc_physical_page();
         if (m->pages[index])
             memset(m->pages[index], 0, PAGE_SIZE);
     }
@@ -105,7 +106,8 @@ static int memfd_truncate(struct file_s* f, const size_t size)
     if (size < f->node->size) {
         const size_t keep = (size + PAGE_SIZE - 1) / PAGE_SIZE;
         for (size_t i = keep; i < m->page_count; i++) {
-            free(m->pages[i]);
+            if (m->pages[i])
+                free_physical_page(m->pages[i]);
             m->pages[i] = nullptr;
         }
         uint8_t* tail = size % PAGE_SIZE ? page_get(m, size / PAGE_SIZE, false) : nullptr;
@@ -129,11 +131,24 @@ static int memfd_fallocate(struct file_s* f, const int mode, const int64_t offse
     return end > f->node->size ? memfd_truncate(f, end) : 0;
 }
 
+static int memfd_mmap_page(struct file_s* f, const uint64_t offset, uint64_t* frame)
+{
+    if (offset >= MEMFD_MAX_SIZE)
+        return -EFBIG;
+    uint8_t* page = page_get(memfd_of(f), offset / PAGE_SIZE, true);
+    if (page == nullptr)
+        return -ENOMEM;
+    pmm_share_page(page);
+    *frame = (uint64_t)page;
+    return 0;
+}
+
 static void mem_inode_free(inode_t* node)
 {
     struct memfd* m = node->private_data;
     for (size_t i = 0; i < m->page_count; i++)
-        free(m->pages[i]);
+        if (m->pages[i])
+            free_physical_page(m->pages[i]);
     free(m->pages);
     free(m);
     free(node);
@@ -171,6 +186,7 @@ static file_operations_t memfd_fops = {
     .write = memfd_write,
     .truncate = memfd_truncate,
     .fallocate = memfd_fallocate,
+    .mmap_page = memfd_mmap_page,
     .close = memfd_close,
 };
 

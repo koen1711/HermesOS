@@ -6,6 +6,15 @@
 #include <os/errno.h>
 
 #define PTE_FRAME 0x000FFFFFFFFFF000ULL
+#define PTE_DIRTY 0x40ULL
+
+struct vm_flush {
+    struct vm_flush* next;
+    const struct vm_file_ops* ops;
+    void* file;
+    uint64_t offset;
+    uint64_t frame;
+};
 
 static struct vm_area* area_of(const struct dlist_node* node)
 {
@@ -53,11 +62,81 @@ static void area_insert(struct vm_space* vm, struct vm_area* a)
     dlist_insert_tail(&vm->areas, &a->link);
 }
 
+static void area_set_file(struct vm_area* a, const struct vm_area* src, const uint64_t offset)
+{
+    a->fops = src->fops;
+    a->file = src->file;
+    a->offset = offset;
+    if (a->file)
+        a->fops->acquire(a->file);
+}
+
+static void queue(struct vm_space* vm, const struct vm_area* a, const uint64_t offset, const uint64_t frame)
+{
+    struct vm_flush* w = malloc(sizeof(struct vm_flush));
+    if (!w) {
+        if (frame)
+            free_physical_page((void*)frame);
+        return;
+    }
+    w->next = nullptr;
+    w->ops = a->fops;
+    w->file = a->file;
+    w->offset = offset;
+    w->frame = frame;
+    if (vm->pending_tail)
+        vm->pending_tail->next = w;
+    else
+        vm->pending = w;
+    vm->pending_tail = w;
+}
+
+static void queue_dirty(struct vm_space* vm, const struct vm_area* a, const uint64_t start, const uint64_t end,
+                        const bool clear)
+{
+    for (uint64_t va = start; va < end; va += PAGE_SIZE) {
+        uint64_t* pte = mmu_find_pte(vm->page_map, va);
+        if (!pte || !(*pte & PTE_FRAME) || !(*pte & PTE_DIRTY))
+            continue;
+        pmm_share_page((void*)(*pte & PTE_FRAME));
+        queue(vm, a, a->offset + (va - a->start), *pte & PTE_FRAME);
+        if (clear) {
+            *pte &= ~PTE_DIRTY;
+            invalidate(va);
+        }
+    }
+}
+
+static void run_flush(struct vm_flush* w)
+{
+    while (w) {
+        struct vm_flush* next = w->next;
+        if (w->frame) {
+            w->ops->write(w->file, w->offset, (const void*)w->frame, PAGE_SIZE);
+            free_physical_page((void*)w->frame);
+        } else {
+            w->ops->release(w->file);
+        }
+        free(w);
+        w = next;
+    }
+}
+
+static void drain(struct vm_space* vm)
+{
+    spinlock_acquire(&vm->lock);
+    struct vm_flush* w = vm->pending;
+    vm->pending = vm->pending_tail = nullptr;
+    spinlock_release(&vm->lock);
+    run_flush(w);
+}
+
 static int area_split(struct vm_space* vm, struct vm_area* a, const uint64_t at)
 {
     struct vm_area* b = area_new(at, a->end, a->prot, a->flags);
     if (!b)
         return -ENOMEM;
+    area_set_file(b, a, a->offset + (at - a->start));
     a->end = at;
     dlist_insert_after(&vm->areas, &a->link, &b->link);
     return 0;
@@ -136,13 +215,14 @@ static struct vm_space* clone_locked(const struct vm_space* src)
     vm->brk = src->brk;
     vm->mmap_base = src->mmap_base;
 
-    for (struct dlist_node* n = dlist_first(&src->areas); n; n = dlist_next(n)) {
+    for (const struct dlist_node* n = dlist_first(&src->areas); n; n = dlist_next(n)) {
         const struct vm_area* a = area_of(n);
         struct vm_area* copy = area_new(a->start, a->end, a->prot, a->flags);
         if (!copy) {
             vm_release(vm);
             return nullptr;
         }
+        area_set_file(copy, a, a->offset);
         dlist_insert_tail(&vm->areas, &copy->link);
 
         for (uint64_t va = a->start; va < a->end; va += PAGE_SIZE) {
@@ -175,7 +255,7 @@ static struct vm_space* clone_locked(const struct vm_space* src)
 
 struct vm_space* vm_clone(const struct vm_space* src)
 {
-    spinlock_t* lock = (spinlock_t*)&src->lock;
+    const auto lock = (spinlock_t*)&src->lock;
     spinlock_acquire(lock);
     struct vm_space* vm = clone_locked(src);
     spinlock_release(lock);
@@ -193,9 +273,15 @@ void vm_release(struct vm_space* vm)
         return;
     while (!dlist_empty(&vm->areas)) {
         struct dlist_node* n = dlist_first(&vm->areas);
+        const struct vm_area* a = area_of(n);
+        if (a->file) {
+            queue_dirty(vm, a, a->start, a->end, false);
+            queue(vm, a, 0, 0);
+        }
         dlist_remove(&vm->areas, n);
         free(area_of(n));
     }
+    run_flush(vm->pending);
     free_vm(vm->page_map);
     free(vm);
 }
@@ -285,6 +371,10 @@ static int unmap_locked(struct vm_space* vm, const uint64_t addr, const size_t l
         if (a->start >= end)
             break;
         if (a->start >= addr) {
+            if (a->file) {
+                queue_dirty(vm, a, a->start, a->end, false);
+                queue(vm, a, 0, 0);
+            }
             free_frames(vm, a->start, a->end);
             dlist_remove(&vm->areas, n);
             free(a);
@@ -306,6 +396,8 @@ static int protect_locked(struct vm_space* vm, const uint64_t addr, const size_t
         const struct vm_area* a = vm_find(vm, va);
         if (!a)
             return -ENOMEM;
+        if (prot & VM_WRITE && a->flags & VMA_NO_WRITE)
+            return -EACCES;
         va = a->end;
     }
     const int err = range_isolate(vm, addr, end);
@@ -323,7 +415,7 @@ static int protect_locked(struct vm_space* vm, const uint64_t addr, const size_t
             uint64_t* pte = mmu_find_pte(vm->page_map, va);
             if (!pte || !(*pte & PTE_FRAME))
                 continue;
-            *pte = (*pte & PTE_FRAME) | pte_flags(prot);
+            *pte = *pte & (PTE_FRAME | PTE_DIRTY) | pte_flags(prot);
             invalidate(va);
         }
     }
@@ -348,6 +440,39 @@ static int discard_locked(struct vm_space* vm, const uint64_t addr, const size_t
         va = stop;
     }
     smp_tlb_shootdown();
+    return 0;
+}
+
+static int sync_locked(struct vm_space* vm, const uint64_t addr, const size_t len)
+{
+    const uint64_t end = PAGE_ALIGN_UP(addr + len);
+    if ((addr & ~PAGE_MASK) || end < addr)
+        return -EINVAL;
+    for (uint64_t va = addr; va < end;) {
+        const struct vm_area* a = vm_find(vm, va);
+        if (!a)
+            return -ENOMEM;
+        const uint64_t stop = a->end < end ? a->end : end;
+        if (a->file)
+            queue_dirty(vm, a, va, stop, true);
+        va = stop;
+    }
+    smp_tlb_shootdown();
+    return 0;
+}
+
+static int insert_frame_locked(struct vm_space* vm, const uint64_t va, const uint64_t frame)
+{
+    const struct vm_area* a = vm_find(vm, va);
+    if (!a || (va & ~PAGE_MASK))
+        return -EFAULT;
+    const uint64_t* pte = mmu_find_pte(vm->page_map, va);
+    const uint64_t old = pte ? *pte & PTE_FRAME : 0;
+    if (map_page_in(vm->page_map, va, frame, pte_flags(a->prot)) < 0)
+        return -ENOMEM;
+    if (old)
+        free_physical_page((void*)old);
+    invalidate(va);
     return 0;
 }
 
@@ -384,6 +509,9 @@ static int move_locked(struct vm_space* vm, const uint64_t old_addr, const size_
     struct vm_area* dst = area_new(new_addr, new_addr + new_len, src->prot, src->flags);
     if (!dst)
         return -ENOMEM;
+    dst->fops = src->fops;
+    dst->file = src->file;
+    dst->offset = src->offset;
 
     uint64_t off = 0;
     for (; off < len; off += PAGE_SIZE) {
@@ -570,6 +698,7 @@ int vm_map(struct vm_space* vm, const uint64_t addr, const size_t len, const uin
     spinlock_acquire(&vm->lock);
     const int err = map_locked(vm, addr, len, prot, flags, fixed, out);
     spinlock_release(&vm->lock);
+    drain(vm);
     return err;
 }
 
@@ -578,6 +707,7 @@ int vm_unmap(struct vm_space* vm, const uint64_t addr, const size_t len)
     spinlock_acquire(&vm->lock);
     const int err = unmap_locked(vm, addr, len);
     spinlock_release(&vm->lock);
+    drain(vm);
     return err;
 }
 
@@ -602,6 +732,7 @@ uint64_t vm_brk(struct vm_space* vm, const uint64_t new_brk)
     spinlock_acquire(&vm->lock);
     const uint64_t brk = brk_locked(vm, new_brk);
     spinlock_release(&vm->lock);
+    drain(vm);
     return brk;
 }
 
@@ -611,6 +742,7 @@ int vm_remap(struct vm_space* vm, const uint64_t old_addr, const size_t old_len,
     spinlock_acquire(&vm->lock);
     const int err = remap_locked(vm, old_addr, old_len, new_len, flags, out);
     spinlock_release(&vm->lock);
+    drain(vm);
     return err;
 }
 
@@ -619,6 +751,41 @@ int vm_remap_fixed(struct vm_space* vm, const uint64_t old_addr, const size_t ol
 {
     spinlock_acquire(&vm->lock);
     const int err = remap_fixed_locked(vm, old_addr, old_len, new_len, flags, new_addr, out);
+    spinlock_release(&vm->lock);
+    drain(vm);
+    return err;
+}
+
+int vm_sync(struct vm_space* vm, const uint64_t addr, const size_t len)
+{
+    spinlock_acquire(&vm->lock);
+    const int err = sync_locked(vm, addr, len);
+    spinlock_release(&vm->lock);
+    drain(vm);
+    return err;
+}
+
+int vm_attach_file(struct vm_space* vm, const uint64_t start, const struct vm_file_ops* ops, void* file,
+                   const uint64_t offset)
+{
+    spinlock_acquire(&vm->lock);
+    struct vm_area* a = vm_find(vm, start);
+    int err = -EINVAL;
+    if (a && a->start == start && !a->file) {
+        a->fops = ops;
+        a->file = file;
+        a->offset = offset;
+        ops->acquire(file);
+        err = 0;
+    }
+    spinlock_release(&vm->lock);
+    return err;
+}
+
+int vm_insert_frame(struct vm_space* vm, const uint64_t va, const uint64_t frame)
+{
+    spinlock_acquire(&vm->lock);
+    const int err = insert_frame_locked(vm, va, frame);
     spinlock_release(&vm->lock);
     return err;
 }

@@ -4,6 +4,7 @@
 #include <drivers/fs/vfs/vfs.h>
 #include <drivers/scheduler/process.h>
 #include <hardware/memory/alloc.h>
+#include <hardware/memory/pmm.h>
 #include <hardware/memory/vm.h>
 #include <os/errno.h>
 
@@ -15,6 +16,12 @@ enum mmap_flags {
     MAP_ANONYMOUS = 0x20,
     MAP_POPULATE = 0x8000,
     MAP_FIXED_NOREPLACE = 0x100000
+};
+
+enum msync_flags {
+    MS_ASYNC = 1,
+    MS_INVALIDATE = 2,
+    MS_SYNC = 4
 };
 
 enum madvise_advice {
@@ -54,6 +61,49 @@ static long map_file(struct vm_space* vm, struct file_s* f, const uint64_t start
     return err;
 }
 
+static void file_acquire(void* file)
+{
+    ((struct file_s*)file)->ref_count++;
+}
+
+static void file_release(void* file)
+{
+    vfs_close((int)((struct file_s*)file)->id);
+}
+
+static void file_write(void* file, const uint64_t offset, const void* data, size_t len)
+{
+    struct file_s* f = file;
+    if (offset >= f->node->size)
+        return;
+    if (len > f->node->size - offset)
+        len = f->node->size - offset;
+    const size_t saved = f->file_position;
+    f->file_position = (size_t)offset;
+    vfs_write((int)f->id, data, len);
+    f->file_position = saved;
+}
+
+static const struct vm_file_ops file_ops = {
+    .acquire = file_acquire,
+    .release = file_release,
+    .write = file_write,
+};
+
+static long map_frames(struct vm_space* vm, struct file_s* f, const uint64_t start, const size_t len,
+                       const int64_t offset)
+{
+    for (uint64_t off = 0; off < PAGE_ALIGN_UP(len); off += PAGE_SIZE) {
+        uint64_t frame;
+        long err = f->node->fops->mmap_page(f, (uint64_t)offset + off, &frame);
+        if (err == 0 && (err = vm_insert_frame(vm, start + off, frame)) < 0)
+            free_physical_page((void*)frame);
+        if (err)
+            return err;
+    }
+    return 0;
+}
+
 long sys_mmap(const uint64_t addr, const size_t len, const int prot, const int flags, const int fd,
               const int64_t offset)
 {
@@ -82,14 +132,26 @@ long sys_mmap(const uint64_t addr, const size_t len, const int prot, const int f
     }
 
     const bool shared = type != MAP_PRIVATE;
+    if (shared && f && (prot & VM_WRITE) && !(f->flags & O_WRONLY))
+        return -EACCES;
+    const bool direct = shared && f && f->node->fops && f->node->fops->mmap_page;
     uint64_t start;
-    long err = vm_map(vm, addr & PAGE_MASK, len, (uint32_t)prot, shared ? VMA_SHARED : 0, fixed, &start);
+    uint32_t vma_flags = shared ? VMA_SHARED : 0;
+    if (shared && f && !(f->flags & O_WRONLY))
+        vma_flags |= VMA_NO_WRITE;
+    long err = vm_map(vm, addr & PAGE_MASK, len, (uint32_t)prot, vma_flags, fixed, &start);
     if (err)
         return err;
-    if (shared)
-        err = vm_write(vm, start, nullptr, PAGE_ALIGN_UP(len));
-    if (err == 0 && f)
-        err = map_file(vm, f, start, len, offset);
+    if (direct) {
+        err = map_frames(vm, f, start, len, offset);
+    } else {
+        if (shared)
+            err = vm_write(vm, start, nullptr, PAGE_ALIGN_UP(len));
+        if (err == 0 && f)
+            err = map_file(vm, f, start, len, offset);
+        if (err == 0 && shared && f)
+            err = vm_attach_file(vm, start, &file_ops, f, (uint64_t)offset);
+    }
     if (err == 0 && (flags & MAP_POPULATE))
         vm_populate(vm, start, len, false);
     if (err) {
@@ -102,6 +164,14 @@ long sys_mmap(const uint64_t addr, const size_t len, const int prot, const int f
 long sys_munmap(const uint64_t addr, const size_t len)
 {
     return vm_unmap(current_vm(), addr, len);
+}
+
+long sys_msync(const uint64_t addr, const size_t len, const int flags)
+{
+    if ((addr & (PAGE_SIZE - 1)) || (flags & ~(MS_ASYNC | MS_INVALIDATE | MS_SYNC))
+        || ((flags & MS_ASYNC) && (flags & MS_SYNC)))
+        return -EINVAL;
+    return vm_sync(current_vm(), addr, len);
 }
 
 long sys_mprotect(const uint64_t addr, const size_t len, const int prot)

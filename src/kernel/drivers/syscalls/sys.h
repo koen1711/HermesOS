@@ -83,6 +83,7 @@ long sys_pidfd_open(int pid, unsigned int flags);
 int pidfd_pid(const struct file_s* f);
 
 long sys_mmap(uint64_t addr, size_t len, int prot, int flags, int fd, int64_t offset);
+long sys_msync(uint64_t addr, size_t len, int flags);
 long sys_munmap(uint64_t addr, size_t len);
 long sys_mprotect(uint64_t addr, size_t len, int prot);
 long sys_brk(uint64_t addr);

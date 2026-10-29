@@ -30,7 +30,8 @@ enum vm_prot {
 enum vm_area_flags {
     VMA_STACK = 0x1,
     VMA_HEAP = 0x2,
-    VMA_SHARED = 0x4
+    VMA_SHARED = 0x4,
+    VMA_NO_WRITE = 0x8
 };
 
 enum mmremap_flags {
@@ -39,13 +40,24 @@ enum mmremap_flags {
     MREMAP_DONTUNMAP = 4
 };
 
+struct vm_file_ops {
+    void (*acquire)(void* file);
+    void (*release)(void* file);
+    void (*write)(void* file, uint64_t offset, const void* data, size_t len);
+};
+
 struct vm_area {
     struct dlist_node link;
     uint64_t start;
     uint64_t end;
     uint32_t prot;
     uint32_t flags;
+    const struct vm_file_ops* fops;
+    void* file;
+    uint64_t offset;
 };
+
+struct vm_flush;
 
 struct vm_space {
     spinlock_t lock;
@@ -55,6 +67,8 @@ struct vm_space {
     uint64_t brk_start;
     uint64_t brk;
     uint64_t mmap_base;
+    struct vm_flush* pending;
+    struct vm_flush* pending_tail;
 };
 
 struct vm_space* vm_create();
@@ -70,6 +84,9 @@ int vm_map(struct vm_space* vm, uint64_t addr, size_t len, uint32_t prot, uint32
 int vm_unmap(struct vm_space* vm, uint64_t addr, size_t len);
 int vm_protect(struct vm_space* vm, uint64_t addr, size_t len, uint32_t prot);
 int vm_discard(struct vm_space* vm, uint64_t addr, size_t len);
+int vm_sync(struct vm_space* vm, uint64_t addr, size_t len);
+int vm_attach_file(struct vm_space* vm, uint64_t start, const struct vm_file_ops* ops, void* file, uint64_t offset);
+int vm_insert_frame(struct vm_space* vm, uint64_t va, uint64_t frame);
 uint64_t vm_brk(struct vm_space* vm, uint64_t new_brk);
 
 int vm_remap(struct vm_space* vm, uint64_t old_addr, size_t old_len, size_t new_len, int flags, uint64_t* out);

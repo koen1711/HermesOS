@@ -310,7 +310,7 @@ static long process_syscall(interrupt_context* c, process_t* current)
         case SYSCALL_MADVISE:
             return sys_madvise(c->rdi, c->rsi, (int)c->rdx);
         case SYSCALL_MSYNC:
-            return 0;
+            return sys_msync(c->rdi, c->rsi, (int)c->rdx);
         case SYSCALL_MREMAP:
             return sys_mremap(c->rdi, c->rsi, c->rdx, (int)c->r10, c->r8);
         case SYSCALL_CLONE:

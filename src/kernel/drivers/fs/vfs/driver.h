@@ -72,6 +72,7 @@ typedef struct file_operations_s {
     int (*ioctl)(struct file_s* f, unsigned long request, void* arg);
     int (*truncate)(struct file_s* f, size_t size);
     int (*fallocate)(struct file_s* f, int mode, int64_t offset, int64_t len);
+    int (*mmap_page)(struct file_s* f, uint64_t offset, uint64_t* frame);
 } file_operations_t;
 
 typedef struct inode_s {
