@@ -153,6 +153,25 @@ static long resolve_at(const int dirfd, const char* upath, char* out, const bool
     return vfs_resolve_root(files()->root, base, path, out);
 }
 
+static long dup_from(int fd, int min_fd, bool cloexec);
+
+static int fd_alias(const char* path)
+{
+    static const char* const names[] = { "/dev/stdin", "/dev/stdout", "/dev/stderr" };
+    for (int i = 0; i < 3; i++)
+        if (strcmp(path, names[i]) == 0)
+            return i;
+    if (strncmp(path, "/dev/fd/", 8) != 0 || path[8] == '\0')
+        return -1;
+    int fd = 0;
+    for (const char* p = path + 8; *p; p++) {
+        if (*p < '0' || *p > '9' || fd >= PROC_MAX_FILE_DESCRIPTORS)
+            return -1;
+        fd = fd * 10 + (*p - '0');
+    }
+    return fd;
+}
+
 static int vfs_access_flags(const int flags)
 {
     switch (flags & LO_ACCMODE) {
@@ -196,6 +215,9 @@ long sys_openat(const int dirfd, const char* upath, const int flags, const uint3
         return err;
     if ((flags & LO_ACCMODE) == LO_ACCMODE)
         return -EINVAL;
+    const int alias = fd_alias(path);
+    if (alias >= 0)
+        return fd_get(alias) ? dup_from(alias, 0, flags & LO_CLOEXEC) : -ENOENT;
 
     const bool writing = (flags & LO_ACCMODE) != 0;
     const int access = flags & LO_PATH ? 0 : vfs_access_flags(flags);
@@ -389,8 +411,8 @@ static long stat_out(const struct file_s* f, void* ust)
         st.st_mode = S_IFIFO | 0600;
         break;
     case INODE_CHAR:
-        st.st_mode = S_IFCHR | 0620;
-        st.st_rdev = (5 << 8) | 1;
+        st.st_mode = S_IFCHR | 0666;
+        st.st_rdev = vs.ino;
         break;
     default:
         st.st_mode = S_IFREG | 0755;
@@ -416,6 +438,9 @@ long sys_newfstatat(const int dirfd, const char* upath, void* st, const int flag
             return sys_fstat(dirfd, st);
         strncpy(path, files()->cwd, sizeof(path) - 1);
     }
+    const int alias = fd_alias(path);
+    if (alias >= 0)
+        return fd_get(alias) ? sys_fstat(alias, st) : -ENOENT;
 
     const int id = vfs_open(path, 0);
     if (id < 0)
@@ -710,6 +735,13 @@ static long path_lookup(const int dirfd, const char* upath, char* path, size_t* 
     const long err = resolve_at(dirfd, upath, path, false);
     if (err)
         return err;
+    const int alias = fd_alias(path);
+    if (alias >= 0) {
+        const struct file_s* f = fd_get(alias);
+        if (f && type)
+            *type = f->node->type;
+        return f ? 0 : -ENOENT;
+    }
     const int id = vfs_open(path, 0);
     if (id < 0)
         return id;

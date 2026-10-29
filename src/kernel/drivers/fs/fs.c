@@ -1,5 +1,6 @@
 #include "fs.h"
 #include "fat/fat32.h"
+#include "devfs/devfs.h"
 #include "vfs/vfs.h"
 #include <utils/str/str.h>
 
@@ -7,6 +8,8 @@
 void fs_init(void)
 {
     vfs_register_driver("fat32", &fat32_driver);
+    vfs_register_driver("devfs", &devfs_driver);
+    vfs_mount("/dev", "devfs", nullptr);
 }
 
 

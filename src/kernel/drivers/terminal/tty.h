@@ -4,6 +4,7 @@
 #include <os/stdint.h>
 
 struct proc_files;
+struct inode_s;
 
 struct termios_k {
     uint32_t c_iflag;
@@ -16,5 +17,6 @@ struct termios_k {
 
 void tty_input(char c);
 int tty_install_console(struct proc_files* files);
+struct inode_s* tty_node();
 
 #endif //TERMINAL_TTY_H

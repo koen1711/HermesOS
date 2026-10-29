@@ -240,7 +240,15 @@ static int tty_ioctl(struct file_s* f, const unsigned long request, void* arg)
     }
 }
 
+static int tty_open(struct inode_s* node, struct file_s* f)
+{
+    (void)node;
+    (void)f;
+    return 0;
+}
+
 static file_operations_t tty_fops = {
+    .open = tty_open,
     .read = tty_read,
     .write = tty_write,
     .poll = tty_poll,
@@ -248,10 +256,15 @@ static file_operations_t tty_fops = {
 };
 
 static inode_t tty_inode = {
-    .id = 1,
+    .id = (5 << 8) | 1,
     .type = INODE_CHAR,
     .fops = &tty_fops,
 };
+
+inode_t* tty_node()
+{
+    return &tty_inode;
+}
 
 int tty_install_console(struct proc_files* files)
 {
