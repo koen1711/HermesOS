@@ -7,10 +7,6 @@
 
 #include "drivers/terminal/terminal.h"
 
-
-
-void lfb_text_initialize(terminal_contents* term);
-void lfb_text_update();
-
+const terminal_backend* lfb_text_backend();
 
 #endif //OS_LFB_TEXT_H

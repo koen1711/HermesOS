@@ -5,10 +5,13 @@
 #include <drivers/scheduler/signal.h>
 #include <drivers/syscalls/uaccess.h>
 #include <hardware/memory/alloc.h>
+#include <hardware/interrupts/irq.h>
 #include <os/errno.h>
 
 #define TTY_BUFFER 1024
 #define WAIT_CHANNEL_TTY 0x39000000
+#define WAIT_CHANNEL_TTY_SPAWN 0x39100000
+#define TTY_SPAWN_RETRY_TICKS 100
 
 enum termios_flags {
     TTY_ICRNL = 0x0100,
@@ -19,6 +22,7 @@ enum termios_flags {
     TTY_ECHO = 0x0008,
     TTY_ECHOE = 0x0010,
     TTY_ECHOK = 0x0020,
+    TTY_ECHOCTL = 0x0200,
     TTY_IEXTEN = 0x8000
 };
 
@@ -55,131 +59,254 @@ struct winsize_k {
     uint16_t ws_ypixel;
 };
 
-static struct {
+struct tty {
+    int index;
     char buf[TTY_BUFFER];
     size_t len;
     size_t cooked;
     size_t eof;
     struct termios_k termios;
-    struct winsize_k winsize;
     int pgrp;
+    int shell_pid;
+    bool spawning;
     struct file_s* file;
-} console = {
-    .termios = {
-        .c_iflag = TTY_ICRNL,
-        .c_oflag = TTY_OPOST | TTY_ONLCR,
-        .c_cflag = 0xBF,
-        .c_lflag = TTY_ISIG | TTY_ICANON | TTY_ECHO | TTY_ECHOE | TTY_ECHOK | TTY_IEXTEN,
-        .c_cc = { [VINTR] = 0x03, [VQUIT] = 0x1C, [VERASE] = 0x7F, [VKILL] = 0x15, [VEOF] = 0x04, [VMIN] = 1 }
-    },
-    .winsize = { .ws_row = 25, .ws_col = 80 },
-    .pgrp = INIT_PROC_ID
+    inode_t inode;
 };
 
-static void tty_echo(const char c)
-{
-    if (console.termios.c_lflag & TTY_ECHO)
-        terminal_printf("%c", c);
+static file_operations_t tty_fops;
+static file_operations_t ctty_fops;
+static struct tty ttys[TERMINAL_COUNT];
+
+#define TTY_DEFAULT(i) {                                                                                    \
+    .index = i,                                                                                             \
+    .termios = {                                                                                            \
+        .c_iflag = TTY_ICRNL,                                                                               \
+        .c_oflag = TTY_OPOST | TTY_ONLCR,                                                                   \
+        .c_cflag = 0xBF,                                                                                    \
+        .c_lflag = TTY_ISIG | TTY_ICANON | TTY_ECHO | TTY_ECHOE | TTY_ECHOK | TTY_ECHOCTL | TTY_IEXTEN,     \
+        .c_cc = { [VINTR] = 0x03, [VQUIT] = 0x1C, [VERASE] = 0x7F, [VKILL] = 0x15, [VEOF] = 0x04, [VMIN] = 1 } \
+    },                                                                                                      \
+    .inode = { .id = (4 << 8) | (i + 1), .type = INODE_CHAR, .fops = &tty_fops, .private_data = &ttys[i] }  \
 }
 
-static bool tty_canonical()
+static struct tty ttys[TERMINAL_COUNT] = {
+    TTY_DEFAULT(0), TTY_DEFAULT(1), TTY_DEFAULT(2), TTY_DEFAULT(3), TTY_DEFAULT(4), TTY_DEFAULT(5),
+};
+
+static inode_t ctty_inode = { .id = (5 << 8) | 0, .type = INODE_CHAR, .fops = &ctty_fops };
+static inode_t console_inode = { .id = (5 << 8) | 1, .type = INODE_CHAR, .fops = &tty_fops, .private_data = &ttys[0] };
+
+static volatile uint32_t spawn_pending = 0;
+
+static struct tty* tty_of(const struct file_s* f)
 {
-    return console.termios.c_lflag & TTY_ICANON;
+    return f->node->private_data;
 }
 
-static size_t tty_readable()
+static void tty_output(const struct tty* t, const char* buf, const size_t len)
 {
-    return tty_canonical() ? console.cooked : console.len;
+    const bool onlcr = (t->termios.c_oflag & TTY_OPOST) && (t->termios.c_oflag & TTY_ONLCR);
+    terminal_write(t->index, buf, len, onlcr);
 }
 
-void tty_input(char c)
+static void tty_echo(const struct tty* t, const char c)
 {
-    const struct termios_k* t = &console.termios;
-    if (c == '\r' && (t->c_iflag & TTY_ICRNL))
+    if (!(t->termios.c_lflag & TTY_ECHO))
+        return;
+    const bool control = ((uint8_t)c < 0x20 && c != '\n' && c != '\t') || c == 0x7F;
+    if (control && (t->termios.c_lflag & TTY_ECHOCTL)) {
+        const char seq[2] = { '^', c == 0x7F ? '?' : (char)(c + 0x40) };
+        tty_output(t, seq, sizeof(seq));
+        return;
+    }
+    tty_output(t, &c, 1);
+}
+
+static void tty_erase(struct tty* t)
+{
+    if (t->len <= t->cooked)
+        return;
+    const char c = t->buf[--t->len];
+    if (!(t->termios.c_lflag & TTY_ECHO))
+        return;
+    const bool wide = ((uint8_t)c < 0x20 || c == 0x7F) && c != '\t' && (t->termios.c_lflag & TTY_ECHOCTL);
+    for (int i = 0; i < (wide ? 2 : 1); i++)
+        tty_output(t, "\b \b", 3);
+}
+
+static bool tty_canonical(const struct tty* t)
+{
+    return t->termios.c_lflag & TTY_ICANON;
+}
+
+static size_t tty_readable(const struct tty* t)
+{
+    return tty_canonical(t) ? t->cooked : t->len;
+}
+
+static void tty_signal(struct tty* t, const char c, const int sig)
+{
+    t->len = t->cooked;
+    tty_echo(t, c);
+    tty_output(t, "\n", 1);
+    signal_send(t->pgrp, sig);
+    process_wakeup(WAIT_CHANNEL_TTY | t->index);
+}
+
+void tty_receive(const int index, char c)
+{
+    if (index < 0 || index >= TERMINAL_COUNT)
+        return;
+    struct tty* t = &ttys[index];
+    const struct termios_k* tm = &t->termios;
+    if (c == '\r' && (tm->c_iflag & TTY_ICRNL))
         c = '\n';
 
-    if ((t->c_lflag & TTY_ISIG) && c == (char)t->c_cc[VINTR]) {
-        console.len = console.cooked;
-        tty_echo('^');
-        tty_echo('C');
-        tty_echo('\n');
-        signal_send(console.pgrp, SIGINT);
-        process_wakeup(WAIT_CHANNEL_TTY);
-        return;
-    }
-
-    if (tty_canonical()) {
-        if (c == '\b' || c == (char)t->c_cc[VERASE]) {
-            if (console.len > console.cooked) {
-                console.len--;
-                if (t->c_lflag & TTY_ECHO)
-                    terminal_printf("\b \b");
-            }
+    if (tm->c_lflag & TTY_ISIG) {
+        if (c == (char)tm->c_cc[VINTR]) {
+            tty_signal(t, c, SIGINT);
             return;
         }
-        if (c == (char)t->c_cc[VEOF]) {
-            console.cooked = console.len;
-            console.eof++;
-            process_wakeup(WAIT_CHANNEL_TTY);
+        if (c == (char)tm->c_cc[VQUIT]) {
+            tty_signal(t, c, SIGQUIT);
             return;
         }
     }
 
-    if (console.len >= TTY_BUFFER)
+    if (tty_canonical(t)) {
+        if (c == '\b' || c == (char)tm->c_cc[VERASE]) {
+            tty_erase(t);
+            return;
+        }
+        if (c == (char)tm->c_cc[VKILL]) {
+            while (t->len > t->cooked)
+                tty_erase(t);
+            return;
+        }
+        if (c == (char)tm->c_cc[VEOF]) {
+            t->cooked = t->len;
+            t->eof++;
+            process_wakeup(WAIT_CHANNEL_TTY | t->index);
+            process_wakeup(WAIT_CHANNEL_POLL);
+            return;
+        }
+    }
+
+    if (t->len >= TTY_BUFFER)
         return;
-    console.buf[console.len++] = c;
-    tty_echo(c);
-    if (c == '\n')
-        console.cooked = console.len;
-    process_wakeup(WAIT_CHANNEL_TTY);
+    t->buf[t->len++] = c;
+    tty_echo(t, c);
+    if (c == '\n' || !tty_canonical(t))
+        t->cooked = t->len;
+    process_wakeup(WAIT_CHANNEL_TTY | t->index);
     process_wakeup(WAIT_CHANNEL_POLL);
+}
+
+void tty_input(const char c)
+{
+    tty_receive(terminal_active(), c);
+}
+
+void tty_input_string(const char* s)
+{
+    const int index = terminal_active();
+    while (*s)
+        tty_receive(index, *s++);
+}
+
+static void tty_spawner(void* arg)
+{
+    (void)arg;
+    for (;;) {
+        const uint32_t pending = __atomic_exchange_n(&spawn_pending, 0, __ATOMIC_ACQ_REL);
+        for (int i = 0; i < TERMINAL_COUNT; i++) {
+            if (!(pending & (1u << i)))
+                continue;
+            struct tty* t = &ttys[i];
+            t->len = t->cooked = t->eof = 0;
+            const int pid = process_spawn_shell(i);
+            if (pid < 0) {
+                terminal_write(i, "tty: cannot start shell\n", 24, true);
+            }
+            else {
+                t->shell_pid = pid;
+                t->pgrp = pid;
+            }
+            t->spawning = false;
+        }
+        if (pending == 0)
+            process_sleep_timeout(WAIT_CHANNEL_TTY_SPAWN, TTY_SPAWN_RETRY_TICKS);
+    }
+}
+
+void tty_initialize()
+{
+    ttys[0].shell_pid = INIT_PROC_ID;
+    ttys[0].pgrp = INIT_PROC_ID;
+    if (process_create_kernel(tty_spawner, nullptr) == nullptr)
+        terminal_printf("tty: cannot start spawner thread\n");
+}
+
+void tty_switch(const int index)
+{
+    if (index < 0 || index >= TERMINAL_COUNT)
+        return;
+    terminal_switch(index);
+
+    struct tty* t = &ttys[index];
+    if (t->spawning || (t->shell_pid != 0 && process_find(t->shell_pid) != nullptr))
+        return;
+    t->spawning = true;
+    __atomic_or_fetch(&spawn_pending, 1u << index, __ATOMIC_ACQ_REL);
+    process_wakeup(WAIT_CHANNEL_TTY_SPAWN);
 }
 
 static ssize_t tty_read(struct file_s* f, void* buf, const size_t len)
 {
-    while (tty_readable() == 0) {
-        if (tty_canonical() && console.eof) {
-            console.eof--;
+    struct tty* t = tty_of(f);
+    while (tty_readable(t) == 0) {
+        if (tty_canonical(t) && t->eof) {
+            t->eof--;
             return 0;
         }
         if (f->status_flags & 0x800)
             return -EAGAIN;
-        if (process_sleep_interruptible(WAIT_CHANNEL_TTY) < 0)
+        if (process_sleep_interruptible(WAIT_CHANNEL_TTY | t->index) < 0)
             return -ERESTARTSYS;
     }
     if (len == 0)
         return 0;
 
-    size_t n = tty_readable() < len ? tty_readable() : len;
-    if (tty_canonical()) {
+    const uint64_t flags = irq_save();
+    size_t n = tty_readable(t) < len ? tty_readable(t) : len;
+    if (tty_canonical(t)) {
         for (size_t i = 0; i < n; i++) {
-            if (console.buf[i] == '\n') {
+            if (t->buf[i] == '\n') {
                 n = i + 1;
                 break;
             }
         }
     }
-    memcpy(buf, console.buf, n);
-    memmove(console.buf, console.buf + n, console.len - n);
-    console.len -= n;
-    console.cooked = console.cooked > n ? console.cooked - n : 0;
+    char chunk[TTY_BUFFER];
+    memcpy(chunk, t->buf, n);
+    memmove(t->buf, t->buf + n, t->len - n);
+    t->len -= n;
+    t->cooked = t->cooked > n ? t->cooked - n : 0;
+    irq_restore(flags);
+
+    memcpy(buf, chunk, n);
     return (ssize_t)n;
 }
 
 static ssize_t tty_write(struct file_s* f, const void* buf, const size_t len)
 {
-    (void)f;
-    char chunk[129];
+    const struct tty* t = tty_of(f);
+    char chunk[128];
     const char* p = buf;
     for (size_t done = 0; done < len;) {
-        size_t n = len - done < 128 ? len - done : 128;
-        size_t k = 0;
-        for (size_t i = 0; i < n; i++) {
-            if (p[done + i] != '\0')
-                chunk[k++] = p[done + i];
-        }
-        chunk[k] = '\0';
-        terminal_printf("%s", chunk);
+        const size_t n = len - done < sizeof(chunk) ? len - done : sizeof(chunk);
+        memcpy(chunk, p + done, n);
+        tty_output(t, chunk, n);
         done += n;
     }
     return (ssize_t)len;
@@ -187,45 +314,51 @@ static ssize_t tty_write(struct file_s* f, const void* buf, const size_t len)
 
 static int tty_poll(struct file_s* f)
 {
-    (void)f;
-    return VFS_POLLOUT | (tty_readable() || (tty_canonical() && console.eof) ? VFS_POLLIN : 0);
+    const struct tty* t = tty_of(f);
+    return VFS_POLLOUT | (tty_readable(t) || (tty_canonical(t) && t->eof) ? VFS_POLLIN : 0);
 }
 
 static int tty_ioctl(struct file_s* f, const unsigned long request, void* arg)
 {
+    struct tty* t = tty_of(f);
     switch (request) {
     case TCGETS:
-        return copy_to_user(arg, &console.termios, sizeof(console.termios));
+        return copy_to_user(arg, &t->termios, sizeof(t->termios));
     case TCSETS:
     case TCSETSW:
     case TCSETSF: {
-        struct termios_k t;
-        if (copy_from_user(&t, arg, sizeof(t)) < 0)
+        struct termios_k tm;
+        if (copy_from_user(&tm, arg, sizeof(tm)) < 0)
             return -EFAULT;
-        console.termios = t;
+        t->termios = tm;
         if (request == TCSETSF)
-            console.len = console.cooked = console.eof = 0;
-        else if (!tty_canonical())
-            console.cooked = console.len;
+            t->len = t->cooked = t->eof = 0;
+        else if (!tty_canonical(t))
+            t->cooked = t->len;
         return 0;
     }
-    case TIOCGWINSZ:
-        return copy_to_user(arg, &console.winsize, sizeof(console.winsize));
+    case TIOCGWINSZ: {
+        struct winsize_k ws = { 0 };
+        terminal_size(t->index, &ws.ws_col, &ws.ws_row);
+        return copy_to_user(arg, &ws, sizeof(ws));
+    }
     case TIOCSWINSZ:
-        return copy_from_user(&console.winsize, arg, sizeof(console.winsize));
+        return 0;
     case TIOCGPGRP:
-        return copy_to_user(arg, &console.pgrp, sizeof(console.pgrp));
+        return copy_to_user(arg, &t->pgrp, sizeof(t->pgrp));
     case TIOCSPGRP:
-        return copy_from_user(&console.pgrp, arg, sizeof(console.pgrp));
+        return copy_from_user(&t->pgrp, arg, sizeof(t->pgrp));
     case TCFLSH:
         if ((unsigned long)arg != 1)
-            console.len = console.cooked = console.eof = 0;
+            t->len = t->cooked = t->eof = 0;
+        return 0;
+    case TIOCSCTTY:
+        scheduler_get()->current->tty = t->index + 1;
         return 0;
     case TCSBRK:
-    case TIOCSCTTY:
         return 0;
     case FIONREAD: {
-        const int n = (int)tty_readable();
+        const int n = (int)tty_readable(t);
         return copy_to_user(arg, &n, sizeof(n));
     }
     case FIONBIO: {
@@ -247,6 +380,14 @@ static int tty_open(struct inode_s* node, struct file_s* f)
     return 0;
 }
 
+static int ctty_open(struct inode_s* node, struct file_s* f)
+{
+    (void)node;
+    const int tty = scheduler_get()->current->tty;
+    f->node = &ttys[tty > 0 ? tty - 1 : 0].inode;
+    return 0;
+}
+
 static file_operations_t tty_fops = {
     .open = tty_open,
     .read = tty_read,
@@ -255,39 +396,53 @@ static file_operations_t tty_fops = {
     .ioctl = tty_ioctl,
 };
 
-static inode_t tty_inode = {
-    .id = (5 << 8) | 1,
-    .type = INODE_CHAR,
-    .fops = &tty_fops,
+static file_operations_t ctty_fops = {
+    .open = ctty_open,
 };
 
-inode_t* tty_node()
+inode_t* tty_node(const int index)
 {
-    return &tty_inode;
+    if (index == TTY_NODE_CTTY)
+        return &ctty_inode;
+    if (index == TTY_NODE_CONSOLE)
+        return &console_inode;
+    if (index < 0 || index >= TERMINAL_COUNT)
+        return nullptr;
+    return &ttys[index].inode;
 }
 
-int tty_install_console(struct proc_files* files)
+int tty_install(struct proc_files* files, const int index)
 {
-    if (console.file == nullptr) {
+    if (index < 0 || index >= TERMINAL_COUNT)
+        return -ENXIO;
+    struct tty* t = &ttys[index];
+    if (t->file == nullptr) {
         struct file_s* f = malloc(sizeof(struct file_s));
         if (f == nullptr)
             return -ENOMEM;
         memset(f, 0, sizeof(*f));
-        f->node = &tty_inode;
+        f->node = index == 0 ? &console_inode : &t->inode;
         f->flags = O_RDONLY | O_WRONLY;
         f->ref_count = 1;
-        memcpy(f->filename, "/dev/console", sizeof("/dev/console"));
+        const char name[] = "/dev/tty0";
+        memcpy(f->filename, name, sizeof(name));
+        f->filename[sizeof(name) - 2] = (char)('1' + index);
         if (vfs_install(f) < 0) {
             free(f);
             return -ENFILE;
         }
-        console.file = f;
+        t->file = f;
     }
     for (int fd = 0; fd < 3; fd++) {
         if (files->file[fd] == nullptr) {
-            files->file[fd] = console.file;
-            console.file->ref_count++;
+            files->file[fd] = t->file;
+            t->file->ref_count++;
         }
     }
     return 0;
+}
+
+int tty_install_console(struct proc_files* files)
+{
+    return tty_install(files, 0);
 }

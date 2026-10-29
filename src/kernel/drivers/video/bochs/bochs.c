@@ -22,7 +22,7 @@ static void* map_mmio_region(const uint64_t phys, size_t size, const uint64_t vi
     return (void*)virt_base;
 }
 
-int bochs_init(const pci_device *dev) {
+int bochs_init(const pci_device *dev, framebuffer_t *fb) {
     port_write_u16(0x01CE, 0x04); // VBE_DISPI_INDEX_ENABLE
     port_write_u16(0x01CF, 0x00); // disable first
     port_write_u16(0x01CE, 0x01); // VBE_DISPI_INDEX_XRES
@@ -45,7 +45,11 @@ int bochs_init(const pci_device *dev) {
     const auto framebuffer = (uint32_t*)map_mmio_region(fb_phys, fb_size, fb_virt);
 
     for (int i = 0; i < 1024 * 768; ++i)
-        framebuffer[i] = 0x00FF00FF;
+        framebuffer[i] = 0x00000000;
 
+    fb->addr = framebuffer;
+    fb->width = 1024;
+    fb->height = 768;
+    fb->pitch = 1024;
     return 0;
 }

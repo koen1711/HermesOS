@@ -21,7 +21,7 @@ full_map* map_create(const uint64_t capacity,
                 void (*key_destructor)(void*),
                 void (*value_destructor)(void*)) {
     full_map* map = malloc(sizeof(full_map));
-    if (!map) return NULL;
+    if (!map) return nullptr;
 
     map->capacity = capacity > 0 ? capacity : 16;
     map->size = 0;
@@ -29,7 +29,7 @@ full_map* map_create(const uint64_t capacity,
     map->buckets = calloc(map->capacity, sizeof(struct map_entry*));
     if (!map->buckets) {
         free(map);
-        return NULL;
+        return nullptr;
     }
 
     // Set function pointers with defaults
@@ -77,7 +77,7 @@ int map_put(full_map* map, void* key, void* value) {
 
 // Get a value by key
 void* map_get(full_map* map, void* key) {
-    if (!map || !key) return NULL;
+    if (!map || !key) return nullptr;
 
     const size_t hash = map->hash_func(key);
     const size_t index = hash % map->capacity;
@@ -90,7 +90,7 @@ void* map_get(full_map* map, void* key) {
         current = current->next;
     }
 
-    return NULL;
+    return nullptr;
 }
 
 // Remove a key-value pair
@@ -101,7 +101,7 @@ int map_remove(full_map* map, void* key) {
     const size_t index = hash % map->capacity;
 
     struct map_entry* current = map->buckets[index];
-    struct map_entry* prev = NULL;
+    struct map_entry* prev = nullptr;
 
     while (current) {
         if (map->key_compare(current->key, key) == 0) {

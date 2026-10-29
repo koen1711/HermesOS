@@ -464,6 +464,7 @@ long process_clone(const uint64_t flags, const uint64_t stack, int *parent_tid, 
     memcpy(proc->groups, current->groups, sizeof(proc->groups));
     proc->group_count = current->group_count;
     proc->affinity = current->affinity;
+    proc->tty = current->tty;
     if (!share_vm) {
         proc->altstack_sp = current->altstack_sp;
         proc->altstack_size = current->altstack_size;
@@ -836,29 +837,37 @@ bool process_create_idle(const int cpu_index, const uint64_t stack) {
     return true;
 }
 
-static void init_shell_process() {
+int process_spawn_shell(const int tty) {
     char *argv[] = { INIT_PROC_PATH, nullptr };
     char *envp[] = { "PATH=/bin:/usr/bin", "HOME=/", "TERM=vt100", nullptr };
 
     process_t *proc = create_process();
     if (proc == nullptr) {
-        terminal_printf("init_shell_process: cannot create process\n");
-        return;
+        terminal_printf("process_spawn_shell: cannot create process\n");
+        return -EAGAIN;
     }
+    proc->tty = tty + 1;
     proc->files = files_create();
-    const int err = proc->files == nullptr ? -ENOMEM : tty_install_console(proc->files);
+    const int err = proc->files == nullptr ? -ENOMEM : tty_install(proc->files, tty);
     const int exec_err = err ? err : process_exec(proc, INIT_PROC_PATH, argv, envp);
     if (exec_err) {
-        terminal_printf("init_shell_process: cannot load %s (error %d)\n", INIT_PROC_PATH, -exec_err);
+        terminal_printf("process_spawn_shell: cannot load %s (error %d)\n", INIT_PROC_PATH, -exec_err);
         process_free(proc);
-        return;
+        return exec_err;
     }
 
+    const int pid = proc->pid;
     uint64_t flags;
     spinlock_acquire_irqsave(&sched_lock, &flags);
     proc->state = PROC_SLOT_READY;
     dlist_insert_tail(&scheduler.ready, &proc->link);
     spinlock_release_irqrestore(&sched_lock, flags);
+    kick_idle_cpu();
+    return pid;
+}
+
+static void init_shell_process() {
+    process_spawn_shell(0);
 }
 
 static void process_free(process_t *proc) {

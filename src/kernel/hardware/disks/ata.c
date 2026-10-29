@@ -399,7 +399,7 @@ int ata_read_until(ata_device * dev, const uint32_t lba, const uint32_t n_bytes,
 int ata_read(const uint32_t unique_id, const uint64_t begin_byte, const uint64_t end_byte, uint8_t* buffer)
 {
     ata_device* dev = map_get(ata_disk_registry, (void*)(uintptr_t)unique_id);
-    if (dev == NULL) return -2;
+    if (dev == nullptr) return -2;
     ata_channel_acquire(ata_channel_of(dev));
     const int result = ata_read_bytes(dev, begin_byte, end_byte, buffer);
     ata_channel_release(ata_channel_of(dev));
@@ -409,7 +409,7 @@ int ata_read(const uint32_t unique_id, const uint64_t begin_byte, const uint64_t
 int ata_write(const uint32_t unique_id, const uint64_t begin_byte, const uint64_t end_byte, const uint8_t *buffer)
 {
     ata_device* dev = map_get(ata_disk_registry, (void*)(uintptr_t)unique_id);
-    if (dev == NULL) return -2;
+    if (dev == nullptr) return -2;
     ata_channel_acquire(ata_channel_of(dev));
     const int result = ata_write_bytes(dev, begin_byte, end_byte, buffer);
     ata_channel_release(ata_channel_of(dev));
@@ -419,7 +419,7 @@ int ata_write(const uint32_t unique_id, const uint64_t begin_byte, const uint64_
 int ata_flush_device(const uint32_t unique_id)
 {
     const ata_device* dev = map_get(ata_disk_registry, (void*)(uintptr_t)unique_id);
-    if (dev == NULL) return -2;
+    if (dev == nullptr) return -2;
     ata_channel_acquire(ata_channel_of(dev));
     const int result = ata_flush(dev);
     ata_channel_release(ata_channel_of(dev));
@@ -450,7 +450,7 @@ boot_type detect_boot_type(const ata_device* dev) {
 
 void ata_get_gpt(ata_device * dev, full_gpt* gpt)
 {
-    if (gpt == NULL) return;
+    if (gpt == nullptr) return;
 
     gpt->boot_record = (master_boot_record*)malloc(sizeof(master_boot_record) + 8);
     gpt->header = (gpt_header*)malloc(sizeof(gpt_header) + 8);
@@ -459,7 +459,7 @@ void ata_get_gpt(ata_device * dev, full_gpt* gpt)
     ata_read_until(dev, 1, sizeof(gpt_header), (uint8_t*)gpt->header);
 
     uint16_t* sector_buffer = malloc(ATA_SECTOR_SIZE);
-    if (sector_buffer == NULL) panic("Failed to allocate memory for GPT sector buffer", __FILE__, __LINE__);
+    if (sector_buffer == nullptr) panic("Failed to allocate memory for GPT sector buffer", __FILE__, __LINE__);
     const uint64_t entries_lba = gpt->header->lba_guid_partition_start;
     const uint32_t entry_size = gpt->header->partition_entry_size;
     const uint32_t entries_per_sector = ATA_SECTOR_SIZE / entry_size;
@@ -472,7 +472,7 @@ void ata_get_gpt(ata_device * dev, full_gpt* gpt)
             ata_read_sector(dev, entries_lba + sector_offset, sector_buffer);
 
         gpt_entry* tmp_entry = malloc(sizeof(gpt_entry));
-        if (tmp_entry == NULL) panic("Failed to allocate memory for GPT entry", __FILE__, __LINE__);
+        if (tmp_entry == nullptr) panic("Failed to allocate memory for GPT entry", __FILE__, __LINE__);
         memcpy(tmp_entry,
                (uint8_t*)sector_buffer + entry_offset * entry_size,
                entry_size);
@@ -516,7 +516,7 @@ void ata_device_initialize(ata_device * dev)
         ata_get_gpt(dev, gpt);
 
         for (int i = 0; i < 128; i++) {
-            if (gpt->entries[i] != NULL) {
+            if (gpt->entries[i] != nullptr) {
                 disk_node *node = malloc(sizeof(disk_node));
                 node->unique_id = (uint32_t)(uintptr_t)dev;
                 node->length = gpt->entries[i]->lba_end - gpt->entries[i]->lba_start;
@@ -607,7 +607,7 @@ void ata_device_detect(ata_device * dev)
 }
 
 void ata_initialize() {
-    ata_disk_registry = map_create(16, NULL, NULL, NULL, NULL);
+    ata_disk_registry = map_create(16, nullptr, nullptr, nullptr, nullptr);
 
     const scan_result *result = pci_scan(-1);
 

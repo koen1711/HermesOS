@@ -5,6 +5,7 @@
 #include <drivers/drivers.h>
 
 #include "drivers/terminal/terminal.h"
+#include "drivers/terminal/tty.h"
 #include "drivers/video/LFB.h"
 
 #include <hardware/port/pci.h>
@@ -36,6 +37,7 @@ void kernel_main(void* multiboot_info_ptr)
     tss_initialize();
     idt_initialize();
     process_initialize();
+    tty_initialize();
 
     lfb_initialize();
     smp_initialize();

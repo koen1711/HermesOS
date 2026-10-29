@@ -151,11 +151,11 @@ void mmu_initialize(void) {
 }
 
 void* vmalloc(size_t size) {
-    if (size == 0) return NULL;
+    if (size == 0) return nullptr;
     size = (size + 0xFFF) & ~0xFFF;
     void* addr = alloc_physical_pages(size / 0x1000);
 
-    if (!addr) return NULL;
+    if (!addr) return nullptr;
     if ((uintptr_t)addr + size <= IDENTITY_MAP_SIZE) return addr;
 
     for (size_t i = 0; i < size; i += 0x1000) {
@@ -164,7 +164,7 @@ void* vmalloc(size_t size) {
                 unmap_page((uintptr_t)addr + j);
             }
             free_physical_pages(addr, size / 0x1000);
-            return NULL;
+            return nullptr;
         }
     }
     return addr;

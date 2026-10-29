@@ -29,8 +29,6 @@ typedef enum {
     VGA_COLOR_WHITE = 15,
 } vga_color;
 
-void vga_text_initialize(terminal_contents* term);
-void vga_text_update();
-
+const terminal_backend* vga_text_backend();
 
 #endif //OS_VGA_H

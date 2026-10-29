@@ -1340,26 +1340,26 @@ static inode_t *fat32_mount(void *blob)
     const auto bdev = (struct block_device *)blob;
     if (!bdev) {
         terminal_printf("fat32: no block device\n");
-        return NULL;
+        return nullptr;
     }
 
     fat32_boot_sector bs;
     if (bdev->ops->read_bytes(bdev, 0, sizeof(bs), &bs) != 0) {
         terminal_printf("fat32: failed to read boot sector\n");
-        return NULL;
+        return nullptr;
     }
 
     if (bs.bytes_per_sector == 0 ||
         (bs.bytes_per_sector & (bs.bytes_per_sector - 1)) != 0 || bs.sectors_per_cluster == 0) {
         terminal_printf("fat32: invalid bytes_per_sector\n");
-        return NULL;
+        return nullptr;
     }
 
     fat32_fsinfo fsi = {0};
     bdev->ops->read_bytes(bdev, (uint64_t)bs.fsinfo_sector * bs.bytes_per_sector, sizeof(fsi), &fsi);
 
     fat32_sb_info *sbi = malloc(sizeof(fat32_sb_info));
-    if (!sbi) return NULL;
+    if (!sbi) return nullptr;
     memset(sbi, 0, sizeof(*sbi));
 
     sbi->bdev                = bdev;
@@ -1387,7 +1387,7 @@ static inode_t *fat32_mount(void *blob)
         free(root);
         free(fi);
         free(sbi);
-        return NULL;
+        return nullptr;
     }
     memset(root, 0, sizeof(*root));
     memset(fi, 0, sizeof(*fi));

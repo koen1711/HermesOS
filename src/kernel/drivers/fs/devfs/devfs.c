@@ -200,6 +200,7 @@ static inode_t stderr_inode = { .id = 5, .type = INODE_CHAR, .fops = &stdio_fops
 struct dev_entry {
     const char* name;
     inode_t* node;
+    int tty;
 };
 
 static struct dev_entry entries[] = {
@@ -208,8 +209,14 @@ static struct dev_entry entries[] = {
     { "full", &full_inode },
     { "random", &random_inode },
     { "urandom", &urandom_inode },
-    { "tty", nullptr },
-    { "console", nullptr },
+    { "tty", nullptr, TTY_NODE_CTTY },
+    { "console", nullptr, TTY_NODE_CONSOLE },
+    { "tty1", nullptr, 0 },
+    { "tty2", nullptr, 1 },
+    { "tty3", nullptr, 2 },
+    { "tty4", nullptr, 3 },
+    { "tty5", nullptr, 4 },
+    { "tty6", nullptr, 5 },
     { "shm", &shm_dir },
     { "stdin", &stdin_inode },
     { "stdout", &stdout_inode },
@@ -220,7 +227,7 @@ static struct dev_entry entries[] = {
 
 static inode_t* entry_node(const struct dev_entry* e)
 {
-    return e->node ? e->node : tty_node();
+    return e->node ? e->node : tty_node(e->tty);
 }
 
 static struct inode_s* devfs_lookup(const struct inode_s* dir, const char* name)

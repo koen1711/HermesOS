@@ -3,96 +3,155 @@
 #include "hardware/interrupts/panic.h"
 #include "hardware/memory/alloc.h"
 #include <utils/str/vsnprintf.h>
+#include <utils/sync/spinlock.h>
 
 #include "os/stdarg.h"
 
+#include "tty.h"
 #include "procs/vga.h"
 #include "procs/lfb.h"
 
-terminal_mode current_mode = VGA_TEXT_MODE;
-terminal_contents* cur_terminal = NULL;
+static vt_t terminals[TERMINAL_COUNT];
+static const terminal_backend* backend = nullptr;
+static int active = 0;
+static spinlock_t terminal_lock = { .name = "terminal" };
+
+static void terminal_flush(vt_t* vt)
+{
+    for (size_t y = 0; y < vt->rows; y++) {
+        if (!vt->dirty[y])
+            continue;
+        vt->dirty[y] = 0;
+        for (size_t x = 0; x < vt->cols; x++)
+            backend->draw(x, y, vt->cells[y * vt->cols + x]);
+    }
+    backend->cursor(vt->x, vt->y, vt->cursor_visible);
+}
+
+static void terminal_attach(const terminal_backend* next)
+{
+    backend = next;
+    for (int i = 0; i < TERMINAL_COUNT; i++)
+        vt_resize(&terminals[i], backend->cols, backend->rows);
+    vt_mark_dirty(&terminals[active]);
+    terminal_flush(&terminals[active]);
+}
 
 void terminal_initialize(const terminal_mode mode)
 {
-    current_mode = mode;
-    terminal_contents* terminal = malloc(sizeof(terminal_contents));
-    if (terminal == NULL)
-    {
-        panic("Failed to allocate terminal", __FILE__, __LINE__);
-        return;
-    }
+    const terminal_backend* initial = mode == VGA_LFB_MODE ? lfb_text_backend() : vga_text_backend();
+    if (initial == nullptr)
+        initial = vga_text_backend();
 
-    // Initialize the terminal content buffer
-    terminal->length = 0;
-    terminal->capacity = 1024; // Initial capacity
-    terminal->content = malloc(terminal->capacity);
-    if (terminal->content == NULL)
-    {
-        panic("Failed to allocate terminal content buffer", __FILE__, __LINE__);
-        return;
+    for (int i = 0; i < TERMINAL_COUNT; i++) {
+        if (vt_init(&terminals[i], initial->cols, initial->rows) != 0) {
+            panic("Failed to allocate terminal", __FILE__, __LINE__);
+            return;
+        }
     }
-    memset((void*)terminal->content, 0, terminal->capacity);
-
-    if (mode == VGA_TEXT_MODE) {
-        vga_text_initialize(terminal);
-    } else if (mode == VGA_LFB_MODE) {
-        lfb_text_initialize(terminal);
-    }
-    cur_terminal = terminal;
+    terminal_attach(initial);
 }
 
-void terminal_switch_mode(terminal_mode mode)
+void terminal_switch_mode(const terminal_mode mode)
 {
-    current_mode = mode;
-    if (mode == VGA_TEXT_MODE) {
-        vga_text_initialize(cur_terminal);
-    } else if (mode == VGA_LFB_MODE) {
-        lfb_text_initialize(cur_terminal);
+    const terminal_backend* next = mode == VGA_LFB_MODE ? lfb_text_backend() : vga_text_backend();
+    if (next == nullptr)
+        return;
+
+    uint64_t flags;
+    spinlock_acquire_irqsave(&terminal_lock, &flags);
+    terminal_attach(next);
+    spinlock_release_irqrestore(&terminal_lock, flags);
+}
+
+void terminal_write(const int index, const char* buf, const size_t len, const bool onlcr)
+{
+    if (backend == nullptr || index < 0 || index >= TERMINAL_COUNT)
+        return;
+
+    vt_t* vt = &terminals[index];
+    char response[VT_RESPONSE_MAX];
+    uint64_t flags;
+    spinlock_acquire_irqsave(&terminal_lock, &flags);
+    for (size_t i = 0; i < len; i++) {
+        if (onlcr && buf[i] == '\n')
+            vt_putc(vt, '\r');
+        vt_putc(vt, (uint8_t)buf[i]);
     }
+    if (index == active)
+        terminal_flush(vt);
+    const size_t response_len = vt->response_len;
+    memcpy(response, vt->response, response_len);
+    vt->response_len = 0;
+    spinlock_release_irqrestore(&terminal_lock, flags);
+
+    for (size_t i = 0; i < response_len; i++)
+        tty_receive(index, response[i]);
 }
 
 void terminal_printf(const char* format, ...)
 {
+    char small[256];
     va_list args;
     va_start(args, format);
-
-    // Calculate the required length for the formatted string
-    const int required_length = vsnprintf(NULL, 0, format, args);
+    const int required_length = vsnprintf(nullptr, 0, format, args);
     va_end(args);
 
-    if (required_length < 0) {
-        return; // Formatting error
-    }
+    if (required_length < 0)
+        return;
 
-    // Ensure the terminal content buffer has enough capacity
-    if (cur_terminal->length + required_length >= cur_terminal->capacity) {
-        size_t new_capacity = cur_terminal->capacity * 2;
-        while (cur_terminal->length + required_length >= new_capacity) {
-            new_capacity *= 2;
-        }
-        const char* new_content = realloc(cur_terminal->content, new_capacity);
-        if (new_content == NULL) {
-            return; // Allocation failed
-        }
-        cur_terminal->content = new_content;
-        cur_terminal->capacity = new_capacity;
-    }
+    char* buf = (size_t)required_length < sizeof(small) ? small : malloc(required_length + 1);
+    if (buf == nullptr)
+        return;
 
-    // Format the string into the terminal content buffer
     va_start(args, format);
-    vsnprintf((char*)cur_terminal->content + cur_terminal->length, cur_terminal->capacity - cur_terminal->length, format, args);
+    vsnprintf(buf, required_length + 1, format, args);
     va_end(args);
 
-    cur_terminal->length += required_length;
+    terminal_write(0, buf, required_length, true);
+    if (buf != small)
+        free(buf);
+}
 
-    terminal_update();
+void terminal_switch(const int index)
+{
+    if (backend == nullptr || index < 0 || index >= TERMINAL_COUNT)
+        return;
+
+    uint64_t flags;
+    spinlock_acquire_irqsave(&terminal_lock, &flags);
+    if (index != active) {
+        active = index;
+        vt_mark_dirty(&terminals[active]);
+        terminal_flush(&terminals[active]);
+    }
+    spinlock_release_irqrestore(&terminal_lock, flags);
+}
+
+int terminal_active()
+{
+    return active;
+}
+
+void terminal_size(const int index, uint16_t* cols, uint16_t* rows)
+{
+    if (index < 0 || index >= TERMINAL_COUNT) {
+        *cols = VGA_WIDTH;
+        *rows = VGA_HEIGHT;
+        return;
+    }
+    *cols = (uint16_t)terminals[index].cols;
+    *rows = (uint16_t)terminals[index].rows;
 }
 
 void terminal_update()
 {
-    if (current_mode == VGA_TEXT_MODE) {
-        vga_text_update();
-    } else if (current_mode == VGA_LFB_MODE) {
-        lfb_text_update();
-    }
+    if (backend == nullptr)
+        return;
+
+    uint64_t flags;
+    spinlock_acquire_irqsave(&terminal_lock, &flags);
+    vt_mark_dirty(&terminals[active]);
+    terminal_flush(&terminals[active]);
+    spinlock_release_irqrestore(&terminal_lock, flags);
 }

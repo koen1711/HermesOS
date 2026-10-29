@@ -81,6 +81,7 @@ typedef struct {
     uint32_t groups[PROC_MAX_GROUPS];
     int group_count;
     uint64_t affinity;
+    int tty;
     uint8_t fpu_state[512] __attribute__((aligned(16)));
 } process_t;
 
@@ -120,6 +121,7 @@ long process_wait4(int pid, int *status, int options);
 long process_clone(uint64_t flags, uint64_t stack, int *parent_tid, int *child_tid, uint64_t tls);
 int process_fork();
 int process_exec(process_t *proc, const char *path, char *const argv[], char *const envp[]);
+int process_spawn_shell(int tty);
 void process_set_fs_base(process_t *proc, uint64_t base);
 void signal_kill_thread(process_t *proc);
 

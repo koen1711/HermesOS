@@ -7,6 +7,34 @@
 #include "drivers/terminal/terminal.h"
 #include "drivers/terminal/tty.h"
 
+#define SC_KEYPAD_STAR 0x37
+#define SC_KEYPAD_7 0x47
+#define SC_KEYPAD_8 0x48
+#define SC_KEYPAD_9 0x49
+#define SC_KEYPAD_MINUS 0x4A
+#define SC_KEYPAD_4 0x4B
+#define SC_KEYPAD_5 0x4C
+#define SC_KEYPAD_6 0x4D
+#define SC_KEYPAD_PLUS 0x4E
+#define SC_KEYPAD_1 0x4F
+#define SC_KEYPAD_2 0x50
+#define SC_KEYPAD_3 0x51
+#define SC_KEYPAD_0 0x52
+#define SC_KEYPAD_PERIOD 0x53
+
+#define SC_EXT_UP 0x48
+#define SC_EXT_DOWN 0x50
+#define SC_EXT_LEFT 0x4B
+#define SC_EXT_RIGHT 0x4D
+#define SC_EXT_HOME 0x47
+#define SC_EXT_END 0x4F
+#define SC_EXT_PAGE_UP 0x49
+#define SC_EXT_PAGE_DOWN 0x51
+#define SC_EXT_INSERT 0x52
+#define SC_EXT_DELETE 0x53
+#define SC_EXT_KEYPAD_ENTER 0x1C
+#define SC_EXT_KEYPAD_SLASH 0x35
+
 int ps2_keyboard_initialize() {
     port_clear_read_buffer(COMMAND_PORT, DATA_PORT);
 
@@ -24,129 +52,152 @@ int ps2_keyboard_initialize() {
     return irq_register_handler(PS2_KEYBOARD_IRQ, ps2_keyboard_interrupt_handler, nullptr);
 }
 
+static const char keymap[128] = {
+    [SC_ESCAPE] = 0x1B,
+    [SC_1] = '1', [SC_2] = '2', [SC_3] = '3', [SC_4] = '4', [SC_5] = '5',
+    [SC_6] = '6', [SC_7] = '7', [SC_8] = '8', [SC_9] = '9', [SC_0] = '0',
+    [SC_MINUS] = '-', [SC_EQUALS] = '=', [SC_BACKSPACE] = 0x7F, [SC_TAB] = '\t',
+    [SC_Q] = 'q', [SC_W] = 'w', [SC_E] = 'e', [SC_R] = 'r', [SC_T] = 't',
+    [SC_Y] = 'y', [SC_U] = 'u', [SC_I] = 'i', [SC_O] = 'o', [SC_P] = 'p',
+    [SC_BRACKET_OPEN] = '[', [SC_BRACKET_CLOSE] = ']', [SC_ENTER] = '\r',
+    [SC_A] = 'a', [SC_S] = 's', [SC_D] = 'd', [SC_F] = 'f', [SC_G] = 'g',
+    [SC_H] = 'h', [SC_J] = 'j', [SC_K] = 'k', [SC_L] = 'l',
+    [SC_SEMI_COLON] = ';', [SC_SINGLE_QUOTE] = '\'', [SC_BACKTICK] = '`', [SC_BACKSLASH] = '\\',
+    [SC_Z] = 'z', [SC_X] = 'x', [SC_C] = 'c', [SC_V] = 'v', [SC_B] = 'b',
+    [SC_N] = 'n', [SC_M] = 'm', [SC_COMMA] = ',', [SC_PERIOD] = '.', [SC_SLASH] = '/',
+    [SC_SPACE] = ' ',
+    [SC_KEYPAD_STAR] = '*', [SC_KEYPAD_MINUS] = '-', [SC_KEYPAD_PLUS] = '+', [SC_KEYPAD_PERIOD] = '.',
+    [SC_KEYPAD_0] = '0', [SC_KEYPAD_1] = '1', [SC_KEYPAD_2] = '2', [SC_KEYPAD_3] = '3', [SC_KEYPAD_4] = '4',
+    [SC_KEYPAD_5] = '5', [SC_KEYPAD_6] = '6', [SC_KEYPAD_7] = '7', [SC_KEYPAD_8] = '8', [SC_KEYPAD_9] = '9',
+};
+
+static const char keymap_shift[128] = {
+    [SC_ESCAPE] = 0x1B,
+    [SC_1] = '!', [SC_2] = '@', [SC_3] = '#', [SC_4] = '$', [SC_5] = '%',
+    [SC_6] = '^', [SC_7] = '&', [SC_8] = '*', [SC_9] = '(', [SC_0] = ')',
+    [SC_MINUS] = '_', [SC_EQUALS] = '+', [SC_BACKSPACE] = 0x7F, [SC_TAB] = '\t',
+    [SC_Q] = 'Q', [SC_W] = 'W', [SC_E] = 'E', [SC_R] = 'R', [SC_T] = 'T',
+    [SC_Y] = 'Y', [SC_U] = 'U', [SC_I] = 'I', [SC_O] = 'O', [SC_P] = 'P',
+    [SC_BRACKET_OPEN] = '{', [SC_BRACKET_CLOSE] = '}', [SC_ENTER] = '\r',
+    [SC_A] = 'A', [SC_S] = 'S', [SC_D] = 'D', [SC_F] = 'F', [SC_G] = 'G',
+    [SC_H] = 'H', [SC_J] = 'J', [SC_K] = 'K', [SC_L] = 'L',
+    [SC_SEMI_COLON] = ':', [SC_SINGLE_QUOTE] = '"', [SC_BACKTICK] = '~', [SC_BACKSLASH] = '|',
+    [SC_Z] = 'Z', [SC_X] = 'X', [SC_C] = 'C', [SC_V] = 'V', [SC_B] = 'B',
+    [SC_N] = 'N', [SC_M] = 'M', [SC_COMMA] = '<', [SC_PERIOD] = '>', [SC_SLASH] = '?',
+    [SC_SPACE] = ' ',
+    [SC_KEYPAD_STAR] = '*', [SC_KEYPAD_MINUS] = '-', [SC_KEYPAD_PLUS] = '+', [SC_KEYPAD_PERIOD] = '.',
+    [SC_KEYPAD_0] = '0', [SC_KEYPAD_1] = '1', [SC_KEYPAD_2] = '2', [SC_KEYPAD_3] = '3', [SC_KEYPAD_4] = '4',
+    [SC_KEYPAD_5] = '5', [SC_KEYPAD_6] = '6', [SC_KEYPAD_7] = '7', [SC_KEYPAD_8] = '8', [SC_KEYPAD_9] = '9',
+};
+
+static bool shift = false;
+static bool ctrl = false;
+static bool alt = false;
+static bool caps = false;
+static bool extended = false;
+
+static int function_key(const uint8_t key)
+{
+    if (key >= SC_F1 && key <= SC_F10)
+        return key - SC_F1 + 1;
+    if (key == SC_F11)
+        return 11;
+    if (key == SC_F12)
+        return 12;
+    return 0;
+}
+
+static void switch_relative(const int delta)
+{
+    tty_switch((terminal_active() + delta + TERMINAL_COUNT) % TERMINAL_COUNT);
+}
+
+static void handle_extended(const uint8_t key)
+{
+    switch (key) {
+    case SC_EXT_UP: tty_input_string("\x1b[A"); break;
+    case SC_EXT_DOWN: tty_input_string("\x1b[B"); break;
+    case SC_EXT_RIGHT:
+        if (alt)
+            switch_relative(1);
+        else
+            tty_input_string("\x1b[C");
+        break;
+    case SC_EXT_LEFT:
+        if (alt)
+            switch_relative(-1);
+        else
+            tty_input_string("\x1b[D");
+        break;
+    case SC_EXT_HOME: tty_input_string("\x1b[H"); break;
+    case SC_EXT_END: tty_input_string("\x1b[F"); break;
+    case SC_EXT_INSERT: tty_input_string("\x1b[2~"); break;
+    case SC_EXT_DELETE: tty_input_string("\x1b[3~"); break;
+    case SC_EXT_PAGE_UP: tty_input_string("\x1b[5~"); break;
+    case SC_EXT_PAGE_DOWN: tty_input_string("\x1b[6~"); break;
+    case SC_EXT_KEYPAD_ENTER: tty_input('\r'); break;
+    case SC_EXT_KEYPAD_SLASH: tty_input('/'); break;
+    default: break;
+    }
+}
+
 void ps2_keyboard_interrupt_handler(uint8_t irq, void* ctx) {
     (void)irq;
     (void)ctx;
-    char charKey = '\0';
-    key_code key = port_read_u8(DATA_PORT);
-    const bool keyUp = key & 0x80;
-    static uint8_t escape = 0;
-    static uint8_t ctrl = 0;
-    static uint8_t shift = 0;
-    static uint8_t alt = 0;
-
-    switch(key) {
-        case SC_RELEASE | SC_LSHIFT: shift = 0; break;
-        case SC_RELEASE | SC_RSHIFT: shift = 0; break;
-        case SC_RELEASE | SC_LCTRL: ctrl = 0; break;
-        case SC_RELEASE | SC_LALT: alt = 0; break;
-
-        case SC_LSHIFT:
-        case SC_RSHIFT:
-            shift = 0xFF; break;
-        case SC_LCTRL: ctrl = 0xFF; break;
-        case SC_LALT: alt = 0xFF; break;
+    const uint8_t scancode = port_read_u8(DATA_PORT);
+    if (scancode == SC_ESCAPE_CODE) {
+        extended = true;
+        return;
     }
 
-    if(key & SC_RELEASE)
-        key &= ~SC_RELEASE;
+    const bool released = scancode & SC_RELEASE;
+    const uint8_t key = scancode & ~SC_RELEASE;
+    const bool was_extended = extended;
+    extended = false;
 
-    if(key == SC_ESCAPE_CODE) {
-        escape = 0xFF;
+    switch (key) {
+    case SC_LSHIFT:
+    case SC_RSHIFT:
+        if (!was_extended)
+            shift = !released;
+        return;
+    case SC_LCTRL:
+        ctrl = !released;
+        return;
+    case SC_LALT:
+        alt = !released;
+        return;
+    default:
+        break;
     }
 
-    switch(key) {
-        // Letters
-        case SC_A: charKey = shift ? 'A' : 'a'; break;
-        case SC_B: charKey = shift ? 'B' : 'b'; break;
-        case SC_C: charKey = shift ? 'C' : 'c'; break;
-        case SC_D: charKey = shift ? 'D' : 'd'; break;
-        case SC_E: charKey = shift ? 'E' : 'e'; break;
-        case SC_F: charKey = shift ? 'F' : 'f'; break;
-        case SC_G: charKey = shift ? 'G' : 'g'; break;
-        case SC_H: charKey = shift ? 'H' : 'h'; break;
-        case SC_I: charKey = shift ? 'I' : 'i'; break;
-        case SC_J: charKey = shift ? 'J' : 'j'; break;
-        case SC_K: charKey = shift ? 'K' : 'k'; break;
-        case SC_L: charKey = shift ? 'L' : 'l'; break;
-        case SC_M: charKey = shift ? 'M' : 'm'; break;
-        case SC_N: charKey = shift ? 'N' : 'n'; break;
-        case SC_O: charKey = shift ? 'O' : 'o'; break;
-        case SC_P: charKey = shift ? 'P' : 'p'; break;
-        case SC_Q: charKey = shift ? 'Q' : 'q'; break;
-        case SC_R: charKey = shift ? 'R' : 'r'; break;
-        case SC_S: charKey = shift ? 'S' : 's'; break;
-        case SC_T: charKey = shift ? 'T' : 't'; break;
-        case SC_U: charKey = shift ? 'U' : 'u'; break;
-        case SC_V: charKey = shift ? 'V' : 'v'; break;
-        case SC_W: charKey = shift ? 'W' : 'w'; break;
-        case SC_X: charKey = shift ? 'X' : 'x'; break;
-        case SC_Y: charKey = shift ? 'Y' : 'y'; break;
-        case SC_Z: charKey = shift ? 'Z' : 'z'; break;
+    if (released)
+        return;
 
-        // Numbers
-        case SC_0: charKey = shift ? ')' : '0'; break;
-        case SC_1: charKey = shift ? '!' : '1'; break;
-        case SC_2: charKey = shift ? '@' : '2'; break;
-        case SC_3: charKey = shift ? '#' : '3'; break;
-        case SC_4: charKey = shift ? '$' : '4'; break;
-        case SC_5: charKey = shift ? '%' : '5'; break;
-        case SC_6: charKey = shift ? '^' : '6'; break;
-        case SC_7: charKey = shift ? '&' : '7'; break;
-        case SC_8: charKey = shift ? '*' : '8'; break;
-        case SC_9: charKey = shift ? '(' : '9'; break;
-
-        // Special
-        case SC_ESCAPE: charKey = '\0'; break;
-        case SC_BACKTICK: charKey = shift ? '~' : '`'; break;
-        case SC_MINUS: charKey = shift ? '_' : '-'; break;
-        case SC_EQUALS: charKey = shift ? '+' : '='; break;
-        case SC_BACKSPACE: charKey = '\b'; break;
-
-        // Function Keys
-        case SC_F1: charKey = '\0'; break;
-        case SC_F2: charKey = '\0'; break;
-        case SC_F3: charKey = '\0'; break;
-        case SC_F4: charKey = '\0'; break;
-        case SC_F5: charKey = '\0'; break;
-        case SC_F6: charKey = '\0'; break;
-        case SC_F7: charKey = '\0'; break;
-        case SC_F8: charKey = '\0'; break;
-        case SC_F9: charKey = '\0'; break;
-        case SC_F10: charKey = '\0'; break;
-        case SC_F11: charKey = '\0'; break;
-        case SC_F12: charKey = '\0'; break;
-
-        // Locks
-        case SC_CAPSLOCK: charKey = '\0'; break;
-        case SC_NUMLOCK: charKey = '\0'; break;
-        case SC_SCRLOCK: charKey = '\0'; break;
-
-        // Miscellaneous
-        case SC_LSHIFT: charKey = '\0'; break;
-        case SC_RSHIFT: charKey = '\0'; break;
-        case SC_LCTRL: charKey = '\0'; break;
-        case SC_LALT: charKey = '\0'; break;
-        case SC_ENTER: charKey = '\n'; break;
-        case SC_SPACE: charKey = ' '; break;
-
-        // Punctuation
-        case SC_BRACKET_OPEN: charKey = shift ? '{' : '['; break;
-        case SC_BRACKET_CLOSE: charKey = shift ? '}' : ']'; break;
-        case SC_BACKSLASH: charKey = shift ? '|' : '\\'; break;
-        case SC_SEMI_COLON: charKey = shift ? ':' : ';'; break;
-        case SC_SINGLE_QUOTE: charKey = shift ? '"' : '\''; break;
-        case SC_COMMA: charKey = shift ? '<' : ','; break;
-        case SC_PERIOD: charKey = shift ? '>' : '.'; break;
-        case SC_SLASH: charKey = shift ? '?' : '/'; break;
+    if (was_extended) {
+        handle_extended(key);
+        return;
     }
 
-    escape = 0;
-
-    if (charKey != '\0' && !keyUp) {
-        if (ctrl && charKey >= 'a' && charKey <= 'z')
-            charKey &= 0x1F;
-        tty_input(charKey);
+    const int fn = function_key(key);
+    if (fn) {
+        if (alt && fn <= TERMINAL_COUNT)
+            tty_switch(fn - 1);
+        return;
+    }
+    if (key == SC_CAPSLOCK) {
+        caps = !caps;
+        return;
     }
 
+    char c = shift ? keymap_shift[key] : keymap[key];
+    if (c == '\0')
+        return;
+    if (caps && ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')))
+        c ^= 0x20;
+    if (ctrl && ((c >= '@' && c <= '_') || (c >= 'a' && c <= 'z')))
+        c &= 0x1F;
+    if (alt)
+        tty_input(0x1B);
+    tty_input(c);
 }

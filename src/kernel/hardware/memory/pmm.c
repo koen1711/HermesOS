@@ -63,7 +63,7 @@ void* alloc_physical_page() {
     }
     first_free_word = total_pages / 64;
     spinlock_release_irqrestore(&pmm_lock, flags);
-    return NULL;
+    return nullptr;
 }
 
 static void free_page_locked(void* page) {
@@ -99,7 +99,7 @@ void pmm_share_page(void* page) {
 }
 
 void* alloc_physical_pages(const size_t count) {
-    if (count == 0) return NULL;
+    if (count == 0) return nullptr;
     uint64_t flags;
     spinlock_acquire_irqsave(&pmm_lock, &flags);
     size_t run = 0;
@@ -115,7 +115,7 @@ void* alloc_physical_pages(const size_t count) {
         }
     }
     spinlock_release_irqrestore(&pmm_lock, flags);
-    return NULL;
+    return nullptr;
 }
 
 void free_physical_pages(void* first, const size_t count) {

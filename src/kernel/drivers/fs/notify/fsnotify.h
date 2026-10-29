@@ -124,7 +124,7 @@ struct mem_cgroup;
  * @data:	object that event happened on
  * @data_type:	type of object for fanotify_data_XXX() accessors
  * @dir:	optional directory associated with event -
- *		if @file_name is not NULL, this is the directory that
+ *		if @file_name is not nullptr, this is the directory that
  *		@file_name is relative to
  * @file_name:	optional file name associated with event
  * @cookie:	inotify rename cookie
@@ -136,9 +136,9 @@ struct mem_cgroup;
  * @mask:	event type and flags
  * @inode:	inode that event happened on
  * @dir:	optional directory associated with event -
- *		if @file_name is not NULL, this is the directory that
+ *		if @file_name is not nullptr, this is the directory that
  *		@file_name is relative to.
- *		Either @inode or @dir must be non-NULL.
+ *		Either @inode or @dir must be non-nullptr.
  * @file_name:	optional file name associated with event
  * @cookie:	inotify rename cookie
  *
@@ -324,7 +324,7 @@ static inline struct inode *fsnotify_data_inode(const void *data, int data_type)
 	case FSNOTIFY_EVENT_ERROR:
 		return ((struct fs_error_report *)data)->inode;
 	default:
-		return NULL;
+		return nullptr;
 	}
 }
 
@@ -339,7 +339,7 @@ static inline struct dentry *fsnotify_data_dentry(const void *data, int data_typ
 	case FSNOTIFY_EVENT_FILE_RANGE:
 		return file_range_path(data)->dentry;
 	default:
-		return NULL;
+		return nullptr;
 	}
 }
 
@@ -352,7 +352,7 @@ static inline const struct path *fsnotify_data_path(const void *data,
 	case FSNOTIFY_EVENT_FILE_RANGE:
 		return file_range_path(data);
 	default:
-		return NULL;
+		return nullptr;
 	}
 }
 
@@ -371,7 +371,7 @@ static inline struct super_block *fsnotify_data_sb(const void *data,
 	case FSNOTIFY_EVENT_ERROR:
 		return ((struct fs_error_report *) data)->sb;
 	default:
-		return NULL;
+		return nullptr;
 	}
 }
 
@@ -382,7 +382,7 @@ static inline const struct fsnotify_mnt *fsnotify_data_mnt(const void *data,
 	case FSNOTIFY_EVENT_MNT:
 		return data;
 	default:
-		return NULL;
+		return nullptr;
 	}
 }
 
@@ -401,7 +401,7 @@ static inline struct fs_error_report *fsnotify_data_error_report(
 	case FSNOTIFY_EVENT_ERROR:
 		return (struct fs_error_report *) data;
 	default:
-		return NULL;
+		return nullptr;
 	}
 }
 
@@ -413,7 +413,7 @@ static inline const struct file_range *fsnotify_data_file_range(
 	case FSNOTIFY_EVENT_FILE_RANGE:
 		return (struct file_range *)data;
 	default:
-		return NULL;
+		return nullptr;
 	}
 }
 
@@ -474,7 +474,7 @@ static inline struct fsnotify_mark *fsnotify_iter_mark(
 {
 	if (fsnotify_iter_should_report_type(iter_info, iter_type))
 		return iter_info->marks[iter_type];
-	return NULL;
+	return nullptr;
 }
 
 static inline int fsnotify_iter_step(struct fsnotify_iter_info *iter, int type,
@@ -703,13 +703,13 @@ static inline int fsnotify_add_event(struct fsnotify_group *group,
 				     int (*merge)(struct fsnotify_group *,
 						  struct fsnotify_event *))
 {
-	return fsnotify_insert_event(group, event, merge, NULL);
+	return fsnotify_insert_event(group, event, merge, nullptr);
 }
 
 /* Queue overflow event to a notification group */
 static inline void fsnotify_queue_overflow(struct fsnotify_group *group)
 {
-	fsnotify_add_event(group, group->overflow_event, NULL);
+	fsnotify_add_event(group, group->overflow_event, nullptr);
 }
 
 static inline bool fsnotify_is_overflow_event(u32 mask)

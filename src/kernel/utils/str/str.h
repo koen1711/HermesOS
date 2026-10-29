@@ -37,17 +37,17 @@ static char* strchr(const char* str, char c)
 {
     while (*str != '\0' && *str != c)
         str++;
-    return *str == c ? (char*)str : NULL;
+    return *str == c ? (char*)str : nullptr;
 }
 
 static char* strtok(char* str, const char* delim)
 {
-    static char* next_token = NULL;
+    static char* next_token = nullptr;
 
-    if (str != NULL) {
+    if (str != nullptr) {
         next_token = str;
-    } else if (next_token == NULL) {
-        return NULL;
+    } else if (next_token == nullptr) {
+        return nullptr;
     }
 
     // Skip leading delimiters
@@ -56,8 +56,8 @@ static char* strtok(char* str, const char* delim)
     }
 
     if (*next_token == '\0') {
-        next_token = NULL;
-        return NULL;
+        next_token = nullptr;
+        return nullptr;
     }
 
     char* token_start = next_token;
@@ -71,7 +71,7 @@ static char* strtok(char* str, const char* delim)
         *next_token = '\0'; // Null-terminate the token
         next_token++; // Move to the start of the next token
     } else {
-        next_token = NULL; // No more tokens
+        next_token = nullptr; // No more tokens
     }
 
     return token_start;
@@ -91,7 +91,7 @@ static char* strdup(const char* str)
 {
     size_t len = strlen(str) + 1;
     char* copy = malloc(len);
-    if (copy == NULL) return NULL;
+    if (copy == nullptr) return nullptr;
     memcpy(copy, str, len);
     return copy;
 }
@@ -115,9 +115,9 @@ static const char* str_concat_variadic(const int count, ...)
 
     // Allocate memory for the result
     char* result = malloc(total_len + 1);
-    if (result == NULL) {
+    if (result == nullptr) {
         va_end(args);
-        return NULL;
+        return nullptr;
     }
 
     // Second pass: copy strings
@@ -157,7 +157,8 @@ static char* str_u64(uint64_t n)
     // Special case for 0
     if (n == 0) {
         char* buffer = malloc(2);
-        if (buffer == NULL) return NULL;
+        if (buffer == nullptr)
+            return nullptr;
         buffer[0] = '0';
         buffer[1] = '\0';
         return buffer;
@@ -171,7 +172,7 @@ static char* str_u64(uint64_t n)
 
     // Allocate exact space needed
     char* buffer = malloc(pos + 1); // digits + null terminator
-    if (buffer == NULL) return NULL;
+    if (buffer == nullptr) return nullptr;
 
     // Reverse the digits and copy to final buffer
     for (int i = 0; i < pos; i++) {
@@ -190,7 +191,7 @@ static char* str_u32(uint32_t n)
     // Special case for 0
     if (n == 0) {
         char* buffer = malloc(2);
-        if (buffer == NULL) return NULL;
+        if (buffer == nullptr) return nullptr;
         buffer[0] = '0';
         buffer[1] = '\0';
         return buffer;
@@ -204,7 +205,7 @@ static char* str_u32(uint32_t n)
 
     // Allocate exact space needed
     char* buffer = malloc(pos + 1); // digits + null terminator
-    if (buffer == NULL) return NULL;
+    if (buffer == nullptr) return nullptr;
 
     // Reverse the digits and copy to final buffer
     for (int i = 0; i < pos; i++) {
@@ -223,7 +224,7 @@ static char* str_u16(uint16_t n)
     // Special case for 0
     if (n == 0) {
         char* buffer = malloc(2);
-        if (buffer == NULL) return NULL;
+        if (buffer == nullptr) return nullptr;
         buffer[0] = '0';
         buffer[1] = '\0';
         return buffer;
@@ -237,7 +238,7 @@ static char* str_u16(uint16_t n)
 
     // Allocate exact space needed
     char* buffer = malloc(pos + 1); // digits + null terminator
-    if (buffer == NULL) return NULL;
+    if (buffer == nullptr) return nullptr;
 
     // Reverse the digits and copy to final buffer
     for (int i = 0; i < pos; i++) {
@@ -251,7 +252,7 @@ static char* str_u16(uint16_t n)
 static char* str_u8(uint8_t n)
 {
     char* buffer = malloc(4); // 3 digits + null terminator
-    if (buffer == NULL) return NULL;
+    if (buffer == nullptr) return nullptr;
 
     buffer[3] = '\0';
     for (int i = 0; i < 3; i++) {
@@ -264,7 +265,7 @@ static char* str_u8(uint8_t n)
 static char* str_u32_hex(uint32_t n)
 {
     char* buffer = malloc(9); // 8 digits + null terminator
-    if (buffer == NULL) return NULL;
+    if (buffer == nullptr) return nullptr;
 
     buffer[8] = '\0';
     for (int i = 0; i < 8; i++) {
@@ -278,7 +279,7 @@ static char* str_u32_hex(uint32_t n)
 static char* str_u16_hex(uint16_t n)
 {
     char* buffer = malloc(5); // 4 digits + null terminator
-    if (buffer == NULL) return NULL;
+    if (buffer == nullptr) return nullptr;
 
     buffer[4] = '\0';
     for (int i = 0; i < 4; i++) {
@@ -292,7 +293,7 @@ static char* str_u16_hex(uint16_t n)
 static char* str_u8_hex(uint8_t n)
 {
     char* buffer = malloc(3); // 2 digits + null terminator
-    if (buffer == NULL) return NULL;
+    if (buffer == nullptr) return nullptr;
 
     buffer[2] = '\0';
     for (int i = 0; i < 2; i++) {
@@ -312,7 +313,7 @@ static char* str_utf16_to_utf8(const uint16_t* utf16)
 
     // Allocate enough space for worst case (4 bytes per UTF-16 code unit plus null terminator)
     char* utf8 = malloc(len * 4 + 1);
-    if (utf8 == NULL) return NULL;
+    if (utf8 == nullptr) return nullptr;
 
     size_t utf8_pos = 0;
     size_t i = 0;
