@@ -6,6 +6,8 @@
 #include <utils/str/str.h>
 
 #include <drivers/fs/vfs/vfs.h>
+#include <hardware/memory/mmu.h>
+#include <hardware/memory/pmm.h>
 #include <os/errno.h>
 
 #define FAT_ATTR_READ_ONLY  0x01
@@ -826,6 +828,7 @@ static void fat32_release(inode_t *inode)
     if (fi->is_root || --fi->refs > 0)
         return;
     registry_remove(fi->sbi, fi);
+    pcache_destroy(&fi->pages);
     if (fi->orphan) {
         free_chain(fi->sbi, fi->first_cluster);
         fsinfo_sync(fi->sbi);
@@ -834,19 +837,9 @@ static void fat32_release(inode_t *inode)
     free(inode);
 }
 
-static ssize_t fat32_file_read(file_t *file, void *user_buf, size_t len)
+static ssize_t read_at(fat32_inode_info *fi, const uint64_t pos, void *user_buf, const size_t len)
 {
-    fat32_inode_info *fi = file->node->private_data;
     fat32_sb_info *sbi = fi->sbi;
-    const size_t pos = file->file_position;
-
-    if (pos >= fi->size)
-        return 0;
-    if (pos + len > fi->size)
-        len = fi->size - pos;
-    if (len == 0)
-        return 0;
-
     const uint32_t cs = cluster_byte_size(sbi);
     uint32_t clus;
     if (chain_seek(fi, pos, false, &clus) < 0)
@@ -879,9 +872,47 @@ static ssize_t fat32_file_read(file_t *file, void *user_buf, size_t len)
     }
     if (!valid_cluster(sbi, fi->cache_cluster))
         fi->cache_cluster = 0;
-
-    file->file_position += copied;
     return copied ? (ssize_t)copied : -EIO;
+}
+
+static ssize_t fat32_file_read(file_t *file, void *buf, size_t len)
+{
+    fat32_inode_info *fi = file->node->private_data;
+    const size_t pos = file->file_position;
+    if (pos >= fi->size)
+        return 0;
+    if (pos + len > fi->size)
+        len = fi->size - pos;
+
+    size_t done = 0;
+    ssize_t err = 0;
+    while (done < len) {
+        const uint64_t at = pos + done;
+        const uint8_t *page = pcache_find(&fi->pages, at / PAGE_SIZE);
+        size_t n;
+        if (page) {
+            const size_t in = at % PAGE_SIZE;
+            n = len - done < PAGE_SIZE - in ? len - done : PAGE_SIZE - in;
+            memcpy((uint8_t *)buf + done, page + in, n);
+        } else {
+            uint64_t stop = (at / PAGE_SIZE + 1) * PAGE_SIZE;
+            while (stop < pos + len && !pcache_find(&fi->pages, stop / PAGE_SIZE))
+                stop += PAGE_SIZE;
+            n = (stop < pos + len ? stop : pos + len) - at;
+            const ssize_t r = read_at(fi, at, (uint8_t *)buf + done, n);
+            if (r < 0) {
+                err = r;
+                break;
+            }
+            if ((size_t)r < n) {
+                done += (size_t)r;
+                break;
+            }
+        }
+        done += n;
+    }
+    file->file_position += done;
+    return done ? (ssize_t)done : err;
 }
 
 static ssize_t write_at(fat32_inode_info *fi, const uint64_t pos, const void *src, const size_t len)
@@ -926,6 +957,7 @@ static ssize_t write_at(fat32_inode_info *fi, const uint64_t pos, const void *sr
         if ((err = bdev_write(sbi, cluster_to_byte(sbi, run_start) + in, n,
                               src ? (const uint8_t *)src + done : zero)) < 0)
             break;
+        pcache_update(&fi->pages, pos + done, src ? (const uint8_t *)src + done : nullptr, n);
         done += n;
     }
     free(zero);
@@ -985,7 +1017,34 @@ static int fat32_truncate(file_t *file, const size_t size)
     fi->cache_index = 0;
     fi->size = (uint32_t)size;
     fi->inode->size = size;
+    pcache_truncate(&fi->pages, size);
     return dirent_update(fi);
+}
+
+static int fat32_mmap_page(file_t *file, const uint64_t offset, uint64_t *frame)
+{
+    fat32_inode_info *fi = file->node->private_data;
+    if (offset >= 0xFFFFFFFFULL)
+        return -EFBIG;
+    const size_t index = offset / PAGE_SIZE;
+    uint8_t *page = pcache_find(&fi->pages, index);
+    if (page == nullptr) {
+        page = pcache_insert(&fi->pages, index);
+        if (page == nullptr)
+            return -ENOMEM;
+        const uint64_t start = (uint64_t)index * PAGE_SIZE;
+        if (start < fi->size) {
+            const size_t want = fi->size - start < PAGE_SIZE ? fi->size - start : PAGE_SIZE;
+            const ssize_t r = read_at(fi, start, page, want);
+            if (r < 0 || (size_t)r < want) {
+                pcache_remove(&fi->pages, index);
+                return r < 0 ? (int)r : -EIO;
+            }
+        }
+    }
+    pmm_share_page(page);
+    *frame = (uint64_t)page;
+    return 0;
 }
 
 static int fat32_fallocate(file_t *file, const int mode, const int64_t offset, const int64_t len)
@@ -1259,6 +1318,7 @@ static file_operations_t fat32_file_fops = {
     .write    = fat32_file_write,
     .truncate = fat32_truncate,
     .fallocate = fat32_fallocate,
+    .mmap_page = fat32_mmap_page,
     .open     = fat32_file_open,
     .close    = fat32_file_close,
 };

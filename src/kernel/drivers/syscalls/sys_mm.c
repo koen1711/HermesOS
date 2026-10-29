@@ -149,9 +149,10 @@ long sys_mmap(const uint64_t addr, const size_t len, const int prot, const int f
             err = vm_write(vm, start, nullptr, PAGE_ALIGN_UP(len));
         if (err == 0 && f)
             err = map_file(vm, f, start, len, offset);
-        if (err == 0 && shared && f)
-            err = vm_attach_file(vm, start, &file_ops, f, (uint64_t)offset);
     }
+
+    if (err == 0 && shared && f)
+        err = vm_attach_file(vm, start, &file_ops, f, (uint64_t)offset);
     if (err == 0 && (flags & MAP_POPULATE))
         vm_populate(vm, start, len, false);
     if (err) {

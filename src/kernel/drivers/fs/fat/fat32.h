@@ -1,6 +1,7 @@
 #ifndef FAT32_H
 #define FAT32_H
 
+#include <drivers/fs/pagecache/pagecache.h>
 #include <drivers/fs/vfs/driver.h>
 #include <os/stdint.h>
 #include <os/stdbool.h>
@@ -131,6 +132,7 @@ typedef struct fat32_inode_info {
 
     uint32_t cache_index;
     uint32_t cache_cluster;
+    struct page_cache pages;
 } fat32_inode_info;
 
 extern file_system_driver_t fat32_driver;
