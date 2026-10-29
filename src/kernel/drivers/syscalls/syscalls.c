@@ -247,14 +247,17 @@ static long file_syscall(const interrupt_context* c)
             return sys_eventfd2((unsigned int)c->rdi, 0);
         case SYSCALL_EVENTFD2:
             return sys_eventfd2((unsigned int)c->rdi, (int)c->rsi);
-        // TODO: For CPython: os.statvfs/fstatvfs and shutil.disk_usage (mlibc statvfs goes through statfs)
         case SYSCALL_STATFS:
+            return sys_statfs((const char*)c->rdi, (void*)c->rsi);
         case SYSCALL_FSTATFS:
+            return sys_fstatfs((int)c->rdi, (void*)c->rsi);
         // TODO: For CPython: os.mknod/os.mkfifo (mkfifo needs a FIFO inode type, FAT32 can't store one)
         case SYSCALL_MKNOD:
+            return sys_mknodat(AT_FDCWD, (const char*)c->rdi, (uint32_t)c->rsi, (uint32_t)c->rdx);
         case SYSCALL_MKNODAT:
-        // TODO: For CPython: os.posix_fallocate (extend the file)
+            return sys_mknodat((int)c->rdi, (const char*)c->rsi, (uint32_t)c->rdx, (uint32_t)c->r10);
         case SYSCALL_FALLOCATE:
+            return sys_fallocate((int)c->rdi, (int)c->rsi, (int64_t)c->rdx, (int64_t)c->r10);
         // TODO: For CPython: os.preadv/os.pwritev; the 2 variants only need flags == 0
         case SYSCALL_PREADV:
         case SYSCALL_PWRITEV:

@@ -19,6 +19,8 @@ long sys_pwrite64(int fd, const void* buf, size_t len, int64_t offset);
 long sys_lseek(int fd, int64_t offset, int whence);
 long sys_fstat(int fd, void* st);
 long sys_newfstatat(int dirfd, const char* path, void* st, int flags);
+long sys_statfs(const char* path, void* buf);
+long sys_fstatfs(int fd, void* buf);
 long sys_getdents64(int fd, void* dirp, size_t count);
 long sys_getcwd(char* buf, size_t size);
 long sys_chdir(const char* path);
@@ -40,6 +42,8 @@ long sys_umask(uint32_t mask);
 long sys_fsync(int fd);
 long sys_pipe2(int* fds, int flags);
 long sys_sendfile(int out_fd, int in_fd, int64_t* offset, size_t count);
+long sys_mknodat(int dirfd, const char* path, uint32_t mode, uint32_t dev);
+long sys_fallocate(int fd, int mode, int64_t offset, int64_t len);
 
 long sys_poll(void* fds, uint64_t nfds, int timeout_ms);
 long sys_ppoll(void* fds, uint64_t nfds, const struct timespec_k* timeout, const uint64_t* sigmask, size_t sigsetsize);

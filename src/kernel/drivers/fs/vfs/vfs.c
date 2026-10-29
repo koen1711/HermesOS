@@ -429,6 +429,16 @@ int vfs_stat(const int fd, vfs_stat_t* st)
     return 0;
 }
 
+int vfs_statfs(const struct file_s* f, struct vfs_statfs* out)
+{
+    if (f == nullptr || out == nullptr)
+        return -EBADF;
+    const struct mounted_file_system_s* m = f->mount;
+    if (m == nullptr || m->driver->fsd->statfs == nullptr)
+        return -ENOSYS;
+    return m->driver->fsd->statfs(m->root, out);
+}
+
 int vfs_normalize_path(const char* base, const char* path, char* out)
 {
     size_t len = 0;
@@ -495,4 +505,16 @@ int vfs_sync()
             err = -EIO;
     }
     return err;
+}
+
+int vfs_fallocate(int fd, int mode, int64_t offset, int64_t len)
+{
+    struct file_s* f = get_file(fd);
+    if (f == nullptr)
+        return -EBADF;
+    if (f->node->type != INODE_FILE)
+        return -EINVAL;
+    if (f->node->fops == nullptr || f->node->fops->fallocate == nullptr)
+        return -EOPNOTSUPP;
+    return f->node->fops->fallocate(f, mode, offset, len);
 }

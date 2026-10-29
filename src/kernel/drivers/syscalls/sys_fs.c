@@ -57,6 +57,7 @@ enum stat_mode {
     S_IFIFO = 0010000,
     S_IFCHR = 0020000,
     S_IFDIR = 0040000,
+    S_IFBLK = 0060000,
     S_IFREG = 0100000,
     S_IFSOCK = 0140000
 };
@@ -85,6 +86,21 @@ struct stat_k {
     struct timespec_k st_mtim;
     struct timespec_k st_ctim;
     int64_t reserved[3];
+};
+
+struct statfs_k {
+    int64_t f_type;
+    int64_t f_bsize;
+    uint64_t f_blocks;
+    uint64_t f_bfree;
+    uint64_t f_bavail;
+    uint64_t f_files;
+    uint64_t f_ffree;
+    int32_t f_fsid[2];
+    int64_t f_namelen;
+    int64_t f_frsize;
+    int64_t f_flags;
+    int64_t f_spare[4];
 };
 
 struct dirent64_k {
@@ -365,6 +381,60 @@ long sys_newfstatat(const int dirfd, const char* upath, void* st, const int flag
     const long r = stat_out(vfs_get_file(id), st);
     vfs_close(id);
     return r;
+}
+
+static long statfs_out(const struct file_s* f, void* ubuf)
+{
+    struct vfs_statfs vs = {.block_size = PAGE_SIZE, .name_max = MAX_FILE_PATH - 1};
+    switch (f->node->type) {
+    case INODE_PIPE:
+        vs.magic = 0x50495045;
+        break;
+    case INODE_SOCKET:
+        vs.magic = 0x534f434b;
+        break;
+    default: {
+        const int err = vfs_statfs(f, &vs);
+        if (err == -ENOSYS)
+            vs.magic = 0x09041934;
+        else if (err < 0)
+            return err;
+        break;
+    }
+    }
+
+    struct statfs_k s = {0};
+    s.f_type = (int64_t)vs.magic;
+    s.f_bsize = (int64_t)vs.block_size;
+    s.f_frsize = (int64_t)vs.block_size;
+    s.f_blocks = vs.total_blocks;
+    s.f_bfree = vs.free_blocks;
+    s.f_bavail = vs.free_blocks;
+    s.f_files = vs.total_files;
+    s.f_ffree = vs.free_files;
+    s.f_namelen = (int64_t)vs.name_max;
+    return copy_to_user(ubuf, &s, sizeof(s));
+}
+
+long sys_statfs(const char* upath, void* buf)
+{
+    char path[VFS_PATH_MAX];
+    const long err = resolve_at(AT_FDCWD, upath, path, false);
+    if (err)
+        return err;
+
+    const int id = vfs_open(path, 0);
+    if (id < 0)
+        return id;
+    const long r = statfs_out(vfs_get_file(id), buf);
+    vfs_close(id);
+    return r;
+}
+
+long sys_fstatfs(const int fd, void* buf)
+{
+    const struct file_s* f = fd_get(fd);
+    return f ? statfs_out(f, buf) : -EBADF;
 }
 
 static uint8_t dirent_type(const size_t type)
@@ -783,4 +853,44 @@ long sys_sendfile(const int out_fd, const int in_fd, int64_t* uoffset, const siz
             return -EFAULT;
     }
     return done ? (long)done : err;
+}
+
+long sys_mknodat(const int dirfd, const char* upath, const uint32_t mode, const uint32_t dev)
+{
+    (void)dev;
+    switch (mode & 0170000) {
+    case 0:
+    case S_IFREG:
+        break;
+    case S_IFIFO:
+    case S_IFCHR:
+    case S_IFBLK:
+    case S_IFSOCK:
+        return -EPERM;
+    default:
+        return -EINVAL;
+    }
+    char path[VFS_PATH_MAX];
+    const long err = resolve_at(dirfd, upath, path, false);
+    return err ? err : vfs_create(path, false);
+}
+
+long sys_fallocate(const int fd, const int mode, const int64_t offset, const int64_t len)
+{
+    const struct file_s* file = fd_get(fd);
+    if (file == nullptr || !(file->flags & O_WRONLY))
+        return -EBADF;
+    if (offset < 0 || len <= 0)
+        return -EINVAL;
+    switch (file->node->type) {
+    case INODE_FILE:
+        break;
+    case INODE_DIR:
+        return -EISDIR;
+    case INODE_PIPE:
+        return -ESPIPE;
+    default:
+        return -ENODEV;
+    }
+    return vfs_fallocate((int)file->id, mode, offset, len);
 }

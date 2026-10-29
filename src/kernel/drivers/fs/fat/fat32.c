@@ -988,6 +988,17 @@ static int fat32_truncate(file_t *file, const size_t size)
     return dirent_update(fi);
 }
 
+static int fat32_fallocate(file_t *file, const int mode, const int64_t offset, const int64_t len)
+{
+    if (mode != 0)
+        return -EOPNOTSUPP;
+    const fat32_inode_info *fi = file->node->private_data;
+    const uint64_t end = (uint64_t)offset + (uint64_t)len;
+    if (end > 0xFFFFFFFFULL)
+        return -EFBIG;
+    return end > fi->size ? fat32_truncate(file, end) : 0;
+}
+
 static int fat32_readdir(file_t *file, struct vfs_dirent *out)
 {
     const fat32_inode_info *fi = file->node->private_data;
@@ -1247,6 +1258,7 @@ static file_operations_t fat32_file_fops = {
     .read     = fat32_file_read,
     .write    = fat32_file_write,
     .truncate = fat32_truncate,
+    .fallocate = fat32_fallocate,
     .open     = fat32_file_open,
     .close    = fat32_file_close,
 };
@@ -1344,6 +1356,32 @@ static int fat32_sync(inode_t *root)
     return bdev->ops->flush((struct block_device *)bdev) == 0 ? 0 : -EIO;
 }
 
+static int fat32_statfs(const inode_t *root, struct vfs_statfs *out)
+{
+    fat32_sb_info *sbi = ((fat32_inode_info *)root->private_data)->sbi;
+    if (sbi->fsinfo.free_cluster_count == FSINFO_UNKNOWN) {
+        uint32_t free = 0;
+        for (uint32_t c = 2; c < sbi->total_clusters + 2; c++) {
+            uint32_t v;
+            if (fat_get(sbi, c, &v) < 0)
+                return -EIO;
+            if (v == FAT_FREE)
+                free++;
+        }
+        sbi->fsinfo.free_cluster_count = free;
+        sbi->fsinfo_dirty = true;
+    }
+
+    out->magic        = 0x4d44;
+    out->block_size   = cluster_byte_size(sbi);
+    out->total_blocks = sbi->total_clusters;
+    out->free_blocks  = sbi->fsinfo.free_cluster_count;
+    out->total_files  = 0;
+    out->free_files   = 0;
+    out->name_max     = FAT_NAME_MAX;
+    return 0;
+}
+
 static void fat32_unmount(inode_t *root)
 {
     if (!root) return;
@@ -1366,6 +1404,7 @@ file_system_driver_t fat32_driver = {
     .mount   = fat32_mount,
     .unmount = fat32_unmount,
     .sync    = fat32_sync,
+    .statfs  = fat32_statfs,
 };
 
 struct block_device *fat32_create_bdev(const uint32_t unique_id,

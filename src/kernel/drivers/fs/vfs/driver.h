@@ -36,10 +36,21 @@ enum vfs_poll_events {
     VFS_POLLNVAL = 0x020
 };
 
+struct vfs_statfs {
+    uint64_t magic;
+    uint64_t block_size;
+    uint64_t total_blocks;
+    uint64_t free_blocks;
+    uint64_t total_files;
+    uint64_t free_files;
+    uint64_t name_max;
+};
+
 typedef struct file_system_driver_ts {
     struct inode_s* (*mount)(void* blob);
     void (*unmount)(struct inode_s* root);
     int (*sync)(struct inode_s* root);
+    int (*statfs)(const struct inode_s* root, struct vfs_statfs* out);
 } file_system_driver_t;
 
 typedef struct inode_operations_s {
@@ -60,6 +71,7 @@ typedef struct file_operations_s {
     int (*poll)(struct file_s* f);
     int (*ioctl)(struct file_s* f, unsigned long request, void* arg);
     int (*truncate)(struct file_s* f, size_t size);
+    int (*fallocate)(struct file_s* f, int mode, int64_t offset, int64_t len);
 } file_operations_t;
 
 typedef struct inode_s {

@@ -52,8 +52,10 @@ int vfs_truncate(int fd, size_t size);
 int64_t vfs_seek(int fd, int64_t offset, enum seek_origin origin);
 int vfs_readdir(int fd, struct vfs_dirent *out);
 int vfs_stat(int fd, vfs_stat_t *st);
+int vfs_statfs(const struct file_s* f, struct vfs_statfs* out);
 int vfs_normalize_path(const char *base, const char *path, char *out);
 struct file_s* vfs_get_file(int fd);
 int vfs_install(struct file_s* f);
+int vfs_fallocate(int fd, int mode, int64_t offset, int64_t len);
 
 #endif //OS_VFS_V2_H
