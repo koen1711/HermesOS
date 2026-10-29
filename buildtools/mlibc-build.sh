@@ -11,6 +11,7 @@ cd ${SCRIPT_DIR}/mlibc && meson \
     --prefix=/usr \
     -Ddefault_library=both \
     -Dno_headers=true \
+    -Dlinux_kernel_headers=${SCRIPT_DIR}/cross/linux-headers \
     -Dc_args="-isystem ${GCC_INCLUDE}" \
     -Dcpp_args="-isystem ${GCC_INCLUDE} -D_GNU_SOURCE" \
     --reconfigure \

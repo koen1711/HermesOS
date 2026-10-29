@@ -72,4 +72,17 @@ add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
         COMMENT "Generating your .iso file"
 )
 
+set(DASH_BINARY ${CMAKE_SOURCE_DIR}/buildtools/cross/usr/bin/dash)
+if(EXISTS ${DASH_BINARY})
+    add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_BINARY_DIR}/isodir/bin
+            COMMAND ${CMAKE_COMMAND} -E copy ${DASH_BINARY} ${CMAKE_BINARY_DIR}/isodir/shell
+            COMMAND ${CMAKE_COMMAND} -E copy ${DASH_BINARY} ${CMAKE_BINARY_DIR}/isodir/bin/sh
+            COMMAND ${CMAKE_STRIP} --strip-unneeded ${CMAKE_BINARY_DIR}/isodir/shell ${CMAKE_BINARY_DIR}/isodir/bin/sh
+            COMMENT "Installing dash as /shell and /bin/sh"
+    )
+else()
+    message(WARNING "dash not found, run tools/install-dash.sh and re-run cmake to get a /shell on the image")
+endif()
+
 add_subdirectory(src)
