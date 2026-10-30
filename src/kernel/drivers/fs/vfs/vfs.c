@@ -439,6 +439,38 @@ int vfs_statfs(const struct file_s* f, struct vfs_statfs* out)
     return m->driver->fsd->statfs(m->root, out);
 }
 
+ssize_t vfs_getxattr(const struct file_s* f, const char* name, void* value, const size_t size)
+{
+    const inode_operations_t* ops = f->node->iops;
+    if (ops == nullptr || ops->getxattr == nullptr)
+        return -EOPNOTSUPP;
+    return ops->getxattr(f->node, name, value, size);
+}
+
+int vfs_setxattr(const struct file_s* f, const char* name, const void* value, const size_t size, const int flags)
+{
+    const inode_operations_t* ops = f->node->iops;
+    if (ops == nullptr || ops->setxattr == nullptr)
+        return -EOPNOTSUPP;
+    return ops->setxattr(f->node, name, value, size, flags);
+}
+
+ssize_t vfs_listxattr(const struct file_s* f, char* list, const size_t size)
+{
+    const inode_operations_t* ops = f->node->iops;
+    if (ops == nullptr || ops->listxattr == nullptr)
+        return 0;
+    return ops->listxattr(f->node, list, size);
+}
+
+int vfs_removexattr(const struct file_s* f, const char* name)
+{
+    const inode_operations_t* ops = f->node->iops;
+    if (ops == nullptr || ops->removexattr == nullptr)
+        return -EOPNOTSUPP;
+    return ops->removexattr(f->node, name);
+}
+
 int vfs_normalize_path(const char* base, const char* path, char* out)
 {
     size_t len = 0;

@@ -10,9 +10,17 @@
 #define MEMFD_MAX_SIZE (1ULL << 40)
 #define MEMFD_PREFIX "/memfd:"
 
+struct xattr {
+    struct xattr* next;
+    void* value;
+    size_t size;
+    char name[];
+};
+
 struct memfd {
     uint8_t** pages;
     size_t page_count;
+    struct xattr* xattrs;
     int opens;
     bool unlinked;
 };
@@ -143,9 +151,121 @@ static int memfd_mmap_page(struct file_s* f, const uint64_t offset, uint64_t* fr
     return 0;
 }
 
+static bool xattr_name_ok(const char* name)
+{
+    static const char* const prefixes[] = { "user.", "trusted.", "security." };
+    for (size_t i = 0; i < sizeof(prefixes) / sizeof(prefixes[0]); i++) {
+        const size_t n = strlen(prefixes[i]);
+        if (strncmp(name, prefixes[i], n) == 0)
+            return name[n] != '\0';
+    }
+    return false;
+}
+
+static struct xattr* xattr_find(struct memfd* m, const char* name, struct xattr*** link)
+{
+    for (struct xattr** l = &m->xattrs; *l; l = &(*l)->next) {
+        if (strcmp((*l)->name, name) == 0) {
+            if (link)
+                *link = l;
+            return *l;
+        }
+    }
+    return nullptr;
+}
+
+static ssize_t memfd_getxattr(inode_t* node, const char* name, void* value, const size_t size)
+{
+    if (!xattr_name_ok(name))
+        return -EOPNOTSUPP;
+    const struct xattr* x = xattr_find(node->private_data, name, nullptr);
+    if (x == nullptr)
+        return -ENODATA;
+    if (size == 0)
+        return (ssize_t)x->size;
+    if (size < x->size)
+        return -ERANGE;
+    memcpy(value, x->value, x->size);
+    return (ssize_t)x->size;
+}
+
+static int memfd_setxattr(inode_t* node, const char* name, const void* value, const size_t size, const int flags)
+{
+    if (!xattr_name_ok(name))
+        return -EOPNOTSUPP;
+    struct memfd* m = node->private_data;
+    struct xattr* x = xattr_find(m, name, nullptr);
+    if (x && (flags & XATTR_CREATE))
+        return -EEXIST;
+    if (!x && (flags & XATTR_REPLACE))
+        return -ENODATA;
+
+    void* copy = nullptr;
+    if (size) {
+        copy = malloc(size);
+        if (copy == nullptr)
+            return -ENOMEM;
+        memcpy(copy, value, size);
+    }
+    if (x == nullptr) {
+        const size_t len = strlen(name);
+        x = malloc(sizeof(struct xattr) + len + 1);
+        if (x == nullptr) {
+            free(copy);
+            return -ENOMEM;
+        }
+        memcpy(x->name, name, len + 1);
+        x->value = nullptr;
+        x->next = m->xattrs;
+        m->xattrs = x;
+    }
+    free(x->value);
+    x->value = copy;
+    x->size = size;
+    return 0;
+}
+
+static ssize_t memfd_listxattr(inode_t* node, char* list, const size_t size)
+{
+    const struct memfd* m = node->private_data;
+    size_t total = 0;
+    for (const struct xattr* x = m->xattrs; x; x = x->next)
+        total += strlen(x->name) + 1;
+    if (size == 0)
+        return (ssize_t)total;
+    if (size < total)
+        return -ERANGE;
+    for (const struct xattr* x = m->xattrs; x; x = x->next) {
+        const size_t len = strlen(x->name) + 1;
+        memcpy(list, x->name, len);
+        list += len;
+    }
+    return (ssize_t)total;
+}
+
+static int memfd_removexattr(inode_t* node, const char* name)
+{
+    if (!xattr_name_ok(name))
+        return -EOPNOTSUPP;
+    struct xattr** link;
+    struct xattr* x = xattr_find(node->private_data, name, &link);
+    if (x == nullptr)
+        return -ENODATA;
+    *link = x->next;
+    free(x->value);
+    free(x);
+    return 0;
+}
+
 static void mem_inode_free(inode_t* node)
 {
     struct memfd* m = node->private_data;
+    while (m->xattrs) {
+        struct xattr* x = m->xattrs;
+        m->xattrs = x->next;
+        free(x->value);
+        free(x);
+    }
     for (size_t i = 0; i < m->page_count; i++)
         if (m->pages[i])
             free_physical_page(m->pages[i]);
@@ -178,6 +298,10 @@ static void memfd_release(inode_t* node)
 
 static inode_operations_t memfd_iops = {
     .release = memfd_release,
+    .getxattr = memfd_getxattr,
+    .setxattr = memfd_setxattr,
+    .listxattr = memfd_listxattr,
+    .removexattr = memfd_removexattr,
 };
 
 static file_operations_t memfd_fops = {

@@ -3,7 +3,6 @@
 
 #include "os/stddef.h"
 #include "os/types.h"
-#include "os/stdbool.h"
 
 #define O_RDONLY 0x01
 #define O_WRONLY 0x02
@@ -16,6 +15,9 @@
 
 #define MAX_FILE_PATH 256
 #define MAX_PATH_LENGTH 256
+
+#define XATTR_CREATE 0x1
+#define XATTR_REPLACE 0x2
 
 struct inode_s;
 struct file_s;
@@ -60,6 +62,10 @@ typedef struct inode_operations_s {
     int (*unlink)(struct inode_s* dir, const char* name, bool directory);
     int (*rename)(struct inode_s* old_dir, const char* old_name, struct inode_s* new_dir, const char* new_name,
                   bool no_replace);
+    ssize_t (*getxattr)(struct inode_s* node, const char* name, void* value, size_t size);
+    int (*setxattr)(struct inode_s* node, const char* name, const void* value, size_t size, int flags);
+    ssize_t (*listxattr)(struct inode_s* node, char* list, size_t size);
+    int (*removexattr)(struct inode_s* node, const char* name);
 } inode_operations_t;
 
 typedef struct file_operations_s {

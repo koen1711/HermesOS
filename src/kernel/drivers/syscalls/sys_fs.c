@@ -11,7 +11,8 @@
 #include <utils/str/str.h>
 #include <os/errno.h>
 
-#define AT_FDCWD (-100)
+#include "fs/helpers.h"
+
 #define AT_SYMLINK_NOFOLLOW 0x100
 #define AT_REMOVEDIR 0x200
 #define AT_EMPTY_PATH 0x1000
@@ -25,6 +26,7 @@
 #define MFD_NAME_MAX 249
 #define CLOSE_RANGE_UNSHARE 0x2
 #define CLOSE_RANGE_CLOEXEC 0x4
+
 
 enum linux_open_flags {
     LO_ACCMODE = 0x3,
@@ -123,35 +125,7 @@ struct iovec_k {
     size_t iov_len;
 };
 
-static struct proc_files* files()
-{
-    return scheduler_get()->current->files;
-}
 
-static long resolve_at(const int dirfd, const char* upath, char* out, const bool allow_empty)
-{
-    char path[VFS_PATH_MAX];
-    const long len = copy_string_from_user(path, upath, sizeof(path));
-    if (len < 0)
-        return len;
-    if (len == 0) {
-        if (!allow_empty)
-            return -ENOENT;
-        out[0] = '\0';
-        return 0;
-    }
-
-    const char* base = files()->cwd;
-    if (path[0] != '/' && dirfd != AT_FDCWD) {
-        const struct file_s* dir = fd_get(dirfd);
-        if (dir == nullptr)
-            return -EBADF;
-        if (dir->node->type != INODE_DIR)
-            return -ENOTDIR;
-        base = dir->filename;
-    }
-    return vfs_resolve_root(files()->root, base, path, out);
-}
 
 static long dup_from(int fd, int min_fd, bool cloexec);
 
@@ -1178,3 +1152,4 @@ long sys_copy_file_range(const int fd_in, int64_t* off_in, const int fd_out, int
     }
     return r;
 }
+

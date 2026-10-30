@@ -51,6 +51,20 @@ long sys_sendfile(int out_fd, int in_fd, int64_t* offset, size_t count);
 long sys_memfd_create(const char* name, unsigned int flags);
 long sys_chroot(const char* path);
 
+// XATTR
+long sys_setxattr(const char* path, const char* name, const void* value, size_t size, int flags);
+long sys_lsetxattr(const char* path, const char* name, const void* value, size_t size, int flags);
+long sys_fsetxattr(int fd, const char* name, const void* value, size_t size, int flags);
+long sys_getxattr(const char* path, const char* name, void* value, size_t size);
+long sys_lgetxattr(const char* path, const char* name, void* value, size_t size);
+long sys_fgetxattr(int fd, const char* name, void* value, size_t size);
+long sys_listxattr(const char* path, char* list, size_t size);
+long sys_llistxattr(const char* path, char* list, size_t size);
+long sys_flistxattr(int fd, char* list, size_t size);
+long sys_removexattr(const char* path, const char* name);
+long sys_lremovexattr(const char* path, const char* name);
+long sys_fremovexattr(int fd, const char* name);
+
 long sys_mknodat(int dirfd, const char* path, uint32_t mode, uint32_t dev);
 long sys_fallocate(int fd, int mode, int64_t offset, int64_t len);
 
