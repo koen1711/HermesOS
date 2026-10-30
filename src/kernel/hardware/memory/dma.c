@@ -27,7 +27,7 @@ static bool crosses_boundary(const dma_addr_t addr, const dma_size_t len, const 
 
 static bool translate(const uint64_t vaddr, dma_addr_t* out)
 {
-    auto table = (const uint64_t*)(read_cr3() & PTE_FRAME);
+    auto table = (const uint64_t*)phys_to_virt(read_cr3() & PTE_FRAME);
     for (int shift = 39; shift >= 12; shift -= 9) {
         const uint64_t entry = table[(vaddr >> shift) & 0x1FF];
         if (!(entry & MMU_PRESENT))
@@ -37,19 +37,9 @@ static bool translate(const uint64_t vaddr, dma_addr_t* out)
             *out = (entry & PTE_FRAME & ~offset) | (vaddr & offset);
             return true;
         }
-        table = (const uint64_t*)(entry & PTE_FRAME);
+        table = (const uint64_t*)phys_to_virt(entry & PTE_FRAME);
     }
     return false;
-}
-
-static void free_pages(void* mem, const size_t count)
-{
-    for (size_t i = 0; i < count; i++) {
-        const uint64_t page = (uint64_t)mem + i * PAGE_SIZE;
-        if (page >= IDENTITY_MAP_SIZE)
-            unmap_page(page);
-    }
-    free_physical_pages(mem, count);
 }
 
 static void* alloc_pages(const size_t count, dma_size_t alignment, const dma_addr_t max_addr)
@@ -74,16 +64,7 @@ static void* alloc_pages(const size_t count, dma_size_t alignment, const dma_add
         free_physical_pages(base, count);
         return nullptr;
     }
-
-    for (size_t i = 0; i < count; i++) {
-        const uint64_t page = (uint64_t)base + i * PAGE_SIZE;
-        if (page >= IDENTITY_MAP_SIZE && map_page(page, page, MMU_PRESENT | MMU_WRITABLE) < 0) {
-            free_pages(base, i);
-            free_physical_pages(base + i * PAGE_SIZE, count - i);
-            return nullptr;
-        }
-    }
-    return base;
+    return phys_to_virt((uint64_t)base);
 }
 
 static int bounce_reserve(struct dma_map* map, const dma_size_t len)
@@ -92,7 +73,7 @@ static int bounce_reserve(struct dma_map* map, const dma_size_t len)
         return 0;
 
     if (map->bounce)
-        free_pages(map->bounce, page_count(map->bounce_len));
+        free_kernel_pages(map->bounce, page_count(map->bounce_len));
     map->bounce = nullptr;
     map->bounce_len = 0;
 
@@ -102,7 +83,7 @@ static int bounce_reserve(struct dma_map* map, const dma_size_t len)
         return -ENOMEM;
 
     map->bounce = mem;
-    map->bounce_phys = (dma_addr_t)mem;
+    map->bounce_phys = virt_to_phys(mem);
     map->bounce_len = pages * PAGE_SIZE;
     return 0;
 }
@@ -280,7 +261,7 @@ int dma_map_destroy(struct dma_map* map)
         return -EBUSY;
 
     if (map->bounce)
-        free_pages(map->bounce, page_count(map->bounce_len));
+        free_kernel_pages(map->bounce, page_count(map->bounce_len));
 
     uint64_t irq;
     spinlock_acquire_irqsave(&dma_lock, &irq);
@@ -304,8 +285,8 @@ int dma_mem_alloc(struct dma_tag* tag, const uint32_t flags, void** vaddr, struc
 
     const size_t pages = page_count(tag->max_size);
     void* mem = alloc_pages(pages, tag->alignment, tag->max_addr);
-    if (mem && tag->max_size <= tag->boundary && crosses_boundary((dma_addr_t)mem, tag->max_size, tag->boundary)) {
-        free_pages(mem, pages);
+    if (mem && tag->max_size <= tag->boundary && crosses_boundary(virt_to_phys(mem), tag->max_size, tag->boundary)) {
+        free_kernel_pages(mem, pages);
         mem = alloc_pages(pages, tag->boundary, tag->max_addr);
     }
     if (!mem) {
@@ -327,7 +308,7 @@ void dma_mem_free(void* vaddr, struct dma_map* map)
         return;
 
     dma_map_unload(map);
-    free_pages(vaddr, page_count(map->tag->max_size));
+    free_kernel_pages(vaddr, page_count(map->tag->max_size));
     dma_map_destroy(map);
 }
 

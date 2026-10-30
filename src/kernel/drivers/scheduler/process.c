@@ -873,7 +873,7 @@ static void init_shell_process() {
 static void process_free(process_t *proc) {
     files_release(proc->files);
     vm_release(proc->vm);
-    free_physical_pages((void*)proc->stack, KERNEL_STACK_PAGES);
+    free_kernel_pages((void*)proc->stack, KERNEL_STACK_PAGES);
     memset(proc, 0, sizeof(process_t));
 }
 
@@ -884,7 +884,7 @@ static process_t *create_process() {
     if (proc == nullptr) {
         return nullptr;
     }
-    const uint64_t stack = (uint64_t)alloc_physical_pages(KERNEL_STACK_PAGES);
+    const uint64_t stack = (uint64_t)alloc_kernel_pages(KERNEL_STACK_PAGES);
     if (stack == 0) {
         return nullptr;
     }

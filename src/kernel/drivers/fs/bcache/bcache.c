@@ -125,7 +125,7 @@ static struct buf* buf_new(struct bcache_dev* d, const uint64_t blkno)
     struct buf* b = calloc(1, sizeof(struct buf));
     if (!b)
         return nullptr;
-    b->data = alloc_physical_page();
+    b->data = alloc_kernel_page();
     if (!b->data) {
         free(b);
         return nullptr;
@@ -157,7 +157,7 @@ static int run_io(struct bcache_dev* d, struct buf** run, const int n, const boo
         return write ? raw->ops->write_bytes(raw, off, len, run[0]->data)
                      : raw->ops->read_bytes(raw, off, len, run[0]->data);
 
-    uint8_t* staging = alloc_physical_pages((size_t)n);
+    uint8_t* staging = alloc_kernel_pages((size_t)n);
     if (!staging) {
         for (int i = 0; i < n; i++) {
             const int err = run_io(d, &run[i], 1, write);
@@ -177,7 +177,7 @@ static int run_io(struct bcache_dev* d, struct buf** run, const int n, const boo
             for (int i = 0; i < n; i++)
                 memcpy(run[i]->data, staging + (size_t)i * BCACHE_BLOCK, BCACHE_BLOCK);
     }
-    free_physical_pages(staging, (size_t)n);
+    free_kernel_pages(staging, (size_t)n);
     return err;
 }
 
@@ -455,7 +455,7 @@ static void bc_release(struct block_device* bdev)
                 ndirty--;
             *p = b->hash_next;
             dlist_remove(&lru, &b->lru);
-            free_physical_page(b->data);
+            free_kernel_page(b->data);
             free(b);
             nbufs--;
             p = &hash_table[h];

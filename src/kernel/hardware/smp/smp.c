@@ -132,8 +132,10 @@ void smp_tlb_shootdown()
     }
     lapic_send_others(TLB_SHOOTDOWN_VECTOR);
     for (int i = 0; i < ncpus; i++) {
-        while (__atomic_load_n(&cpus[i].tlb_flush, __ATOMIC_ACQUIRE))
+        while (__atomic_load_n(&cpus[i].tlb_flush, __ATOMIC_ACQUIRE)) {
+            smp_spin_poll();
             asm volatile("pause");
+        }
     }
 }
 
@@ -182,7 +184,7 @@ static void ap_main()
 
 static bool start_ap(struct cpu* cpu)
 {
-    void* stack = alloc_physical_pages(KERNEL_STACK_PAGES);
+    void* stack = alloc_kernel_pages(KERNEL_STACK_PAGES);
     tss_t* tss = malloc(sizeof(tss_t));
     if (!stack || !tss)
         return false;

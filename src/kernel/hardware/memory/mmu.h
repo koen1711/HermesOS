@@ -15,18 +15,11 @@
 #define IDENTITY_MAP_SIZE 0x40000000ULL
 
 #define PAGE_SIZE         0x1000
+#define PAGE_MASK         (~(uint64_t)(PAGE_SIZE - 1))
+#define PAGE_ALIGN_UP(x)  (((uint64_t)(x) + PAGE_SIZE - 1) & PAGE_MASK)
+#define DIRECT_MAP_BASE   0xFFFF800000000000ULL
 #define USER_VIRTUAL_BASE 0x8000000000ULL
 #define USER_MEMORY_SIZE  (16 * PAGE_SIZE)
-
-typedef struct {
-    uint64_t* pml4;
-    uint64_t* pdpt_tables;
-    uint64_t* pd_tables;
-    uint64_t* pt_tables;
-    size_t num_pdpt;
-    size_t num_pd;
-    size_t num_pt;
-} mmu_context_t;
 
 void mmu_initialize(void);
 int  map_page(uint64_t virtual_addr, uint64_t physical_addr, uint64_t flags);
@@ -45,10 +38,15 @@ uint64_t* mmu_find_pte(uint64_t pml4_addr, uint64_t virtual_addr);
 void     switch_vm(uint64_t pml4_addr);
 uint64_t read_cr3(void);
 
-void setup_kernel_mapping(const mmu_context_t* mmu);
-void setup_identity_mapping(const mmu_context_t* mmu);
-void setup_device_mappings(mmu_context_t* mmu);
+extern uint64_t direct_map_offset;
 
-extern void* alloc_physical_page(void);
+static inline void* phys_to_virt(const uint64_t phys) {
+    return (void*)(phys + direct_map_offset);
+}
+
+static inline uint64_t virt_to_phys(const void* virt) {
+    const uint64_t addr = (uint64_t)virt;
+    return addr >= DIRECT_MAP_BASE ? addr - DIRECT_MAP_BASE : addr;
+}
 
 #endif // MMU_H

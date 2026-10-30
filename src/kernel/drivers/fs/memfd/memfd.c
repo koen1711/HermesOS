@@ -51,7 +51,7 @@ static uint8_t* page_get(struct memfd* m, const size_t index, const bool create)
         m->page_count = count;
     }
     if (m->pages[index] == nullptr && create) {
-        m->pages[index] = alloc_physical_page();
+        m->pages[index] = alloc_kernel_page();
         if (m->pages[index])
             memset(m->pages[index], 0, PAGE_SIZE);
     }
@@ -115,7 +115,7 @@ static int memfd_truncate(struct file_s* f, const size_t size)
         const size_t keep = (size + PAGE_SIZE - 1) / PAGE_SIZE;
         for (size_t i = keep; i < m->page_count; i++) {
             if (m->pages[i])
-                free_physical_page(m->pages[i]);
+                free_kernel_page(m->pages[i]);
             m->pages[i] = nullptr;
         }
         uint8_t* tail = size % PAGE_SIZE ? page_get(m, size / PAGE_SIZE, false) : nullptr;
@@ -146,8 +146,8 @@ static int memfd_mmap_page(struct file_s* f, const uint64_t offset, uint64_t* fr
     uint8_t* page = page_get(memfd_of(f), offset / PAGE_SIZE, true);
     if (page == nullptr)
         return -ENOMEM;
-    pmm_share_page(page);
-    *frame = (uint64_t)page;
+    pmm_share_page((void*)virt_to_phys(page));
+    *frame = virt_to_phys(page);
     return 0;
 }
 
@@ -268,7 +268,7 @@ static void mem_inode_free(inode_t* node)
     }
     for (size_t i = 0; i < m->page_count; i++)
         if (m->pages[i])
-            free_physical_page(m->pages[i]);
+            free_kernel_page(m->pages[i]);
     free(m->pages);
     free(m);
     free(node);

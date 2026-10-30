@@ -888,15 +888,16 @@ static ssize_t fat32_file_read(file_t *file, void *buf, size_t len)
     ssize_t err = 0;
     while (done < len) {
         const uint64_t at = pos + done;
-        const uint8_t *page = pcache_find(&fi->pages, at / PAGE_SIZE);
+        uint8_t *page = pcache_get(&fi->pages, at / PAGE_SIZE);
         size_t n;
         if (page) {
             const size_t in = at % PAGE_SIZE;
             n = len - done < PAGE_SIZE - in ? len - done : PAGE_SIZE - in;
             memcpy((uint8_t *)buf + done, page + in, n);
+            free_kernel_page(page);
         } else {
             uint64_t stop = (at / PAGE_SIZE + 1) * PAGE_SIZE;
-            while (stop < pos + len && !pcache_find(&fi->pages, stop / PAGE_SIZE))
+            while (stop < pos + len && !pcache_present(&fi->pages, stop / PAGE_SIZE))
                 stop += PAGE_SIZE;
             n = (stop < pos + len ? stop : pos + len) - at;
             const ssize_t r = read_at(fi, at, (uint8_t *)buf + done, n);
@@ -1027,7 +1028,7 @@ static int fat32_mmap_page(file_t *file, const uint64_t offset, uint64_t *frame)
     if (offset >= 0xFFFFFFFFULL)
         return -EFBIG;
     const size_t index = offset / PAGE_SIZE;
-    uint8_t *page = pcache_find(&fi->pages, index);
+    uint8_t *page = pcache_get(&fi->pages, index);
     if (page == nullptr) {
         page = pcache_insert(&fi->pages, index);
         if (page == nullptr)
@@ -1038,12 +1039,12 @@ static int fat32_mmap_page(file_t *file, const uint64_t offset, uint64_t *frame)
             const ssize_t r = read_at(fi, start, page, want);
             if (r < 0 || (size_t)r < want) {
                 pcache_remove(&fi->pages, index);
+                free_kernel_page(page);
                 return r < 0 ? (int)r : -EIO;
             }
         }
     }
-    pmm_share_page(page);
-    *frame = (uint64_t)page;
+    *frame = virt_to_phys(page);
     return 0;
 }
 
