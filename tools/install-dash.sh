@@ -11,6 +11,7 @@ TARGET="x86_64-hermes"
 CUR_DIR=$(cd "$(dirname "$0")" && pwd)
 SYSROOT=$(cd "$CUR_DIR/../buildtools/cross" && pwd)
 WORKDIR=$CUR_DIR/build
+PROGRAMS=$(cd "$CUR_DIR/.." && pwd)/programs
 
 export PATH="$SYSROOT/bin:$PATH"
 
@@ -37,6 +38,6 @@ cd $DASH
 sed -i 's/wait3(status, flags, NULL)/waitpid(-1, status, flags)/' src/jobs.c
 ./configure --host=$TARGET --prefix=/usr CFLAGS="-O2"
 make -j "$THREADS"
-make install DESTDIR="$SYSROOT"
+make install-strip DESTDIR="$PROGRAMS"
 
-echo "Installed dash to $SYSROOT/usr/bin/dash"
+echo "Installed dash to $PROGRAMS/usr/bin/dash"

@@ -198,18 +198,29 @@ static long file_syscall(const interrupt_context* c)
         case SYSCALL_FADVISE64:
             return fd_get((int)c->rdi) ? 0 : -EBADF;
         case SYSCALL_SETXATTR:
+            return sys_setxattr((const char*)c->rdi, (const char*)c->rsi, (const void*)c->rdx, c->r10, (int)c->r8);
         case SYSCALL_LSETXATTR:
+            return sys_lsetxattr((const char*)c->rdi, (const char*)c->rsi, (const void*)c->rdx, c->r10, (int)c->r8);
         case SYSCALL_FSETXATTR:
+            return sys_fsetxattr((int)c->rdi, (const char*)c->rsi, (const void*)c->rdx, c->r10, (int)c->r8);
         case SYSCALL_GETXATTR:
+            return sys_getxattr((const char*)c->rdi, (const char*)c->rsi, (void*)c->rdx, c->r10);
         case SYSCALL_LGETXATTR:
+            return sys_lgetxattr((const char*)c->rdi, (const char*)c->rsi, (void*)c->rdx, c->r10);
         case SYSCALL_FGETXATTR:
+            return sys_fgetxattr((int)c->rdi, (const char*)c->rsi, (void*)c->rdx, c->r10);
         case SYSCALL_LISTXATTR:
+            return sys_listxattr((const char*)c->rdi, (char*)c->rsi, c->rdx);
         case SYSCALL_LLISTXATTR:
+            return sys_llistxattr((const char*)c->rdi, (char*)c->rsi, c->rdx);
         case SYSCALL_FLISTXATTR:
+            return sys_flistxattr((int)c->rdi, (char*)c->rsi, c->rdx);
         case SYSCALL_REMOVEXATTR:
+            return sys_removexattr((const char*)c->rdi, (const char*)c->rsi);
         case SYSCALL_LREMOVEXATTR:
+            return sys_lremovexattr((const char*)c->rdi, (const char*)c->rsi);
         case SYSCALL_FREMOVEXATTR:
-            return -EOPNOTSUPP;
+            return sys_fremovexattr((int)c->rdi, (const char*)c->rsi);
         case SYSCALL_SYNC:
             vfs_sync();
             return 0;

@@ -7,6 +7,7 @@
 
 #define PTE_FRAME 0x000FFFFFFFFFF000ULL
 #define PTE_DIRTY 0x40ULL
+#define PTE_COW   0x200ULL
 
 struct vm_flush {
     struct vm_flush* next;
@@ -26,6 +27,12 @@ static uint64_t pte_flags(const uint32_t prot)
     if (prot == VM_NONE)
         return MMU_USER;
     return MMU_PRESENT | MMU_USER | (prot & VM_WRITE ? MMU_WRITABLE : 0);
+}
+
+static uint64_t pte_with_prot(const uint64_t pte, const uint32_t prot)
+{
+    const uint64_t flags = pte_flags(prot) & (pte & PTE_COW ? ~(uint64_t)MMU_WRITABLE : ~0ULL);
+    return (pte & (PTE_FRAME | PTE_DIRTY | PTE_COW)) | flags;
 }
 
 static bool user_range(const uint64_t start, const uint64_t end)
@@ -112,7 +119,7 @@ static void run_flush(struct vm_flush* w)
     while (w) {
         struct vm_flush* next = w->next;
         if (w->frame) {
-            w->ops->write(w->file, w->offset, (const void*)w->frame, PAGE_SIZE);
+            w->ops->write(w->file, w->offset, phys_to_virt(w->frame), PAGE_SIZE);
             free_physical_page((void*)w->frame);
         } else {
             w->ops->release(w->file);
@@ -180,12 +187,36 @@ static uint64_t* frame_for(struct vm_space* vm, const uint64_t va, const uint32_
     void* page = alloc_physical_page();
     if (!page)
         return nullptr;
-    memset(page, 0, PAGE_SIZE);
+    memset(phys_to_virt((uint64_t)page), 0, PAGE_SIZE);
     if (map_page_in(vm->page_map, va, (uint64_t)page, pte_flags(prot)) < 0) {
         free_physical_page(page);
         return nullptr;
     }
     return mmu_find_pte(vm->page_map, va);
+}
+
+static void flush_others(const struct vm_space* vm)
+{
+    if (vm->ref_count > 1)
+        smp_tlb_shootdown();
+}
+
+static bool cow_break(const struct vm_space* vm, const uint64_t va, uint64_t* pte)
+{
+    const uint64_t old = *pte & PTE_FRAME;
+    if (!pmm_page_shared((void*)old)) {
+        *pte &= ~PTE_COW;
+        return true;
+    }
+    void* page = alloc_physical_page();
+    if (!page)
+        return false;
+    memcpy(phys_to_virt((uint64_t)page), phys_to_virt(old), PAGE_SIZE);
+    *pte = (uint64_t)page | (*pte & ~(PTE_FRAME | PTE_COW));
+    invalidate(va);
+    flush_others(vm);
+    free_physical_page((void*)old);
+    return true;
 }
 
 struct vm_space* vm_create()
@@ -206,7 +237,7 @@ struct vm_space* vm_create()
     return vm;
 }
 
-static struct vm_space* clone_locked(const struct vm_space* src)
+static struct vm_space* clone_locked(struct vm_space* src)
 {
     struct vm_space* vm = vm_create();
     if (!vm)
@@ -226,39 +257,30 @@ static struct vm_space* clone_locked(const struct vm_space* src)
         dlist_insert_tail(&vm->areas, &copy->link);
 
         for (uint64_t va = a->start; va < a->end; va += PAGE_SIZE) {
-            const uint64_t* pte = mmu_find_pte(src->page_map, va);
+            uint64_t* pte = mmu_find_pte(src->page_map, va);
             if (!pte || !(*pte & PTE_FRAME))
                 continue;
-            if (a->flags & VMA_SHARED) {
-                if (map_page_in(vm->page_map, va, *pte & PTE_FRAME, *pte & ~PTE_FRAME) < 0) {
-                    vm_release(vm);
-                    return nullptr;
-                }
-                pmm_share_page((void*)(*pte & PTE_FRAME));
-                continue;
+            if (!(a->flags & VMA_SHARED) && !(*pte & PTE_COW)) {
+                *pte = (*pte & ~(uint64_t)MMU_WRITABLE) | PTE_COW;
+                invalidate(va);
             }
-            void* page = alloc_physical_page();
-            if (!page) {
+            if (map_page_in(vm->page_map, va, *pte & PTE_FRAME, *pte & ~PTE_FRAME) < 0) {
+                flush_others(src);
                 vm_release(vm);
                 return nullptr;
             }
-            memcpy(page, (const void*)(*pte & PTE_FRAME), PAGE_SIZE);
-            if (map_page_in(vm->page_map, va, (uint64_t)page, *pte & ~PTE_FRAME) < 0) {
-                free_physical_page(page);
-                vm_release(vm);
-                return nullptr;
-            }
+            pmm_share_page((void*)(*pte & PTE_FRAME));
         }
     }
+    flush_others(src);
     return vm;
 }
 
-struct vm_space* vm_clone(const struct vm_space* src)
+struct vm_space* vm_clone(struct vm_space* src)
 {
-    const auto lock = (spinlock_t*)&src->lock;
-    spinlock_acquire(lock);
+    spinlock_acquire(&src->lock);
     struct vm_space* vm = clone_locked(src);
-    spinlock_release(lock);
+    spinlock_release(&src->lock);
     return vm;
 }
 
@@ -415,7 +437,7 @@ static int protect_locked(struct vm_space* vm, const uint64_t addr, const size_t
             uint64_t* pte = mmu_find_pte(vm->page_map, va);
             if (!pte || !(*pte & PTE_FRAME))
                 continue;
-            *pte = *pte & (PTE_FRAME | PTE_DIRTY) | pte_flags(prot);
+            *pte = pte_with_prot(*pte, prot);
             invalidate(va);
         }
     }
@@ -623,14 +645,14 @@ static bool fault_locked(struct vm_space* vm, const uint64_t addr, const bool wr
 
     const uint64_t va = addr & PAGE_MASK;
     uint64_t* pte = mmu_find_pte(vm->page_map, va);
-    if (pte && (*pte & MMU_PRESENT)) {
+    if (pte && (*pte & MMU_PRESENT) && (!write || (*pte & MMU_WRITABLE))) {
         invalidate(va);
-        return !write || (*pte & MMU_WRITABLE);
+        return true;
     }
     pte = frame_for(vm, va, a->prot);
-    if (!pte)
+    if (!pte || (write && (*pte & PTE_COW) && !cow_break(vm, va, pte)))
         return false;
-    *pte = (*pte & PTE_FRAME) | pte_flags(a->prot);
+    *pte = pte_with_prot(*pte, a->prot);
     invalidate(va);
     return true;
 }
@@ -652,7 +674,7 @@ static bool populate_locked(struct vm_space* vm, const uint64_t addr, const size
                 return false;
         }
         const uint64_t* pte = mmu_find_pte(vm->page_map, va);
-        if (pte && (*pte & MMU_PRESENT))
+        if (pte && (*pte & MMU_PRESENT) && (!write || (*pte & MMU_WRITABLE)))
             continue;
         if (!fault_locked(vm, va, write))
             return false;
@@ -667,15 +689,16 @@ static int write_locked(struct vm_space* vm, uint64_t addr, const void* src, siz
         const struct vm_area* a = vm_find(vm, addr);
         if (!a)
             return -EFAULT;
-        const uint64_t* pte = frame_for(vm, addr & PAGE_MASK, a->prot);
-        if (!pte)
+        uint64_t* pte = frame_for(vm, addr & PAGE_MASK, a->prot);
+        if (!pte || ((*pte & PTE_COW) && !cow_break(vm, addr & PAGE_MASK, pte)))
             return -ENOMEM;
         const size_t off = addr & ~PAGE_MASK;
         const size_t n = PAGE_SIZE - off < len ? PAGE_SIZE - off : len;
+        uint8_t* frame = phys_to_virt(*pte & PTE_FRAME);
         if (p)
-            memcpy((uint8_t*)(*pte & PTE_FRAME) + off, p, n);
+            memcpy(frame + off, p, n);
         else
-            memset((uint8_t*)(*pte & PTE_FRAME) + off, 0, n);
+            memset(frame + off, 0, n);
         if (p)
             p += n;
         addr += n;

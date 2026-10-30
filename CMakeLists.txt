@@ -72,13 +72,21 @@ add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
         COMMENT "Generating your .iso file"
 )
 
-set(DASH_BINARY ${CMAKE_SOURCE_DIR}/buildtools/cross/usr/bin/dash)
+set(PROGRAMS_DIR ${CMAKE_SOURCE_DIR}/programs)
+set(DASH_BINARY ${PROGRAMS_DIR}/usr/bin/dash)
+
+add_custom_target(programs ALL
+        COMMAND ${CMAKE_COMMAND} -E make_directory ${PROGRAMS_DIR}
+        COMMAND ${CMAKE_COMMAND} -E copy_directory ${PROGRAMS_DIR} ${CMAKE_BINARY_DIR}/isodir/
+        COMMENT "Copying programs/ into the isodir"
+)
+add_dependencies(${PROJECT_NAME} programs)
+
 if(EXISTS ${DASH_BINARY})
-    add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
+    add_custom_command(TARGET programs POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_BINARY_DIR}/isodir/bin
             COMMAND ${CMAKE_COMMAND} -E copy ${DASH_BINARY} ${CMAKE_BINARY_DIR}/isodir/shell
             COMMAND ${CMAKE_COMMAND} -E copy ${DASH_BINARY} ${CMAKE_BINARY_DIR}/isodir/bin/sh
-            COMMAND ${CMAKE_STRIP} --strip-unneeded ${CMAKE_BINARY_DIR}/isodir/shell ${CMAKE_BINARY_DIR}/isodir/bin/sh
             COMMENT "Installing dash as /shell and /bin/sh"
     )
 else()

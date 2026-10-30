@@ -17,9 +17,6 @@
 #define USER_STACK_TOP      0x00007FFFFFFFF000ULL
 #define USER_STACK_LIMIT    (8 * 1024 * 1024)
 
-#define PAGE_MASK           (~(uint64_t)(PAGE_SIZE - 1))
-#define PAGE_ALIGN_UP(x)    (((uint64_t)(x) + PAGE_SIZE - 1) & PAGE_MASK)
-
 enum vm_prot {
     VM_NONE = 0,
     VM_READ = 1,
@@ -72,7 +69,7 @@ struct vm_space {
 };
 
 struct vm_space* vm_create();
-struct vm_space* vm_clone(const struct vm_space* src);
+struct vm_space* vm_clone(struct vm_space* src);
 void vm_acquire(struct vm_space* vm);
 void vm_release(struct vm_space* vm);
 

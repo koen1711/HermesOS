@@ -22,8 +22,12 @@ static long futex_key(struct vm_space* vm, const uint64_t uaddr, int* key)
         return -EINVAL;
     if (!vm_populate(vm, uaddr, sizeof(uint32_t), false))
         return -EFAULT;
-    const uint64_t phys = vm_translate(vm, uaddr);
-    *key = WAIT_CHANNEL_FUTEX | (int)((phys >> 2) & 0x0FFFFFFF);
+    spinlock_acquire(&vm->lock);
+    const struct vm_area* a = vm_find(vm, uaddr);
+    const bool shared = a && (a->flags & VMA_SHARED);
+    spinlock_release(&vm->lock);
+    const uint64_t id = shared ? vm_translate(vm, uaddr) >> 2 : (uaddr >> 2) ^ ((uint64_t)vm >> 3);
+    *key = WAIT_CHANNEL_FUTEX | (int)(id & 0x0FFFFFFF);
     return 0;
 }
 
@@ -33,7 +37,7 @@ long futex_wait(struct vm_space* vm, const uint64_t uaddr, const uint32_t expect
     const long err = futex_key(vm, uaddr, &key);
     if (err)
         return err;
-    if (*(volatile uint32_t*)(vm_translate(vm, uaddr)) != expected)
+    if (*(volatile uint32_t*)phys_to_virt(vm_translate(vm, uaddr)) != expected)
         return -EAGAIN;
     return process_sleep_timeout(key, timeout);
 }
