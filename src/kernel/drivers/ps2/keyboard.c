@@ -35,21 +35,63 @@
 #define SC_EXT_KEYPAD_ENTER 0x1C
 #define SC_EXT_KEYPAD_SLASH 0x35
 
+#define PS2_STATUS_OUTPUT_FULL 0x01
+#define PS2_STATUS_INPUT_FULL 0x02
+#define PS2_TIMEOUT 100000
+
+static int ps2_wait_write() {
+    for (int i = 0; i < PS2_TIMEOUT; i++) {
+        if (!(port_read_u8(COMMAND_PORT) & PS2_STATUS_INPUT_FULL))
+            return 0;
+    }
+    return -1;
+}
+
+static int ps2_wait_read() {
+    for (int i = 0; i < PS2_TIMEOUT; i++) {
+        if (port_read_u8(COMMAND_PORT) & PS2_STATUS_OUTPUT_FULL)
+            return 0;
+    }
+    return -1;
+}
+
+static void ps2_command(const uint8_t command) {
+    ps2_wait_write();
+    port_write_u8(COMMAND_PORT, command);
+}
+
+static void ps2_write_data(const uint8_t data) {
+    ps2_wait_write();
+    port_write_u8(DATA_PORT, data);
+}
+
+static int ps2_read_data() {
+    if (ps2_wait_read() < 0)
+        return -1;
+    return port_read_u8(DATA_PORT);
+}
+
 int ps2_keyboard_initialize() {
+    ps2_command(0xAD);
     port_clear_read_buffer(COMMAND_PORT, DATA_PORT);
 
-    port_write_u8(COMMAND_PORT, 0xAE);
-    port_write_u8(COMMAND_PORT, 0x20);
+    ps2_command(0x20);
+    const int config = ps2_read_data();
+    const uint8_t status = ((config < 0 ? 0x01 : config) | 1) & ~0x10;
 
-    const uint8_t status = (port_read_u8(DATA_PORT) | 1) & ~0x10;
-    port_write_u8(COMMAND_PORT, 0x60);
-    port_write_u8(DATA_PORT, status);
+    ps2_command(0xAA);
+    const int self_test = ps2_read_data();
 
-    port_write_u8(COMMAND_PORT, 0xAA);
-    if (port_read_u8(DATA_PORT) != 0x55)
+    ps2_command(0x60);
+    ps2_write_data(status);
+
+    ps2_command(0xAE);
+    port_clear_read_buffer(COMMAND_PORT, DATA_PORT);
+
+    const int ret = irq_register_handler(PS2_KEYBOARD_IRQ, ps2_keyboard_interrupt_handler, nullptr);
+    if (self_test != 0x55)
         return -1;
-
-    return irq_register_handler(PS2_KEYBOARD_IRQ, ps2_keyboard_interrupt_handler, nullptr);
+    return ret;
 }
 
 static const char keymap[128] = {
