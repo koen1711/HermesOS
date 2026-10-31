@@ -121,6 +121,9 @@ typedef struct fat32_sb_info {
     struct dir_index *dir_indexes[FAT_DIR_INDEXES];
     uint64_t dir_index_clock;
     uint32_t dir_changes;
+
+    void    *lock_owner;
+    uint32_t lock_depth;
 } fat32_sb_info;
 
 typedef struct fat32_inode_info {

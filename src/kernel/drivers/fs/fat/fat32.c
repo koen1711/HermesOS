@@ -9,6 +9,7 @@
 #include <hardware/memory/mmu.h>
 #include <hardware/memory/pmm.h>
 #include <os/errno.h>
+#include <drivers/scheduler/process.h>
 
 #define FAT_ATTR_READ_ONLY  0x01
 #define FAT_ATTR_HIDDEN     0x02
@@ -1597,32 +1598,165 @@ static int fat32_file_close(file_t *file)
     return 0;
 }
 
+#define WAIT_CHANNEL_FAT 0x3E000000
+
+static int fs_wait_id(const fat32_sb_info *sbi)
+{
+    return WAIT_CHANNEL_FAT | (int)(((uintptr_t)sbi >> 4) & 0xFFFFFF);
+}
+
+static void fs_lock(fat32_sb_info *sbi)
+{
+    process_t *self = scheduler_get()->current;
+    while (sbi->lock_depth && sbi->lock_owner != self)
+        process_sleep(fs_wait_id(sbi));
+    sbi->lock_owner = self;
+    sbi->lock_depth++;
+}
+
+static void fs_unlock(fat32_sb_info *sbi)
+{
+    if (--sbi->lock_depth)
+        return;
+    sbi->lock_owner = nullptr;
+    process_wakeup(fs_wait_id(sbi));
+}
+
+static fat32_sb_info *file_sbi(const file_t *file)
+{
+    return ((fat32_inode_info *)file->node->private_data)->sbi;
+}
+
+static fat32_sb_info *inode_sbi(const inode_t *inode)
+{
+    return ((fat32_inode_info *)inode->private_data)->sbi;
+}
+
+static ssize_t locked_read(file_t *file, void *buf, const size_t len)
+{
+    fat32_sb_info *sbi = file_sbi(file);
+    fs_lock(sbi);
+    const ssize_t r = fat32_file_read(file, buf, len);
+    fs_unlock(sbi);
+    return r;
+}
+
+static ssize_t locked_write(file_t *file, const void *buf, const size_t len)
+{
+    fat32_sb_info *sbi = file_sbi(file);
+    fs_lock(sbi);
+    const ssize_t r = fat32_file_write(file, buf, len);
+    fs_unlock(sbi);
+    return r;
+}
+
+static int locked_truncate(file_t *file, const size_t size)
+{
+    fat32_sb_info *sbi = file_sbi(file);
+    fs_lock(sbi);
+    const int r = fat32_truncate(file, size);
+    fs_unlock(sbi);
+    return r;
+}
+
+static int locked_fallocate(file_t *file, const int mode, const int64_t offset, const int64_t len)
+{
+    fat32_sb_info *sbi = file_sbi(file);
+    fs_lock(sbi);
+    const int r = fat32_fallocate(file, mode, offset, len);
+    fs_unlock(sbi);
+    return r;
+}
+
+static int locked_mmap_page(file_t *file, const uint64_t offset, uint64_t *frame)
+{
+    fat32_sb_info *sbi = file_sbi(file);
+    fs_lock(sbi);
+    const int r = fat32_mmap_page(file, offset, frame);
+    fs_unlock(sbi);
+    return r;
+}
+
+static int locked_readdir(file_t *file, struct vfs_dirent *out)
+{
+    fat32_sb_info *sbi = file_sbi(file);
+    fs_lock(sbi);
+    const int r = fat32_readdir(file, out);
+    fs_unlock(sbi);
+    return r;
+}
+
+static inode_t *locked_lookup(const inode_t *dir, const char *target)
+{
+    fat32_sb_info *sbi = inode_sbi(dir);
+    fs_lock(sbi);
+    inode_t *r = fat32_lookup(dir, target);
+    fs_unlock(sbi);
+    return r;
+}
+
+static void locked_release(inode_t *inode)
+{
+    fat32_sb_info *sbi = inode_sbi(inode);
+    fs_lock(sbi);
+    fat32_release(inode);
+    fs_unlock(sbi);
+}
+
+static int locked_create(inode_t *dir, const char *name, const bool directory)
+{
+    fat32_sb_info *sbi = inode_sbi(dir);
+    fs_lock(sbi);
+    const int r = fat32_create(dir, name, directory);
+    fs_unlock(sbi);
+    return r;
+}
+
+static int locked_unlink(inode_t *dir, const char *name, const bool directory)
+{
+    fat32_sb_info *sbi = inode_sbi(dir);
+    fs_lock(sbi);
+    const int r = fat32_unlink(dir, name, directory);
+    fs_unlock(sbi);
+    return r;
+}
+
+static int locked_rename(inode_t *old_dir, const char *old_name, inode_t *new_dir, const char *new_name,
+                         const bool no_replace)
+{
+    fat32_sb_info *sbi = inode_sbi(old_dir);
+    fs_lock(sbi);
+    const int r = fat32_rename(old_dir, old_name, new_dir, new_name, no_replace);
+    fs_unlock(sbi);
+    return r;
+}
+
 static file_operations_t fat32_dir_fops = {
     .open    = fat32_file_open,
-    .readdir = fat32_readdir,
+    .readdir = locked_readdir,
     .close = fat32_file_close,
 };
 
 static file_operations_t fat32_file_fops = {
-    .read     = fat32_file_read,
-    .write    = fat32_file_write,
-    .truncate = fat32_truncate,
-    .fallocate = fat32_fallocate,
-    .mmap_page = fat32_mmap_page,
+    .read     = locked_read,
+    .write    = locked_write,
+    .truncate = locked_truncate,
+    .fallocate = locked_fallocate,
+    .mmap_page = locked_mmap_page,
     .open     = fat32_file_open,
     .close    = fat32_file_close,
 };
 
 static inode_operations_t fat32_dir_iops = {
-    .lookup  = fat32_lookup,
-    .release = fat32_release,
-    .create  = fat32_create,
-    .unlink  = fat32_unlink,
-    .rename  = fat32_rename,
+    .lookup  = locked_lookup,
+    .release = locked_release,
+    .create  = locked_create,
+    .unlink  = locked_unlink,
+    .rename  = locked_rename,
 };
 
 static inode_operations_t fat32_file_iops = {
-    .release = fat32_release,
+    .release = locked_release,
 };
 
 static inode_t *fat32_mount(void *blob)
@@ -1699,7 +1833,9 @@ static inode_t *fat32_mount(void *blob)
 static int fat32_sync(inode_t *root)
 {
     const fat32_inode_info *fi = root->private_data;
+    fs_lock(fi->sbi);
     fsinfo_sync(fi->sbi);
+    fs_unlock(fi->sbi);
     const struct block_device *bdev = fi->sbi->bdev;
     if (!bdev->ops->flush)
         return 0;
@@ -1709,18 +1845,22 @@ static int fat32_sync(inode_t *root)
 static int fat32_statfs(const inode_t *root, struct vfs_statfs *out)
 {
     fat32_sb_info *sbi = ((fat32_inode_info *)root->private_data)->sbi;
+    fs_lock(sbi);
     if (sbi->fsinfo.free_cluster_count == FSINFO_UNKNOWN) {
         uint32_t free = 0;
         for (uint32_t c = 2; c < sbi->total_clusters + 2; c++) {
             uint32_t v;
-            if (fat_get(sbi, c, &v) < 0)
+            if (fat_get(sbi, c, &v) < 0) {
+                fs_unlock(sbi);
                 return -EIO;
+            }
             if (v == FAT_FREE)
                 free++;
         }
         sbi->fsinfo.free_cluster_count = free;
         sbi->fsinfo_dirty = true;
     }
+    fs_unlock(sbi);
 
     out->magic        = 0x4d44;
     out->block_size   = cluster_byte_size(sbi);
