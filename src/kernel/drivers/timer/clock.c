@@ -3,6 +3,7 @@
 #include <drivers/timer/callout.h>
 #include <drivers/timer/rtc.h>
 #include <drivers/timer/tsc.h>
+#include <hardware/smp/smp.h>
 #include <os/errno.h>
 
 #define NS_PER_SEC 1000000000ULL
@@ -22,13 +23,21 @@ static int64_t days_from_civil(int64_t y, const unsigned m, const unsigned d)
 
 static uint64_t realtime_ns()
 {
-    if (!boot_epoch_known) {
+    if (!__atomic_load_n(&boot_epoch_known, __ATOMIC_ACQUIRE)) {
+        const bool locked = kernel_lock_enter();
+        if (boot_epoch_known) {
+            if (locked)
+                kernel_lock_exit();
+            return boot_epoch_ns + clock_monotonic_ns();
+        }
         const rtc_datetime now = rtc_get_datetime();
         const int64_t days = days_from_civil(2000 + now.date.year, now.date.month, now.date.day);
         const uint64_t secs = (uint64_t)days * 86400 + now.time.hours * 3600 + now.time.minutes * 60
                               + now.time.seconds;
         boot_epoch_ns = secs * NS_PER_SEC - clock_monotonic_ns();
-        boot_epoch_known = true;
+        __atomic_store_n(&boot_epoch_known, true, __ATOMIC_RELEASE);
+        if (locked)
+            kernel_lock_exit();
     }
     return boot_epoch_ns + clock_monotonic_ns();
 }

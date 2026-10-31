@@ -16,4 +16,8 @@ if [ -z "$SMP" ]; then
 fi
 echo "Booting with $SMP CPUs"
 
-qemu-system-x86_64 -machine pc $ACCEL -smp "$SMP" -s -drive file="$BINARY_DIR/core.img",format=raw,if=ide -serial stdio -device bochs-display -rtc base=localtime -m 4G
+DISK_IF=ide
+[ -n "$VIRTIO" ] && DISK_IF=virtio
+echo "Disk interface: $DISK_IF"
+
+qemu-system-x86_64 -machine pc $ACCEL -smp "$SMP" -s -drive file="$BINARY_DIR/core.img",format=raw,if=$DISK_IF -serial stdio -device bochs-display -rtc base=localtime -m 4G

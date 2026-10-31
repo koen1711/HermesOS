@@ -10,6 +10,11 @@
 #define LARGE_ALLOC_THRESHOLD (32 * 1024)
 #define BLOCK_USED ((memory_block_t*)0x4845415055534544ULL)
 #define BLOCK_LARGE ((memory_block_t*)0x484541504C524745ULL)
+#define BLOCK_CLASS ((memory_block_t*)0x48454150534C4142ULL)
+#define CLASS_MIN_SHIFT 4
+#define CLASS_COUNT 7
+#define CLASS_MAX_SIZE (1 << (CLASS_MIN_SHIFT + CLASS_COUNT - 1))
+#define CLASS_SLAB_PAGES 16
 
 extern void* _kernel_virtual_end;
 
@@ -23,6 +28,13 @@ typedef struct memory_block_s memory_block_t;
 
 memory_block_t* first_free_block = nullptr;
 static spinlock_t heap_lock = { .name = "heap" };
+
+struct size_class {
+    spinlock_t lock;
+    memory_block_t* free;
+};
+
+static struct size_class classes[CLASS_COUNT];
 
 static void insert_free_locked(memory_block_t* block) {
     memory_block_t* previous = nullptr;
@@ -133,12 +145,72 @@ static void* large_alloc(const uintptr_t aligned_size) {
     return (uint8_t*)block + sizeof(memory_block_t);
 }
 
+static int class_index(const uintptr_t size) {
+    int index = 0;
+    while (((uintptr_t)1 << (CLASS_MIN_SHIFT + index)) < size)
+        index++;
+    return index;
+}
+
+static bool class_refill(struct size_class* c, const uint64_t object_size) {
+    const uint64_t stride = object_size + sizeof(memory_block_t);
+    uint8_t* slab = alloc_kernel_pages(CLASS_SLAB_PAGES);
+    if (!slab) return false;
+
+    memory_block_t* head = nullptr;
+    for (uint64_t at = (CLASS_SLAB_PAGES * PAGE_SIZE / stride) * stride; at >= stride; at -= stride) {
+        memory_block_t* object = (memory_block_t*)(slab + at - stride);
+        object->size = object_size;
+        object->next = head;
+        head = object;
+    }
+
+    uint64_t flags;
+    spinlock_acquire_irqsave(&c->lock, &flags);
+    memory_block_t* tail = head;
+    while (tail->next) tail = tail->next;
+    tail->next = c->free;
+    c->free = head;
+    spinlock_release_irqrestore(&c->lock, flags);
+    return true;
+}
+
+static void* class_alloc(const uintptr_t size) {
+    const int index = class_index(size);
+    struct size_class* c = &classes[index];
+    for (;;) {
+        uint64_t flags;
+        spinlock_acquire_irqsave(&c->lock, &flags);
+        memory_block_t* object = c->free;
+        if (object) {
+            c->free = object->next;
+            object->next = BLOCK_CLASS;
+        }
+        spinlock_release_irqrestore(&c->lock, flags);
+        if (object) return (uint8_t*)object + sizeof(memory_block_t);
+        if (!class_refill(c, (uint64_t)1 << (CLASS_MIN_SHIFT + index))) return nullptr;
+    }
+}
+
+static void class_free(memory_block_t* object) {
+    struct size_class* c = &classes[class_index(object->size)];
+    uint64_t flags;
+    spinlock_acquire_irqsave(&c->lock, &flags);
+    object->next = c->free;
+    c->free = object;
+    spinlock_release_irqrestore(&c->lock, flags);
+}
+
 void* malloc(const uintptr_t size) {
     if (size == 0 || size > (1ULL << 40)) return nullptr;
 
     const uintptr_t aligned_size = (size + 7) & ~7;
 
-    void* ptr = aligned_size >= LARGE_ALLOC_THRESHOLD ? large_alloc(aligned_size) : nullptr;
+    void* ptr = nullptr;
+    if (aligned_size <= CLASS_MAX_SIZE)
+        ptr = class_alloc(aligned_size);
+    else if (aligned_size >= LARGE_ALLOC_THRESHOLD)
+        ptr = large_alloc(aligned_size);
     while (!ptr) {
         ptr = heap_take(aligned_size);
         if (!ptr && !heap_grow(aligned_size)) return nullptr;
@@ -156,6 +228,10 @@ void free(void* ptr) {
     if (block->next == BLOCK_LARGE) {
         block->next = nullptr;
         free_kernel_pages(block, (block->size + sizeof(memory_block_t)) / PAGE_SIZE);
+        return;
+    }
+    if (block->next == BLOCK_CLASS) {
+        class_free(block);
         return;
     }
     if (block->next != BLOCK_USED) return;
@@ -228,7 +304,7 @@ void* realloc(void* ptr, const uintptr_t size) {
         return nullptr;
     }
     const memory_block_t* block = (memory_block_t*)((uint8_t*)ptr - sizeof(memory_block_t));
-    if (block->next != BLOCK_USED && block->next != BLOCK_LARGE) return nullptr;
+    if (block->next != BLOCK_USED && block->next != BLOCK_LARGE && block->next != BLOCK_CLASS) return nullptr;
     const uint64_t old_size = block->size;
     if (size <= old_size) return ptr;
 

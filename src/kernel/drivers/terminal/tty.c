@@ -436,7 +436,7 @@ int tty_install(struct proc_files* files, const int index)
     for (int fd = 0; fd < 3; fd++) {
         if (files->file[fd] == nullptr) {
             files->file[fd] = t->file;
-            t->file->ref_count++;
+            __atomic_fetch_add(&t->file->ref_count, 1, __ATOMIC_RELAXED);
         }
     }
     return 0;

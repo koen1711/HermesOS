@@ -75,6 +75,7 @@ void vm_release(struct vm_space* vm);
 
 struct vm_area* vm_find(const struct vm_space* vm, uint64_t addr);
 bool vm_range_free(const struct vm_space* vm, uint64_t start, uint64_t end);
+bool vm_range_available(struct vm_space* vm, uint64_t start, uint64_t end);
 
 int vm_map(struct vm_space* vm, uint64_t addr, size_t len, uint32_t prot, uint32_t flags, bool fixed,
            uint64_t* out);

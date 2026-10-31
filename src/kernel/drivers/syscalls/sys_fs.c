@@ -595,10 +595,10 @@ static long dup_from(const int fd, const int min_fd, const bool cloexec)
     struct file_s* f = fd_get(fd);
     if (f == nullptr)
         return -EBADF;
-    f->ref_count++;
+    __atomic_fetch_add(&f->ref_count, 1, __ATOMIC_RELAXED);
     const int nfd = fd_install_from(f, min_fd, cloexec);
     if (nfd < 0)
-        f->ref_count--;
+        __atomic_fetch_sub(&f->ref_count, 1, __ATOMIC_RELAXED);
     return nfd;
 }
 
@@ -616,7 +616,7 @@ long sys_dup3(const int oldfd, const int newfd, const int flags)
         return -EBADF;
     if (newfd < 0 || newfd >= PROC_MAX_FILE_DESCRIPTORS)
         return -EBADF;
-    f->ref_count++;
+    __atomic_fetch_add(&f->ref_count, 1, __ATOMIC_RELAXED);
     return fd_install_at(newfd, f, flags & LO_CLOEXEC);
 }
 

@@ -135,7 +135,12 @@ static void drain(struct vm_space* vm)
     struct vm_flush* w = vm->pending;
     vm->pending = vm->pending_tail = nullptr;
     spinlock_release(&vm->lock);
+    if (!w)
+        return;
+    const bool locked = kernel_lock_enter();
     run_flush(w);
+    if (locked)
+        kernel_lock_exit();
 }
 
 static int area_split(struct vm_space* vm, struct vm_area* a, const uint64_t at)
@@ -318,6 +323,14 @@ struct vm_area* vm_find(const struct vm_space* vm, const uint64_t addr)
             return a;
     }
     return nullptr;
+}
+
+bool vm_range_available(struct vm_space* vm, const uint64_t start, const uint64_t end)
+{
+    spinlock_acquire(&vm->lock);
+    const bool available = vm_range_free(vm, start, end);
+    spinlock_release(&vm->lock);
+    return available;
 }
 
 bool vm_range_free(const struct vm_space* vm, const uint64_t start, const uint64_t end)

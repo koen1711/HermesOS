@@ -63,7 +63,7 @@ static long map_file(struct vm_space* vm, struct file_s* f, const uint64_t start
 
 static void file_acquire(void* file)
 {
-    ((struct file_s*)file)->ref_count++;
+    __atomic_fetch_add(&((struct file_s*)file)->ref_count, 1, __ATOMIC_RELAXED);
 }
 
 static void file_release(void* file)
@@ -117,7 +117,7 @@ long sys_mmap(const uint64_t addr, const size_t len, const int prot, const int f
     const bool fixed = flags & (MAP_FIXED | MAP_FIXED_NOREPLACE);
     if (fixed && (addr & (PAGE_SIZE - 1)))
         return -EINVAL;
-    if ((flags & MAP_FIXED_NOREPLACE) && !vm_range_free(vm, addr, addr + PAGE_ALIGN_UP(len)))
+    if ((flags & MAP_FIXED_NOREPLACE) && !vm_range_available(vm, addr, addr + PAGE_ALIGN_UP(len)))
         return -EEXIST;
 
     struct file_s* f = nullptr;

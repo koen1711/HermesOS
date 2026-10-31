@@ -183,8 +183,11 @@ static uint32_t alloc_cluster(fat32_sb_info *sbi, const uint32_t prev, const boo
     return 0;
 }
 
+static void dindex_drop(fat32_sb_info *sbi, uint32_t dir_first);
+
 static void free_chain(fat32_sb_info *sbi, uint32_t c)
 {
+    dindex_drop(sbi, c);
     while (valid_cluster(sbi, c)) {
         const uint32_t next = fat32_next_cluster(sbi, c);
         if (fat_set(sbi, c, FAT_FREE) < 0)
@@ -464,25 +467,239 @@ static bool name_equal(const char *a, const char *b)
     return *a == *b;
 }
 
-static int find_entry(fat32_sb_info *sbi, const uint32_t dir_first, const char *name, struct dir_found *f)
+#define DIR_INDEX_MIN_ENTRIES 64
+#define DIR_INDEX_TOMBSTONE 0xFFFFFFFFu
+#define DIR_INDEX_CANDIDATES 8
+
+struct dir_index_slot {
+    uint32_t hash;
+    uint32_t pos;
+};
+
+struct dir_index {
+    uint32_t dir_first;
+    uint32_t count;
+    uint32_t used;
+    uint32_t capacity;
+    uint64_t last_use;
+    struct dir_index_slot *slots;
+};
+
+static uint32_t name_hash(const char *name)
 {
-    struct dir_iter it;
-    int err = iter_init(&it, sbi, dir_first, 0);
-    if (err)
-        return err;
-    for (;;) {
-        const int r = iter_next(&it, f);
-        if (r <= 0) {
-            err = r < 0 ? r : -ENOENT;
+    uint32_t h = 2166136261u;
+    for (; *name; name++)
+        h = (h ^ (uint8_t)fat32_lower(*name)) * 16777619u;
+    return h;
+}
+
+static struct dir_index *dindex_new(const uint32_t dir_first, const uint32_t capacity)
+{
+    struct dir_index *idx = malloc(sizeof(struct dir_index));
+    if (!idx)
+        return nullptr;
+    idx->slots = malloc(capacity * sizeof(struct dir_index_slot));
+    if (!idx->slots) {
+        free(idx);
+        return nullptr;
+    }
+    idx->dir_first = dir_first;
+    idx->capacity = capacity;
+    return idx;
+}
+
+static void dindex_free(struct dir_index *idx)
+{
+    if (!idx)
+        return;
+    free(idx->slots);
+    free(idx);
+}
+
+static void dindex_place(struct dir_index *idx, const uint32_t hash, const uint32_t pos)
+{
+    for (uint32_t i = hash & (idx->capacity - 1);; i = (i + 1) & (idx->capacity - 1)) {
+        struct dir_index_slot *slot = &idx->slots[i];
+        if (slot->pos == 0 || slot->pos == DIR_INDEX_TOMBSTONE) {
+            if (slot->pos == 0)
+                idx->used++;
+            slot->hash = hash;
+            slot->pos = pos + 1;
+            idx->count++;
+            return;
+        }
+    }
+}
+
+static bool dindex_add(struct dir_index *idx, const uint32_t hash, const uint32_t pos)
+{
+    if ((idx->used + 1) * 4 > idx->capacity * 3) {
+        uint32_t capacity = idx->capacity;
+        while ((idx->count + 1) * 2 > capacity)
+            capacity *= 2;
+        struct dir_index_slot *slots = malloc(capacity * sizeof(struct dir_index_slot));
+        if (!slots)
+            return false;
+        struct dir_index_slot *old = idx->slots;
+        const uint32_t old_capacity = idx->capacity;
+        idx->slots = slots;
+        idx->capacity = capacity;
+        idx->count = idx->used = 0;
+        for (uint32_t i = 0; i < old_capacity; i++) {
+            if (old[i].pos && old[i].pos != DIR_INDEX_TOMBSTONE)
+                dindex_place(idx, old[i].hash, old[i].pos - 1);
+        }
+        free(old);
+    }
+    dindex_place(idx, hash, pos);
+    return true;
+}
+
+static int dindex_slot(const fat32_sb_info *sbi, const uint32_t dir_first)
+{
+    for (int i = 0; i < FAT_DIR_INDEXES; i++) {
+        if (sbi->dir_indexes[i] && sbi->dir_indexes[i]->dir_first == dir_first)
+            return i;
+    }
+    return -1;
+}
+
+static void dindex_drop(fat32_sb_info *sbi, const uint32_t dir_first)
+{
+    const int i = dindex_slot(sbi, dir_first);
+    if (i >= 0) {
+        dindex_free(sbi->dir_indexes[i]);
+        sbi->dir_indexes[i] = nullptr;
+    }
+}
+
+static void dindex_store(fat32_sb_info *sbi, struct dir_index *idx)
+{
+    int victim = 0;
+    for (int i = 0; i < FAT_DIR_INDEXES; i++) {
+        if (!sbi->dir_indexes[i]) {
+            victim = i;
             break;
         }
-        if (name_equal(f->name, name)) {
-            err = 0;
+        if (sbi->dir_indexes[i]->last_use < sbi->dir_indexes[victim]->last_use)
+            victim = i;
+    }
+    dindex_free(sbi->dir_indexes[victim]);
+    idx->last_use = ++sbi->dir_index_clock;
+    sbi->dir_indexes[victim] = idx;
+}
+
+static void dindex_insert(fat32_sb_info *sbi, const uint32_t dir_first, const char *name, const uint32_t pos)
+{
+    const int i = dindex_slot(sbi, dir_first);
+    if (i >= 0 && !dindex_add(sbi->dir_indexes[i], name_hash(name), pos))
+        dindex_drop(sbi, dir_first);
+}
+
+static void dindex_remove_range(const fat32_sb_info *sbi, const uint32_t dir_first, const uint32_t from,
+                                const uint32_t to)
+{
+    const int i = dindex_slot(sbi, dir_first);
+    if (i < 0)
+        return;
+    struct dir_index *idx = sbi->dir_indexes[i];
+    for (uint32_t s = 0; s < idx->capacity; s++) {
+        const uint32_t pos = idx->slots[s].pos;
+        if (pos && pos != DIR_INDEX_TOMBSTONE && pos - 1 >= from && pos - 1 <= to) {
+            idx->slots[s].pos = DIR_INDEX_TOMBSTONE;
+            idx->count--;
+        }
+    }
+}
+
+static int read_entry_at(fat32_sb_info *sbi, const uint32_t dir_first, const uint32_t pos, struct dir_found *f)
+{
+    struct dir_iter it;
+    int err = iter_init(&it, sbi, dir_first, pos);
+    if (err)
+        return err;
+    err = iter_next(&it, f);
+    iter_done(&it);
+    return err;
+}
+
+static int scan_entry(fat32_sb_info *sbi, const uint32_t dir_first, const char *name, struct dir_found *f)
+{
+    struct dir_found *cur = malloc(sizeof(struct dir_found));
+    struct dir_index *idx = dindex_new(dir_first, 256);
+    struct dir_iter it;
+    int err = cur ? iter_init(&it, sbi, dir_first, 0) : -ENOMEM;
+    if (err) {
+        free(cur);
+        dindex_free(idx);
+        return err;
+    }
+
+    const uint32_t changes = sbi->dir_changes;
+    bool found = false;
+    for (;;) {
+        const int r = iter_next(&it, cur);
+        if (r <= 0) {
+            err = r;
             break;
+        }
+        if (!found && name_equal(cur->name, name)) {
+            *f = *cur;
+            found = true;
+            if (!idx)
+                break;
+        }
+        if (idx && !dindex_add(idx, name_hash(cur->name), cur->lfn_pos)) {
+            dindex_free(idx);
+            idx = nullptr;
+            if (found)
+                break;
         }
     }
     iter_done(&it);
-    return err;
+    free(cur);
+
+    if (idx && err == 0 && idx->count >= DIR_INDEX_MIN_ENTRIES && changes == sbi->dir_changes) {
+        dindex_drop(sbi, dir_first);
+        dindex_store(sbi, idx);
+    } else {
+        dindex_free(idx);
+    }
+    if (err < 0)
+        return err;
+    return found ? 0 : -ENOENT;
+}
+
+static int find_entry(fat32_sb_info *sbi, const uint32_t dir_first, const char *name, struct dir_found *f)
+{
+    const int i = dindex_slot(sbi, dir_first);
+    if (i < 0)
+        return scan_entry(sbi, dir_first, name, f);
+
+    struct dir_index *idx = sbi->dir_indexes[i];
+    idx->last_use = ++sbi->dir_index_clock;
+    const uint32_t hash = name_hash(name);
+    uint32_t candidates[DIR_INDEX_CANDIDATES];
+    int n = 0;
+    for (uint32_t s = hash & (idx->capacity - 1);; s = (s + 1) & (idx->capacity - 1)) {
+        const struct dir_index_slot *slot = &idx->slots[s];
+        if (slot->pos == 0)
+            break;
+        if (slot->pos == DIR_INDEX_TOMBSTONE || slot->hash != hash)
+            continue;
+        if (n == DIR_INDEX_CANDIDATES)
+            return scan_entry(sbi, dir_first, name, f);
+        candidates[n++] = slot->pos - 1;
+    }
+
+    for (int c = 0; c < n; c++) {
+        const int r = read_entry_at(sbi, dir_first, candidates[c], f);
+        if (r < 0)
+            return r;
+        if (r > 0 && f->lfn_pos == candidates[c] && name_equal(f->name, name))
+            return 0;
+    }
+    return -ENOENT;
 }
 
 static bool short_name_taken(fat32_sb_info *sbi, const uint32_t dir_first, const uint8_t raw[11])
@@ -497,6 +714,72 @@ static bool short_name_taken(fat32_sb_info *sbi, const uint32_t dir_first, const
     free(f);
     iter_done(&it);
     return taken;
+}
+
+#define TAIL_BITMAP_BITS 65536
+
+static void short_tail_name(uint8_t raw[11], const char basis[8], const size_t bn, const uint8_t ext[3], uint32_t n)
+{
+    char tail[8];
+    int tl = 0;
+    char digits[7];
+    int dn = 0;
+    for (; n; n /= 10)
+        digits[dn++] = (char)('0' + n % 10);
+    tail[tl++] = '~';
+    while (dn)
+        tail[tl++] = digits[--dn];
+    const size_t keep = bn < (size_t)(8 - tl) ? bn : (size_t)(8 - tl);
+    memset(raw, ' ', 11);
+    memcpy(raw, basis, keep);
+    memcpy(raw + keep, tail, tl);
+    memcpy(raw + 8, ext, 3);
+}
+
+static uint32_t parse_tail(const uint8_t raw[11])
+{
+    int at = 7;
+    while (at > 0 && raw[at] == ' ')
+        at--;
+    uint32_t n = 0, scale = 1;
+    for (; at > 0 && raw[at] >= '0' && raw[at] <= '9'; at--, scale *= 10)
+        n += (raw[at] - '0') * scale;
+    return at > 0 && raw[at] == '~' && scale > 1 && raw[at + 1] != '0' ? n : 0;
+}
+
+static uint32_t lowest_free_tail(fat32_sb_info *sbi, const uint32_t dir_first, const char basis[8], const size_t bn,
+                                 const uint8_t ext[3])
+{
+    uint64_t *used = malloc(TAIL_BITMAP_BITS / 8);
+    struct dir_iter it;
+    if (!used || iter_init(&it, sbi, dir_first, 0) < 0) {
+        free(used);
+        return 0;
+    }
+
+    fat32_directory_entry de;
+    while (iter_read(&it, &de) > 0 && de.filename[0] != 0x00) {
+        if ((uint8_t)de.filename[0] == DIRENT_DELETED || de.attributes == FAT_ATTR_LFN
+            || (de.attributes & FAT_ATTR_VOLUME_ID))
+            continue;
+        uint8_t raw[11];
+        memcpy(raw, de.filename, 8);
+        memcpy(raw + 8, de.extension, 3);
+        const uint32_t n = parse_tail(raw);
+        if (n == 0 || n >= TAIL_BITMAP_BITS)
+            continue;
+        uint8_t expect[11];
+        short_tail_name(expect, basis, bn, ext, n);
+        if (memcmp(expect, raw, 11) == 0)
+            used[n / 64] |= 1ULL << (n % 64);
+    }
+    iter_done(&it);
+
+    uint32_t n = 1;
+    while (n < TAIL_BITMAP_BITS && used[n / 64] & (1ULL << (n % 64)))
+        n++;
+    free(used);
+    return n;
 }
 
 static bool short_char_ok(const char c)
@@ -572,21 +855,13 @@ static int make_short_name(fat32_sb_info *sbi, const uint32_t dir_first, const c
             ext[en++] = (uint8_t)(short_char_ok(c) ? fat32_upper(c) : '_');
     }
 
-    for (uint32_t n = 1; n < 1000000; n++) {
-        char tail[8];
-        int tl = 0;
-        char digits[7];
-        int dn = 0;
-        for (uint32_t v = n; v; v /= 10)
-            digits[dn++] = (char)('0' + v % 10);
-        tail[tl++] = '~';
-        while (dn)
-            tail[tl++] = digits[--dn];
-        const size_t keep = bn < (size_t)(8 - tl) ? bn : (size_t)(8 - tl);
-        memset(raw, ' ', 11);
-        memcpy(raw, basis, keep);
-        memcpy(raw + keep, tail, tl);
-        memcpy(raw + 8, ext, 3);
+    uint32_t n = lowest_free_tail(sbi, dir_first, basis, bn, ext);
+    if (n && n < TAIL_BITMAP_BITS) {
+        short_tail_name(raw, basis, bn, ext, n);
+        return 0;
+    }
+    for (n = n ? n : 1; n < 1000000; n++) {
+        short_tail_name(raw, basis, bn, ext, n);
         if (!short_name_taken(sbi, dir_first, raw))
             return 0;
     }
@@ -672,16 +947,18 @@ static int write_name_entries(fat32_sb_info *sbi, const uint32_t dir_first, cons
 
 static int delete_slots(fat32_sb_info *sbi, const uint32_t dir_first, const uint32_t from, const uint32_t to)
 {
-    for (uint32_t p = from; p <= to; p += DIRENT_SIZE) {
+    dindex_remove_range(sbi, dir_first, from, to);
+    int err = 0;
+    for (uint32_t p = from; !err && p <= to; p += DIRENT_SIZE) {
         fat32_directory_entry de;
-        int err = dir_entry_io(sbi, dir_first, p, &de, false);
+        err = dir_entry_io(sbi, dir_first, p, &de, false);
         if (err)
-            return err;
+            break;
         de.filename[0] = (char)DIRENT_DELETED;
-        if ((err = dir_entry_io(sbi, dir_first, p, &de, true)) != 0)
-            return err;
+        err = dir_entry_io(sbi, dir_first, p, &de, true);
     }
-    return 0;
+    sbi->dir_changes++;
+    return err;
 }
 
 static bool valid_name(const char *name)
@@ -1140,7 +1417,12 @@ static int add_entry(fat32_sb_info *sbi, const uint32_t dir_first, const char *n
         return err;
     if (lfn_pos_out)
         *lfn_pos_out = pos;
-    return write_name_entries(sbi, dir_first, pos, name, lfn, de, pos_out);
+    dindex_insert(sbi, dir_first, name, pos);
+    err = write_name_entries(sbi, dir_first, pos, name, lfn, de, pos_out);
+    if (err)
+        dindex_remove_range(sbi, dir_first, pos, pos + (slots - 1) * DIRENT_SIZE);
+    sbi->dir_changes++;
+    return err;
 }
 
 static int fat32_create(inode_t *dir, const char *name, const bool directory)
@@ -1458,6 +1740,8 @@ static void fat32_unmount(inode_t *root)
 
     if (sbi) {
         fsinfo_sync(sbi);
+        for (int i = 0; i < FAT_DIR_INDEXES; i++)
+            dindex_free(sbi->dir_indexes[i]);
         if (sbi->bdev->ops->release)
             sbi->bdev->ops->release(sbi->bdev);
         else

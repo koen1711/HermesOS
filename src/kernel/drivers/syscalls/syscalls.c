@@ -8,11 +8,13 @@
 #include <drivers/fs/vfs/vfs.h>
 #include <drivers/net/socket/socket_syscalls.h>
 #include <drivers/net/core/netisr.h>
+#include <hardware/smp/smp.h>
 #include <os/errno.h>
 
 #define AT_FDCWD (-100)
 #define CLONE_VM 0x00000100
 #define CLONE_VFORK 0x00004000
+#define MMAP_ANONYMOUS 0x20
 
 #define MSR_EFER  0xC0000080
 #define MSR_STAR  0xC0000081
@@ -476,6 +478,33 @@ static long process_syscall(interrupt_context* c, process_t* current)
     }
 }
 
+static bool runs_unlocked(const interrupt_context* c)
+{
+    switch (c->rax) {
+        case SYSCALL_MMAP:
+            return c->r10 & MMAP_ANONYMOUS;
+        case SYSCALL_MUNMAP:
+        case SYSCALL_MPROTECT:
+        case SYSCALL_BRK:
+        case SYSCALL_MADVISE:
+        case SYSCALL_MREMAP:
+        case SYSCALL_GETPID:
+        case SYSCALL_GETTID:
+        case SYSCALL_GETPPID:
+        case SYSCALL_GETUID:
+        case SYSCALL_GETEUID:
+        case SYSCALL_GETGID:
+        case SYSCALL_GETEGID:
+        case SYSCALL_CLOCK_GETTIME:
+        case SYSCALL_CLOCK_GETRES:
+        case SYSCALL_GETTIMEOFDAY:
+        case SYSCALL_TIME:
+            return true;
+        default:
+            return false;
+    }
+}
+
 void handle_syscall(interrupt_context* context)
 {
     process_t* current = scheduler_get()->current;
@@ -502,8 +531,12 @@ void handle_syscall(interrupt_context* context)
             context->rax = (uint64_t)file_syscall(context);
             netisr_poll();
             break;
-        default:
+        default: {
+            const bool dropped = runs_unlocked(context) && kernel_lock_drop();
             context->rax = (uint64_t)process_syscall(context, current);
+            if (dropped)
+                kernel_lock_enter();
             break;
+        }
     }
 }

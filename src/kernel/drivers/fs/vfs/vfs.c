@@ -540,10 +540,7 @@ int vfs_close(const int fd)
 
     if (f == nullptr) 
         return -1;
-    f->ref_count--;
-
-
-    if (f->ref_count == 0) {
+    if (__atomic_sub_fetch(&f->ref_count, 1, __ATOMIC_ACQ_REL) == 0) {
         if (f->node->fops != nullptr && f->node->fops->close != nullptr)
             f->node->fops->close(f);
         if (f->mount != nullptr)

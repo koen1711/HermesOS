@@ -277,7 +277,7 @@ struct proc_files *files_clone(const struct proc_files *src) {
     files->ref_count = 1;
     for (int i = 0; i<PROC_MAX_FILE_DESCRIPTORS; i++) {
         if (files->file[i] != nullptr) {
-            files->file[i]->ref_count++;
+            __atomic_fetch_add(&files->file[i]->ref_count, 1, __ATOMIC_RELAXED);
         }
     }
     return files;

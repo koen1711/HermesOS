@@ -93,6 +93,10 @@ typedef struct {
     uint16_t name3[2];
 } __attribute__((packed)) fat32_long_filename_entry;
 
+#define FAT_DIR_INDEXES 8
+
+struct dir_index;
+
 typedef struct fat32_sb_info {
     struct block_device *bdev;
     fat32_boot_sector    bs;
@@ -113,6 +117,10 @@ typedef struct fat32_sb_info {
     uint8_t  fat_cache[512];
 
     struct fat32_inode_info *open_nodes;
+
+    struct dir_index *dir_indexes[FAT_DIR_INDEXES];
+    uint64_t dir_index_clock;
+    uint32_t dir_changes;
 } fat32_sb_info;
 
 typedef struct fat32_inode_info {
