@@ -7,7 +7,7 @@ ACCEL=""
 
 if [ -z "$SMP" ]; then
     HOST_CPUS=$(nproc 2>/dev/null || getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)
-    SMP=$((HOST_CPUS / 4))
+    SMP=$((HOST_CPUS / 2))
     [ "$SMP" -lt 1 ] && SMP=1
     [ "$SMP" -gt 16 ] && SMP=16
 fi

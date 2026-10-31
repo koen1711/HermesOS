@@ -916,6 +916,28 @@ static ssize_t fat32_file_read(file_t *file, void *buf, size_t len)
     return done ? (ssize_t)done : err;
 }
 
+static void trim_chain(fat32_inode_info *fi, const uint64_t size)
+{
+    fat32_sb_info *sbi = fi->sbi;
+    const uint32_t cs = cluster_byte_size(sbi);
+    const uint32_t keep = (uint32_t)((size + cs - 1) / cs);
+    if (keep == 0) {
+        free_chain(sbi, fi->first_cluster);
+        fi->first_cluster = 0;
+    } else if (fi->first_cluster) {
+        uint32_t last;
+        if (chain_seek(fi, (uint64_t)(keep - 1) * cs, false, &last) == 0) {
+            const uint32_t rest = fat32_next_cluster(sbi, last);
+            if (valid_cluster(sbi, rest)) {
+                fat_set(sbi, last, FAT_EOC);
+                free_chain(sbi, rest);
+            }
+        }
+    }
+    fi->cache_cluster = 0;
+    fi->cache_index = 0;
+}
+
 static ssize_t write_at(fat32_inode_info *fi, const uint64_t pos, const void *src, const size_t len)
 {
     fat32_sb_info *sbi = fi->sbi;
@@ -967,6 +989,8 @@ static ssize_t write_at(fat32_inode_info *fi, const uint64_t pos, const void *sr
         fi->size = (uint32_t)(pos + done);
         fi->inode->size = fi->size;
     }
+    if (err < 0)
+        trim_chain(fi, fi->size);
     const int uerr = dirent_update(fi);
     if (done)
         return (ssize_t)done;
@@ -991,7 +1015,6 @@ static ssize_t fat32_file_write(file_t *file, const void *buf, const size_t len)
 static int fat32_truncate(file_t *file, const size_t size)
 {
     fat32_inode_info *fi = file->node->private_data;
-    fat32_sb_info *sbi = fi->sbi;
     if (size > 0xFFFFFFFFULL)
         return -EFBIG;
     if (size > fi->size) {
@@ -999,23 +1022,7 @@ static int fat32_truncate(file_t *file, const size_t size)
         return z < 0 ? (int)z : 0;
     }
 
-    const uint32_t cs = cluster_byte_size(sbi);
-    const uint32_t keep = (uint32_t)((size + cs - 1) / cs);
-    if (keep == 0) {
-        free_chain(sbi, fi->first_cluster);
-        fi->first_cluster = 0;
-    } else if (fi->first_cluster) {
-        uint32_t last;
-        if (chain_seek(fi, (uint64_t)(keep - 1) * cs, false, &last) == 0) {
-            const uint32_t rest = fat32_next_cluster(sbi, last);
-            if (valid_cluster(sbi, rest)) {
-                fat_set(sbi, last, FAT_EOC);
-                free_chain(sbi, rest);
-            }
-        }
-    }
-    fi->cache_cluster = 0;
-    fi->cache_index = 0;
+    trim_chain(fi, size);
     fi->size = (uint32_t)size;
     fi->inode->size = size;
     pcache_truncate(&fi->pages, size);

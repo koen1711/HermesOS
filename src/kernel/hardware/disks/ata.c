@@ -1,6 +1,7 @@
 #include "ata.h"
 
 #include <os/stdint.h>
+#include <os/errno.h>
 
 #include <drivers/fs/fs.h>
 #include <drivers/fs/fat/fat32.h>
@@ -23,19 +24,19 @@ static int ata_bdev_read(struct block_device *bdev, const uint64_t off,
                          const uint32_t len, void *buf)
 {
     const uint64_t abs_off = bdev->part_offset + off;
-    return ata_read(bdev->unique_id, abs_off, abs_off + len, buf);
+    return ata_read(bdev->unique_id, abs_off, abs_off + len, buf) == 0 ? 0 : -EIO;
 }
 
 static int ata_bdev_write(struct block_device *bdev, const uint64_t off,
                           const uint32_t len, const void *buf)
 {
     const uint64_t abs_off = bdev->part_offset + off;
-    return ata_write(bdev->unique_id, abs_off, abs_off + len, (const uint8_t *)buf);
+    return ata_write(bdev->unique_id, abs_off, abs_off + len, (const uint8_t *)buf) == 0 ? 0 : -EIO;
 }
 
 static int ata_bdev_flush(struct block_device *bdev)
 {
-    return ata_flush_device(bdev->unique_id);
+    return ata_flush_device(bdev->unique_id) == 0 ? 0 : -EIO;
 }
 
 static const struct block_device_ops ata_bdev_ops = {
@@ -51,7 +52,9 @@ static struct dma_tag* ata_data_tag = nullptr;
 
 #define ATA_PRD_BOUNDARY   0x10000
 #define ATA_DMA_TIMEOUT    10000000
-#define ATA_DMA_TIMEOUT_MS 5000
+#define ATA_DMA_TIMEOUT_MS 30000
+#define ATA_RETRIES        3
+#define ATA_CTRL_SRST      0x04
 #define WAIT_CHANNEL_ATA   0x3A000000
 
 struct ata_channel {
@@ -170,13 +173,14 @@ int ata_status_wait(const ata_device * dev, const int timeout) {
 #define ATA_CMD_CACHE_FLUSH 0xE7
 #define ATA_MAX_SECTORS_PER_CMD (ATA_DMA_MAX_SIZE / ATA_SECTOR_SIZE)
 
-static int ata_wait_ready(const ata_device * dev, const bool need_drq)
+static int ata_wait_ready(const ata_device * dev, const bool need_drq, const uint32_t limit)
 {
-    for (;;) {
+    for (uint32_t i = 0; limit == 0 || i < limit; i++) {
         const uint8_t status = port_read_u8(dev->io_base + ATA_REG_STATUS);
         if (status & (ATA_SR_ERR | ATA_SR_DF)) return -2;
         if (!(status & ATA_SR_BSY) && (!need_drq || (status & ATA_SR_DRQ))) return 0;
     }
+    return -5;
 }
 
 static bool ata_supports_lba48(const ata_device * dev)
@@ -219,14 +223,14 @@ static int ata_pio_transfer(const ata_device * dev, const uint64_t lba, const ui
 
     const uint16_t data_port = dev->io_base + ATA_REG_DATA;
     for (uint32_t i = 0; i < count; i++) {
-        if (ata_wait_ready(dev, true) != 0) return -2;
+        if (ata_wait_ready(dev, true, ATA_DMA_TIMEOUT) != 0) return -2;
         uint8_t * sector = buffer + i * ATA_SECTOR_SIZE;
         uint64_t words = ATA_SECTOR_SIZE / 2;
         if (write) asm volatile("rep outsw" : "+S"(sector), "+c"(words) : "d"(data_port) : "memory");
         else asm volatile("rep insw" : "+D"(sector), "+c"(words) : "d"(data_port) : "memory");
     }
 
-    return ata_wait_ready(dev, false) == 0 ? 0 : -4;
+    return ata_wait_ready(dev, false, ATA_DMA_TIMEOUT) == 0 ? 0 : -4;
 }
 
 static int ata_dma_wait(const ata_device * dev)
@@ -243,6 +247,20 @@ static int ata_dma_wait(const ata_device * dev)
 static void ata_dma_clear(const ata_device * dev)
 {
     port_write_u8(dev->bmide + ATA_BM_STATUS, port_read_u8(dev->bmide + ATA_BM_STATUS) | ATA_BM_SR_ERR | ATA_BM_SR_IRQ);
+}
+
+static void ata_recover(const ata_device * dev)
+{
+    if (dev->bmide) {
+        port_write_u8(dev->bmide + ATA_BM_COMMAND, 0);
+        ata_dma_clear(dev);
+    }
+    port_write_u8(dev->control, ATA_CTRL_SRST);
+    for (int i = 0; i < 4; i++) ata_io_wait(dev);
+    port_write_u8(dev->control, 0);
+    for (int i = 0; i < 4; i++) ata_io_wait(dev);
+    for (uint32_t i = 0; i < ATA_DMA_TIMEOUT && (port_read_u8(dev->io_base + ATA_REG_STATUS) & ATA_SR_BSY); i++);
+    if (dev->bmide) ata_dma_clear(dev);
 }
 
 static int ata_dma_sleep(struct ata_channel * ch)
@@ -299,8 +317,9 @@ static int ata_dma_transfer(const ata_device * dev, const uint64_t lba, const ui
         port_write_u8(dev->bmide + ATA_BM_COMMAND, direction | ATA_BM_CMD_START);
         result = sleep ? ata_dma_sleep(ch) : ata_dma_wait(dev);
         port_write_u8(dev->bmide + ATA_BM_COMMAND, direction);
-        if (result == 0 && ata_wait_ready(dev, false) != 0) result = -4;
+        if (result == 0 && ata_wait_ready(dev, false, ATA_DMA_TIMEOUT) != 0) result = -4;
     }
+    if (result != 0) ata_recover(dev);
     ch->irq_wait = false;
     ata_dma_clear(dev);
 
@@ -314,9 +333,16 @@ static int ata_transfer(const ata_device * dev, const uint64_t lba, const uint32
 {
     if (buffer == nullptr || count == 0 || count > ATA_MAX_SECTORS_PER_CMD) return -1;
 
-    if (dev->bmide && dma_map_load(dev->dma_data_map, buffer, (dma_size_t)count * ATA_SECTOR_SIZE, DMA_NOWAIT) == 0)
-        return ata_dma_transfer(dev, lba, count, write);
-    return ata_pio_transfer(dev, lba, count, buffer, write);
+    for (int attempt = 0;; attempt++) {
+        int result;
+        if (dev->bmide && dma_map_load(dev->dma_data_map, buffer, (dma_size_t)count * ATA_SECTOR_SIZE, DMA_NOWAIT) == 0)
+            result = ata_dma_transfer(dev, lba, count, write);
+        else {
+            result = ata_pio_transfer(dev, lba, count, buffer, write);
+            if (result != 0 && result != -3) ata_recover(dev);
+        }
+        if (result == 0 || result == -3 || attempt == ATA_RETRIES) return result;
+    }
 }
 
 int ata_read_sector(const ata_device * dev, const uint32_t lba, uint16_t * buffer)
@@ -329,7 +355,7 @@ static int ata_flush(const ata_device * dev)
     port_write_u8(dev->io_base + ATA_REG_HDDEVSEL, 0xE0 | (dev->slave << 4));
     port_io_wait();
     port_write_u8(dev->io_base + ATA_REG_COMMAND, ATA_CMD_CACHE_FLUSH);
-    return ata_wait_ready(dev, false);
+    return ata_wait_ready(dev, false, 0);
 }
 
 static uint32_t ata_full_sectors(const ata_device * dev, const uint64_t pos, const uint64_t left)
