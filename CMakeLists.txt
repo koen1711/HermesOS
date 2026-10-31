@@ -82,15 +82,22 @@ add_custom_target(programs ALL
 )
 add_dependencies(${PROJECT_NAME} programs)
 
-if(EXISTS ${DASH_BINARY})
+set(BUSYBOX_BINARY ${PROGRAMS_DIR}/usr/bin/busybox)
+if(EXISTS ${BUSYBOX_BINARY})
+    set(SHELL_BINARY ${BUSYBOX_BINARY})
+elseif(EXISTS ${DASH_BINARY})
+    set(SHELL_BINARY ${DASH_BINARY})
+endif()
+
+if(SHELL_BINARY)
     add_custom_command(TARGET programs POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_BINARY_DIR}/isodir/bin
-            COMMAND ${CMAKE_COMMAND} -E copy ${DASH_BINARY} ${CMAKE_BINARY_DIR}/isodir/shell
-            COMMAND ${CMAKE_COMMAND} -E copy ${DASH_BINARY} ${CMAKE_BINARY_DIR}/isodir/bin/sh
-            COMMENT "Installing dash as /shell and /bin/sh"
+            COMMAND ${CMAKE_COMMAND} -E copy ${SHELL_BINARY} ${CMAKE_BINARY_DIR}/isodir/shell
+            COMMAND ${CMAKE_COMMAND} -E copy ${SHELL_BINARY} ${CMAKE_BINARY_DIR}/isodir/bin/sh
+            COMMENT "Installing ${SHELL_BINARY} as /shell and /bin/sh"
     )
 else()
-    message(WARNING "dash not found, run tools/install-dash.sh and re-run cmake to get a /shell on the image")
+    message(WARNING "no shell found, run tools/install-busybox.sh or tools/install-dash.sh and re-run cmake to get a /shell on the image")
 endif()
 
 add_subdirectory(src)

@@ -838,7 +838,7 @@ bool process_create_idle(const int cpu_index, const uint64_t stack) {
 }
 
 int process_spawn_shell(const int tty) {
-    char *argv[] = { INIT_PROC_PATH, nullptr };
+    char *argv[] = { "sh", nullptr };
     char *envp[] = { "PATH=/bin:/usr/bin", "HOME=/", "TERM=vt100", nullptr };
 
     process_t *proc = create_process();

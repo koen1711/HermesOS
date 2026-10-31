@@ -49,6 +49,9 @@ make defconfig
 set_config STATIC y
 set_config CROSS_COMPILER_PREFIX "\"$TARGET-\""
 unset_config TC
+set_config FEATURE_SH_STANDALONE y
+set_config FEATURE_PREFER_APPLETS y
+set_config BUSYBOX_EXEC_PATH "\"/usr/bin/busybox\""
 
 for applet in \
 	BOOTCHARTD GETTY MICROCOM READAHEAD \
