@@ -198,6 +198,10 @@ static void vblk_poke(void *arg)
     uint64_t flags;
     spinlock_acquire_irqsave(&d->lock, &flags);
     reap_locked(d);
+    for (int i = 0; i < VBLK_MAX_INFLIGHT; i++) {
+        if (d->reqs[i].in_use && d->reqs[i].done)
+            process_wakeup(vblk_wait_id(d, i));
+    }
     spinlock_release_irqrestore(&d->lock, flags);
 }
 
@@ -307,19 +311,22 @@ static int vblk_request(struct vblk_device *d, const uint32_t type, const uint64
     port_write_u16(d->io + VIO_QUEUE_NOTIFY, 0);
 
     for (;;) {
+        const uint64_t iflags = irq_save();
         spinlock_acquire_irqsave(&d->lock, &flags);
         reap_locked(d);
         const bool done = req->done;
         spinlock_release_irqrestore(&d->lock, flags);
-        if (done)
-            break;
-        if (sleep) {
+        if (!done && sleep) {
             callout_reset(&req->poke, ticks_from_ms(VBLK_POKE_MS), vblk_poke, d);
             process_sleep(vblk_wait_id(d, slot));
-            callout_stop(&req->poke);
-        } else {
-            asm volatile("pause");
         }
+        irq_restore(iflags);
+        if (done)
+            break;
+        if (sleep)
+            callout_stop(&req->poke);
+        else
+            asm volatile("pause");
     }
 
     const uint8_t status = d->dma->status[slot];
