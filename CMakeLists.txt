@@ -57,8 +57,16 @@ target_link_options(${PROJECT_NAME} PRIVATE
 set(MLIBC_LIB_DIR ${CMAKE_SOURCE_DIR}/buildtools/cross/usr/lib)
 set(MLIBC_SHARED_LIBS ld.so libc.so libdl.so libm.so libpthread.so libresolv.so librt.so libssp.so libutil.so)
 list(TRANSFORM MLIBC_SHARED_LIBS PREPEND ${MLIBC_LIB_DIR}/)
-list(APPEND MLIBC_SHARED_LIBS ${CMAKE_SOURCE_DIR}/buildtools/cross/x86_64-hermes/lib/libgcc_s.so.1
-                              ${CMAKE_SOURCE_DIR}/buildtools/cross/x86_64-hermes/lib/libstdc++.so.6)
+# libgcc_s/libstdc++ are only needed by dynamically linked C++ userspace programs;
+# the Windows toolchain script doesn't build them, so ship them only if present.
+foreach(_lib libgcc_s.so.1 libstdc++.so.6)
+    set(_lib_path ${CMAKE_SOURCE_DIR}/buildtools/cross/x86_64-hermes/lib/${_lib})
+    if(EXISTS ${_lib_path})
+        list(APPEND MLIBC_SHARED_LIBS ${_lib_path})
+    else()
+        message(STATUS "${_lib} not found in the toolchain, leaving it off the image")
+    endif()
+endforeach()
 set(MLIBC_IMAGE_LIBS ${MLIBC_SHARED_LIBS})
 list(TRANSFORM MLIBC_IMAGE_LIBS REPLACE "^.*/" ${CMAKE_BINARY_DIR}/isodir/usr/lib/)
 

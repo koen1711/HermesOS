@@ -57,7 +57,8 @@ with open(img, 'r+b') as f:
 
     disk_guid  = uuid.uuid4().bytes_le
     part_guid  = uuid.uuid4().bytes_le
-    type_guid  = bytes.fromhex('EBD0A0A2B9E5443387C068B6B72699C7')
+    # GPT stores GUIDs mixed-endian, like uuid's bytes_le
+    type_guid  = uuid.UUID('EBD0A0A2-B9E5-4433-87C0-68B6B72699C7').bytes_le
 
     name_utf16  = 'EFI SYSTEM'.encode('utf-16-le').ljust(72, b'\x00')
     part_entry  = type_guid + part_guid + struct.pack('<QQQ', part_start, part_end, 0) + name_utf16
