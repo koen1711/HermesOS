@@ -25,7 +25,7 @@ void mmu_initialize(void);
 int  map_page(uint64_t virtual_addr, uint64_t physical_addr, uint64_t flags);
 void unmap_page(uint64_t virtual_addr);
 void* vmalloc(size_t size);
-void  vfree(void* ptr);
+void  vfree(void* ptr, size_t size);
 void  free_vm(uint64_t pml4_addr);
 
 

@@ -5,8 +5,11 @@
 #include <hardware/interrupts/panic.h>
 #include <utils/sync/spinlock.h>
 
-#define DEFAULT_BLOCK_SIZE 4096
-#define BLOCKS 8192
+#define HEAP_INITIAL_SIZE (32ULL * 1024 * 1024)
+#define HEAP_GROW_SIZE (4ULL * 1024 * 1024)
+#define LARGE_ALLOC_THRESHOLD (32 * 1024)
+#define BLOCK_USED ((memory_block_t*)0x4845415055534544ULL)
+#define BLOCK_LARGE ((memory_block_t*)0x484541504C524745ULL)
 
 extern void* _kernel_virtual_end;
 
@@ -21,19 +24,55 @@ typedef struct memory_block_s memory_block_t;
 memory_block_t* first_free_block = nullptr;
 static spinlock_t heap_lock = { .name = "heap" };
 
+static void insert_free_locked(memory_block_t* block) {
+    memory_block_t* previous = nullptr;
+    memory_block_t* next = first_free_block;
+    while (next && next < block) {
+        previous = next;
+        next = next->next;
+    }
+
+    block->next = next;
+    if (next && (uint8_t*)block + sizeof(memory_block_t) + block->size == (uint8_t*)next) {
+        block->size += sizeof(memory_block_t) + next->size;
+        block->next = next->next;
+    }
+
+    if (!previous) {
+        first_free_block = block;
+    } else if ((uint8_t*)previous + sizeof(memory_block_t) + previous->size == (uint8_t*)block) {
+        previous->size += sizeof(memory_block_t) + block->size;
+        previous->next = block->next;
+    } else {
+        previous->next = block;
+    }
+}
+
+static bool heap_add_chunk(const uint64_t bytes) {
+    memory_block_t* chunk = alloc_kernel_pages(bytes / PAGE_SIZE);
+    if (!chunk) return false;
+    chunk->size = bytes - sizeof(memory_block_t);
+
+    uint64_t flags;
+    spinlock_acquire_irqsave(&heap_lock, &flags);
+    insert_free_locked(chunk);
+    spinlock_release_irqrestore(&heap_lock, flags);
+    return true;
+}
+
+static bool heap_grow(const uintptr_t aligned_size) {
+    const uint64_t needed = PAGE_ALIGN_UP(aligned_size + sizeof(memory_block_t));
+    if (needed < HEAP_GROW_SIZE && heap_add_chunk(HEAP_GROW_SIZE)) return true;
+    return heap_add_chunk(needed);
+}
+
 void memory_initialize(const multiboot_info_t mb_info) {
     pmm_initialize(mb_info);
     mmu_initialize();
 
-    first_free_block = (memory_block_t*)vmalloc(DEFAULT_BLOCK_SIZE * BLOCKS);
-
-    if (first_free_block == nullptr) {
+    if (!heap_add_chunk(HEAP_INITIAL_SIZE)) {
         panic("Failed to allocate initial memory block", __FILE__, __LINE__);
-        return;
     }
-
-    first_free_block->size = DEFAULT_BLOCK_SIZE * BLOCKS;
-    first_free_block->next = nullptr;
 }
 
 uint64_t get_amount_of_free_memory() {
@@ -47,17 +86,9 @@ uint64_t get_amount_of_free_memory() {
     return total_free;
 }
 
-void* malloc(const uintptr_t size) {
-    if (size == 0) return nullptr;
-
-    const uintptr_t aligned_size = (size + 7) & ~7;
-
+static void* heap_take(const uintptr_t aligned_size) {
     uint64_t flags;
     spinlock_acquire_irqsave(&heap_lock, &flags);
-    if (first_free_block == nullptr) {
-        panic("No free memory blocks available", __FILE__, __LINE__);
-        return nullptr;
-    }
 
     memory_block_t* current = first_free_block;
     memory_block_t* previous = nullptr;
@@ -65,35 +96,24 @@ void* malloc(const uintptr_t size) {
     while (current != nullptr) {
         if (current->size >= aligned_size) {
             const uintptr_t total_needed = aligned_size + sizeof(memory_block_t);
+            memory_block_t* next = current->next;
 
             if (current->size >= total_needed + 8) {
-                uint8_t* split_addr = (uint8_t*)current + sizeof(memory_block_t) + aligned_size;
-                const auto split_block = (memory_block_t*)split_addr;
-
+                const auto split_block = (memory_block_t*)((uint8_t*)current + total_needed);
                 split_block->size = current->size - total_needed;
                 split_block->next = current->next;
-
                 current->size = aligned_size;
-
-
-
-                if (previous != nullptr)
-                {
-                    previous->next = split_block;
-                } else
-                    first_free_block = split_block;
-
-            } else {
-                if (previous != nullptr)
-                    previous->next = current->next;
-                else
-                    first_free_block = current->next;
+                next = split_block;
             }
 
+            if (previous != nullptr)
+                previous->next = next;
+            else
+                first_free_block = next;
+
+            current->next = BLOCK_USED;
             spinlock_release_irqrestore(&heap_lock, flags);
-            uint8_t* current_address = (uint8_t*)current + sizeof(memory_block_t);
-            memset(current_address, 0, aligned_size);
-            return current_address;
+            return (uint8_t*)current + sizeof(memory_block_t);
         }
 
         previous = current;
@@ -104,43 +124,45 @@ void* malloc(const uintptr_t size) {
     return nullptr;
 }
 
-static void coalesce_free_blocks() {
-    memory_block_t* current = first_free_block;
+static void* large_alloc(const uintptr_t aligned_size) {
+    const uint64_t bytes = PAGE_ALIGN_UP(aligned_size + sizeof(memory_block_t));
+    memory_block_t* block = alloc_kernel_pages(bytes / PAGE_SIZE);
+    if (!block) return nullptr;
+    block->size = bytes - sizeof(memory_block_t);
+    block->next = BLOCK_LARGE;
+    return (uint8_t*)block + sizeof(memory_block_t);
+}
 
-    while (current != nullptr && current->next != nullptr) {
-        const uint8_t* current_end = (uint8_t*)current + sizeof(memory_block_t) + current->size;
-        const uint8_t* next_start = (uint8_t*)current->next;
+void* malloc(const uintptr_t size) {
+    if (size == 0 || size > (1ULL << 40)) return nullptr;
 
-        if (current_end == next_start) {
-            const memory_block_t* next_block = current->next;
-            current->size += sizeof(memory_block_t) + next_block->size;
-            current->next = next_block->next;
-        } else {
-            current = current->next;
-        }
+    const uintptr_t aligned_size = (size + 7) & ~7;
+
+    void* ptr = aligned_size >= LARGE_ALLOC_THRESHOLD ? large_alloc(aligned_size) : nullptr;
+    while (!ptr) {
+        ptr = heap_take(aligned_size);
+        if (!ptr && !heap_grow(aligned_size)) return nullptr;
     }
+
+    memset(ptr, 0, ((memory_block_t*)ptr - 1)->size);
+    return ptr;
 }
 
 void free(void* ptr) {
     if (ptr == nullptr) return;
 
-    const auto block_to_free = (memory_block_t*)((uint8_t*)ptr - sizeof(memory_block_t));
+    const auto block = (memory_block_t*)((uint8_t*)ptr - sizeof(memory_block_t));
+
+    if (block->next == BLOCK_LARGE) {
+        block->next = nullptr;
+        free_kernel_pages(block, (block->size + sizeof(memory_block_t)) / PAGE_SIZE);
+        return;
+    }
+    if (block->next != BLOCK_USED) return;
 
     uint64_t flags;
     spinlock_acquire_irqsave(&heap_lock, &flags);
-    if (!first_free_block || block_to_free < first_free_block) {
-        block_to_free->next = first_free_block;
-        first_free_block = block_to_free;
-    } else {
-        memory_block_t* current = first_free_block;
-        while (current->next && current->next < block_to_free) {
-            current = current->next;
-        }
-        block_to_free->next = current->next;
-        current->next = block_to_free;
-    }
-
-    coalesce_free_blocks();
+    insert_free_locked(block);
     spinlock_release_irqrestore(&heap_lock, flags);
 }
 
@@ -171,6 +193,7 @@ void* memset(void* dest, const int value, const uintptr_t size) {
 }
 
 void* calloc(const uintptr_t num, const uintptr_t size) {
+    if (num && size > (uintptr_t)-1 / num) return nullptr;
     return malloc(num * size);
 }
 
@@ -187,10 +210,13 @@ void* memmove(void* dest, const void* src, const uintptr_t size) {
 }
 
 void strncpy(char* dest, const char* src, const size_t n) {
-    for (size_t i = 0; i < n && src[i] != '\0'; i++) {
+    size_t i = 0;
+    for (; i < n && src[i] != '\0'; i++) {
         dest[i] = src[i];
     }
-    dest[n] = '\0';
+    for (; i < n; i++) {
+        dest[i] = '\0';
+    }
 }
 
 void* realloc(void* ptr, const uintptr_t size) {
@@ -201,9 +227,14 @@ void* realloc(void* ptr, const uintptr_t size) {
         free(ptr);
         return nullptr;
     }
+    const memory_block_t* block = (memory_block_t*)((uint8_t*)ptr - sizeof(memory_block_t));
+    if (block->next != BLOCK_USED && block->next != BLOCK_LARGE) return nullptr;
+    const uint64_t old_size = block->size;
+    if (size <= old_size) return ptr;
+
     void* new_ptr = malloc(size);
     if (new_ptr) {
-        memcpy(new_ptr, ptr, size);
+        memcpy(new_ptr, ptr, old_size);
         free(ptr);
     }
     return new_ptr;

@@ -166,9 +166,9 @@ void* vmalloc(size_t size) {
     return alloc_kernel_pages(size / 0x1000);
 }
 
-void vfree(void* ptr) {
-    if (!ptr) return;
-    free_kernel_page(ptr);
+void vfree(void* ptr, const size_t size) {
+    if (!ptr || size == 0) return;
+    free_kernel_pages(ptr, PAGE_ALIGN_UP(size) / PAGE_SIZE);
 }
 
 void free_vm(const uint64_t pml4_addr) {
