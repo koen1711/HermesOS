@@ -5,6 +5,9 @@ sh ./create_image.sh "$BINARY_DIR"
 ACCEL=""
 [ -w /dev/kvm ] && ACCEL="-enable-kvm -cpu host"
 
+echo "Booting HermesOS with QEMU..."
+echo "Acceleration: $ACCEL"
+
 if [ -z "$SMP" ]; then
     HOST_CPUS=$(nproc 2>/dev/null || getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)
     SMP=$((HOST_CPUS / 2))
