@@ -28,6 +28,8 @@ void kernel_main(void* multiboot_info_ptr)
     const multiboot_info_t pmm_info = parse_multiboot_info(multiboot_info_ptr);
     memory_initialize(pmm_info);
     terminal_initialize(VGA_TEXT_MODE);
+    tss_initialize();
+    idt_initialize();
     pci_initialize();
     fs_init();
     ata_initialize();
@@ -36,8 +38,6 @@ void kernel_main(void* multiboot_info_ptr)
     register_drivers();
     net_initialize();
 
-    tss_initialize();
-    idt_initialize();
     process_initialize();
     tty_initialize();
 
