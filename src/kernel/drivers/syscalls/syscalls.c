@@ -7,6 +7,7 @@
 #include <drivers/scheduler/signal.h>
 #include <drivers/fs/vfs/vfs.h>
 #include <drivers/net/socket/socket_syscalls.h>
+#include <drivers/net/socket/socket_file.h>
 #include <drivers/net/core/netisr.h>
 #include <hardware/smp/smp.h>
 #include <os/errno.h>
@@ -486,6 +487,34 @@ static long process_syscall(interrupt_context* c, process_t* current)
     }
 }
 
+static bool socket_rw_fast(interrupt_context* c)
+{
+    switch (c->rax) {
+        case SYSCALL_READ:
+        case SYSCALL_WRITE:
+        case SYSCALL_READV:
+        case SYSCALL_WRITEV:
+            break;
+        default:
+            return false;
+    }
+    struct file_s* f = fd_pin((int)c->rdi);
+    if (f == nullptr)
+        return false;
+    if (f->node->fops != &socket_fops) {
+        vfs_file_put(f);
+        return false;
+    }
+    const bool write = c->rax == SYSCALL_WRITE || c->rax == SYSCALL_WRITEV;
+    if (c->rax == SYSCALL_READ || c->rax == SYSCALL_WRITE)
+        c->rax = (uint64_t)sys_socket_rw(f, (void*)c->rsi, c->rdx, write);
+    else
+        c->rax = (uint64_t)sys_socket_rwv(f, (const void*)c->rsi, (int)c->rdx, write);
+    vfs_file_put(f);
+    netisr_poll();
+    return true;
+}
+
 static bool runs_unlocked(const interrupt_context* c)
 {
     switch (c->rax) {
@@ -507,6 +536,13 @@ static bool runs_unlocked(const interrupt_context* c)
         case SYSCALL_CLOCK_GETRES:
         case SYSCALL_GETTIMEOFDAY:
         case SYSCALL_TIME:
+        case SYSCALL_EPOLL_WAIT:
+        case SYSCALL_EPOLL_PWAIT:
+        case SYSCALL_EPOLL_PWAIT2:
+        case SYSCALL_SCHED_YIELD:
+        case SYSCALL_RT_SIGPROCMASK:
+        case SYSCALL_NANOSLEEP:
+        case SYSCALL_CLOCK_NANOSLEEP:
             return true;
         default:
             return false;
@@ -523,15 +559,26 @@ void handle_syscall(interrupt_context* context)
     current->syscall_nr = (int64_t)context->rax;
     current->frame = context;
 
+    if (socket_rw_fast(context))
+        return;
+
+    bool locked = false;
+    if (!runs_unlocked(context))
+        locked = kernel_lock_enter();
+
     switch (context->rax) {
         case SYSCALL_RT_SIGRETURN:
             sys_rt_sigreturn(context);
             break;
         case SYSCALL_SOCKET ... SYSCALL_GETSOCKOPT:
-        case SYSCALL_ACCEPT4:
+        case SYSCALL_ACCEPT4: {
+            const bool net_locked = net_lock_enter();
             context->rax = (uint64_t)socket_syscall(context);
             netisr_poll();
+            if (net_locked)
+                net_lock_exit();
             break;
+        }
         case SYSCALL_WRITE:
         case SYSCALL_WRITEV:
         case SYSCALL_CLOSE:
@@ -540,11 +587,11 @@ void handle_syscall(interrupt_context* context)
             netisr_poll();
             break;
         default: {
-            const bool dropped = runs_unlocked(context) && kernel_lock_drop();
             context->rax = (uint64_t)process_syscall(context, current);
-            if (dropped)
-                kernel_lock_enter();
             break;
         }
     }
+
+    if (locked)
+        kernel_lock_exit();
 }

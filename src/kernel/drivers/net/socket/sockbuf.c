@@ -247,7 +247,6 @@ int sockbuf_wait(struct sockbuf* sb)
 
 void sockbuf_wakeup(struct sockbuf* sb)
 {
-    process_wakeup(WAIT_CHANNEL_POLL);
     if (!(sb->flags & SB_WAIT))
         return;
     sb->flags &= ~SB_WAIT;

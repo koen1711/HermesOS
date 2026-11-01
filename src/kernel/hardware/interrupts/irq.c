@@ -1,6 +1,7 @@
 #include <hardware/interrupts/irq.h>
 #include <hardware/interrupts/interrupts.h>
 #include <hardware/interrupts/pic.h>
+#include <hardware/smp/smp.h>
 #include <os/errno.h>
 #include <utils/sync/spinlock.h>
 
@@ -11,13 +12,13 @@
 struct irq_action {
     irq_handler_t handler;
     void* ctx;
+    bool mpsafe;
 };
 
 static struct irq_action actions[IRQ_MAX_LINES][IRQ_MAX_HANDLERS];
 static uint32_t running[IRQ_MAX_LINES];
 static spinlock_t actions_lock = { .name = "irq_actions" };
 static softintr_handler_t softintrs[IRQ_MAX_SOFTINTR];
-static uint32_t irq_depth;
 
 extern void irq_interrupt_0(), irq_interrupt_1(), irq_interrupt_2(), irq_interrupt_3(),
             irq_interrupt_4(), irq_interrupt_5(), irq_interrupt_6(), irq_interrupt_7(),
@@ -31,7 +32,7 @@ static void (*const stubs[IRQ_MAX_LINES])() = {
     irq_interrupt_12, irq_interrupt_13, irq_interrupt_14, irq_interrupt_15,
 };
 
-int irq_register_handler(const uint8_t irq, const irq_handler_t handler, void* ctx)
+static int irq_register(const uint8_t irq, const irq_handler_t handler, void* ctx, const bool mpsafe)
 {
     if (irq >= IRQ_MAX_LINES || !handler)
         return -EINVAL;
@@ -42,6 +43,7 @@ int irq_register_handler(const uint8_t irq, const irq_handler_t handler, void* c
         if (!actions[irq][i].handler) {
 
             actions[irq][i].ctx = ctx;
+            actions[irq][i].mpsafe = mpsafe;
             __atomic_store_n(&actions[irq][i].handler, handler, __ATOMIC_RELEASE);
 
             idt_set_entry(IRQ_OFFSET + irq, (uintptr_t)stubs[irq]);
@@ -52,6 +54,16 @@ int irq_register_handler(const uint8_t irq, const irq_handler_t handler, void* c
     }
     spinlock_release_irqrestore(&actions_lock, flags);
     return -ENOSPC;
+}
+
+int irq_register_handler(const uint8_t irq, const irq_handler_t handler, void* ctx)
+{
+    return irq_register(irq, handler, ctx, false);
+}
+
+int irq_register_handler_mpsafe(const uint8_t irq, const irq_handler_t handler, void* ctx)
+{
+    return irq_register(irq, handler, ctx, true);
 }
 
 void irq_unregister_handler(const uint8_t irq, const irq_handler_t handler, const void* ctx)
@@ -98,7 +110,7 @@ int irq_register_softintr(const softintr_handler_t handler)
 
 bool irq_in_interrupt()
 {
-    return irq_depth != 0;
+    return cpu_this()->irq_depth != 0;
 }
 
 void irq_dispatch(const uint8_t irq)
@@ -106,20 +118,25 @@ void irq_dispatch(const uint8_t irq)
     if (irq >= IRQ_MAX_LINES)
         return;
 
-    irq_depth++;
+    struct cpu* cpu = cpu_this();
+    cpu->irq_depth++;
     __atomic_add_fetch(&running[irq], 1, __ATOMIC_SEQ_CST);
     for (int i = 0; i < IRQ_MAX_HANDLERS; i++) {
         const irq_handler_t handler = __atomic_load_n(&actions[irq][i].handler, __ATOMIC_ACQUIRE);
-        if (handler)
+        if (handler) {
+            const bool locked = !actions[irq][i].mpsafe && kernel_lock_enter();
             handler(irq, actions[irq][i].ctx);
+            if (locked)
+                kernel_lock_exit();
+        }
     }
     __atomic_sub_fetch(&running[irq], 1, __ATOMIC_SEQ_CST);
-    if (irq_depth == 1) {
+    if (cpu->irq_depth == 1) {
         for (int i = 0; i < IRQ_MAX_SOFTINTR; i++)
             if (softintrs[i])
                 softintrs[i]();
     }
-    irq_depth--;
+    cpu->irq_depth--;
 }
 
 uint64_t irq_save()

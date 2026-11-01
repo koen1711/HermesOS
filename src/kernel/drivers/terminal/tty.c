@@ -187,7 +187,7 @@ void tty_receive(const int index, char c)
             t->cooked = t->len;
             t->eof++;
             process_wakeup(WAIT_CHANNEL_TTY | t->index);
-            process_wakeup(WAIT_CHANNEL_POLL);
+            process_wakeup_poll(~0ULL);
             return;
         }
     }
@@ -199,7 +199,7 @@ void tty_receive(const int index, char c)
     if (c == '\n' || !tty_canonical(t))
         t->cooked = t->len;
     process_wakeup(WAIT_CHANNEL_TTY | t->index);
-    process_wakeup(WAIT_CHANNEL_POLL);
+    process_wakeup_poll(~0ULL);
 }
 
 void tty_input(const char c)
@@ -434,10 +434,13 @@ int tty_install(struct proc_files* files, const int index)
         t->file = f;
     }
     for (int fd = 0; fd < 3; fd++) {
+        uint64_t flags;
+        spinlock_acquire_irqsave(&files->lock, &flags);
         if (files->file[fd] == nullptr) {
             files->file[fd] = t->file;
             __atomic_fetch_add(&t->file->ref_count, 1, __ATOMIC_RELAXED);
         }
+        spinlock_release_irqrestore(&files->lock, flags);
     }
     return 0;
 }

@@ -1,3 +1,4 @@
+#include <hardware/smp/smp.h>
 #include "e1000.h"
 
 #include <drivers/net/core/netif.h>
@@ -295,7 +296,7 @@ bool e1000_start_link(struct e1000_device* dev)
     if (!e1000_rx_init(dev) || !e1000_tx_init(dev))
         return false;
 
-    if (!dev->irq_registered && irq_register_handler(dev->pci.interrupt_line, e1000_interrupt, dev) == 0)
+    if (!dev->irq_registered && irq_register_handler_mpsafe(dev->pci.interrupt_line, e1000_interrupt, dev) == 0)
         dev->irq_registered = true;
     if (dev->irq_registered)
         e1000_enable_interrupts(dev);
@@ -384,7 +385,7 @@ bool e1000_tx_init(struct e1000_device* dev)
 
 void e1000_enable_interrupts(const struct e1000_device* dev)
 {
-    e1000_write_command(dev, REG_IMASK, ICR_TXDW | ICR_LSC | ICR_RXDMT0 | ICR_RXO | ICR_RXT0);
+    e1000_write_command(dev, REG_IMASK, ICR_LSC | ICR_RXDMT0 | ICR_RXO | ICR_RXT0);
     e1000_read_command(dev, REG_ICR);
 }
 
@@ -401,18 +402,22 @@ void e1000_interrupt(const uint8_t irq, void* ctx)
         return;
 
     const uint32_t status = e1000_read_command(dev, REG_ICR);
+    const bool locked = net_lock_enter();
     if (status & ICR_LSC)
         netif_link_state_change(dev->nif, e1000_link_up(dev) ? NETIF_LINK_UP : NETIF_LINK_DOWN);
     if (status & (ICR_RXT0 | ICR_RXDMT0 | ICR_RXO))
         e1000_handle_receive(dev);
     if (status & ICR_TXDW)
         e1000_reclaim_tx(dev);
+    if (locked)
+        net_lock_exit();
 }
 
 void e1000_handle_receive(struct e1000_device* dev)
 {
     struct netif* nif = dev->nif;
 
+    int last_done = -1;
     dma_map_sync(dev->rx_ring_map, DMA_SYNC_POSTREAD);
     while (dev->rx_descs[dev->rx_cur]->status & RX_STATUS_DD)
     {
@@ -440,12 +445,13 @@ void e1000_handle_receive(struct e1000_device* dev)
         }
 
         desc->status = 0;
-        const uint16_t old_cur = dev->rx_cur;
+        last_done = dev->rx_cur;
         dev->rx_cur = (dev->rx_cur + 1) % E1000_NUM_RX_DESC;
         dma_map_sync(dev->rx_buf_map, DMA_SYNC_PREREAD);
         dma_map_sync(dev->rx_ring_map, DMA_SYNC_PREWRITE | DMA_SYNC_POSTREAD);
-        e1000_write_command(dev, REG_RXDESCTAIL, old_cur);
     }
+    if (last_done >= 0)
+        e1000_write_command(dev, REG_RXDESCTAIL, (uint16_t)last_done);
 }
 
 void e1000_reclaim_tx(struct e1000_device* dev)

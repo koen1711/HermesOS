@@ -19,7 +19,7 @@ int pit_initialize(const uint32_t hz)
     port_write_u8(PIT_CHANNEL0_PORT, divisor & 0xFF);
     port_write_u8(PIT_CHANNEL0_PORT, divisor >> 8);
 
-    return irq_register_handler(PIT_IRQ, handle_timer_interrupt, nullptr);
+    return irq_register_handler_mpsafe(PIT_IRQ, handle_timer_interrupt, nullptr);
 }
 
 uint32_t pit_frequency()

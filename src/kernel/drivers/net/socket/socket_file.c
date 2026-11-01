@@ -6,6 +6,7 @@
 #include <drivers/fs/vfs/vfs.h>
 #include <drivers/syscalls/fd.h>
 #include <hardware/memory/alloc.h>
+#include <hardware/smp/smp.h>
 #include <os/errno.h>
 
 file_operations_t socket_fops = {
@@ -14,6 +15,7 @@ file_operations_t socket_fops = {
     .close = socket_file_close,
     .poll = socket_file_poll,
     .ioctl = socket_file_ioctl,
+    .poll_mpsafe = true,
 };
 
 #define O_NONBLOCK_K 0x800
@@ -27,25 +29,36 @@ static struct socket* socket_of(const struct file_s* f)
 
 ssize_t socket_file_read(struct file_s* f, void* buf, const size_t len)
 {
-    return sock_recv(socket_of(f), buf, len, 0, nullptr, nullptr);
+    const bool locked = net_lock_enter();
+    const ssize_t n = sock_recv(socket_of(f), buf, len, 0, nullptr, nullptr);
+    if (locked)
+        net_lock_exit();
+    return n;
 }
 
 ssize_t socket_file_write(struct file_s* f, const void* buf, const size_t len)
 {
-    return sock_send(socket_of(f), buf, len, 0, nullptr, 0);
+    const bool locked = net_lock_enter();
+    const ssize_t n = sock_send(socket_of(f), buf, len, 0, nullptr, 0);
+    if (locked)
+        net_lock_exit();
+    return n;
 }
 
 int socket_file_close(struct file_s* f)
 {
     inode_t* node = f->node;
     struct socket* so = node->private_data;
+    const bool locked = net_lock_enter();
     so->fd = -1;
     sock_close(so);
+    if (locked)
+        net_lock_exit();
     free(node);
     return 0;
 }
 
-int socket_file_poll(struct file_s* f)
+static int socket_poll_locked(const struct file_s* f)
 {
     const struct socket* so = socket_of(f);
     int events = so->error ? VFS_POLLERR | VFS_POLLOUT : 0;
@@ -63,9 +76,24 @@ int socket_file_poll(struct file_s* f)
     return events;
 }
 
+int socket_file_poll(struct file_s* f)
+{
+    const bool locked = net_lock_enter();
+    const int events = socket_poll_locked(f);
+    if (locked)
+        net_lock_exit();
+    return events;
+}
+
+uint64_t socket_file_poll_bit(const struct file_s* f)
+{
+    return f->node->fops == &socket_fops ? sock_poll_bit(socket_of(f)) : 0;
+}
+
 void socket_file_set_nonblock(struct file_s* f, const bool on)
 {
     struct socket* so = socket_of(f);
+    const bool locked = net_lock_enter();
     if (on) {
         so->state |= SS_NBIO;
         f->status_flags |= O_NONBLOCK_K;
@@ -73,9 +101,11 @@ void socket_file_set_nonblock(struct file_s* f, const bool on)
         so->state &= ~SS_NBIO;
         f->status_flags &= ~O_NONBLOCK_K;
     }
+    if (locked)
+        net_lock_exit();
 }
 
-int socket_file_ioctl(struct file_s* f, const unsigned long request, void* arg)
+static int socket_ioctl_locked(struct file_s* f, const unsigned long request, void* arg)
 {
     switch (request) {
     case FIONREAD_K: {
@@ -92,6 +122,15 @@ int socket_file_ioctl(struct file_s* f, const unsigned long request, void* arg)
     default:
         return -ENOTTY;
     }
+}
+
+int socket_file_ioctl(struct file_s* f, const unsigned long request, void* arg)
+{
+    const bool locked = net_lock_enter();
+    const int ret = socket_ioctl_locked(f, request, arg);
+    if (locked)
+        net_lock_exit();
+    return ret;
 }
 
 int socket_file_alloc_fd(struct socket* so)

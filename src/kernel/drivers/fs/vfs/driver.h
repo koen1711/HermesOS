@@ -79,6 +79,7 @@ typedef struct file_operations_s {
     int (*truncate)(struct file_s* f, size_t size);
     int (*fallocate)(struct file_s* f, int mode, int64_t offset, int64_t len);
     int (*mmap_page)(struct file_s* f, uint64_t offset, uint64_t* frame);
+    bool poll_mpsafe;
 } file_operations_t;
 
 typedef struct inode_s {
@@ -102,6 +103,7 @@ typedef struct file_s {
     int status_flags;
     struct mounted_file_system_s* mount;
     int ref_count;
+    struct file_s* deferred_next;
 } file_t;
 
 #endif //OS_DRIVER_H

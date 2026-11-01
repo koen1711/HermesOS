@@ -61,7 +61,7 @@ static int inotify_wait_id(const struct inotify* in)
 static void inotify_wake(const struct inotify* in)
 {
     process_wakeup(inotify_wait_id(in));
-    process_wakeup(WAIT_CHANNEL_POLL);
+    process_wakeup_poll(~0ULL);
 }
 
 static void queue_append(struct inotify* in, const int wd, const uint32_t mask, const uint32_t cookie,

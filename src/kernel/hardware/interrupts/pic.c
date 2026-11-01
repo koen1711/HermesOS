@@ -27,12 +27,10 @@ void handle_pic_interrupt(const interrupt_context* context)
 {
     const uint8_t irq_number = context->interrupt_number - IRQ_OFFSET;
 
-    if (pic_is_spurious(irq_number))
-        return;
-
-    irq_dispatch(irq_number);
-
-    pic_eoi(irq_number);
+    if (!pic_is_spurious(irq_number)) {
+        irq_dispatch(irq_number);
+        pic_eoi(irq_number);
+    }
 }
 
 void pic_write(uint16_t port, uint8_t data)

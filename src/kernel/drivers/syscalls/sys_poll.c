@@ -66,8 +66,11 @@ static long scan_pollfds(void* ctx)
 long poll_wait(const poll_scan_t scan, void* ctx, const int64_t timeout_ns)
 {
     const uint64_t start = clock_monotonic_ns();
+    process_t* current = scheduler_get()->current;
     for (;;) {
         netisr_poll();
+        const uint64_t seq = process_poll_seq();
+        current->poll_interest = ~0ULL;
         const long count = scan(ctx);
         if (count || timeout_ns == 0)
             return count;
@@ -82,7 +85,7 @@ long poll_wait(const poll_scan_t scan, void* ctx, const int64_t timeout_ns)
                 wait = left;
         }
 
-        const int err = process_sleep_timeout(WAIT_CHANNEL_POLL, wait);
+        const int err = process_sleep_poll(seq, wait);
         if (err == -EINTR)
             return -EINTR;
     }

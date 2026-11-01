@@ -3,8 +3,11 @@
 #include "fd.h"
 #include "uaccess.h"
 #include <drivers/fs/vfs/vfs.h>
+#include <drivers/net/socket/socket_file.h>
 #include <drivers/scheduler/process.h>
 #include <hardware/memory/alloc.h>
+#include <hardware/smp/smp.h>
+#include <utils/sync/spinlock.h>
 #include <utils/queue/queue.h>
 #include <os/errno.h>
 
@@ -40,10 +43,13 @@ struct epoll_entry {
     uint64_t data;
     uint32_t reported;
     bool disabled;
+    bool unsafe;
 };
 
 struct epoll {
     struct dlist entries;
+    spinlock_t lock;
+    int unsafe;
 };
 
 struct epoll_scan {
@@ -87,7 +93,29 @@ static uint32_t entry_ready(const struct epoll_entry* e)
     return (uint32_t)ready & (e->events | VFS_POLLERR | VFS_POLLHUP) & ~EPOLL_FLAGS;
 }
 
-static int epoll_collect(struct epoll* ep, struct epoll_event_k* out, const int max, const bool consume)
+static bool file_poll_mpsafe(const struct file_s* f)
+{
+    const file_operations_t* fops = f->node->fops;
+    return !fops || !fops->poll || fops->poll_mpsafe;
+}
+
+static void entry_remove(struct epoll* ep, struct epoll_entry* e)
+{
+    dlist_remove(&ep->entries, &e->link);
+    ep->unsafe -= e->unsafe;
+    free(e);
+}
+
+static void file_unpin(struct file_s* f, struct file_s** deferred)
+{
+    if (f && __atomic_sub_fetch(&f->ref_count, 1, __ATOMIC_ACQ_REL) == 0) {
+        f->deferred_next = *deferred;
+        *deferred = f;
+    }
+}
+
+static int epoll_collect_locked(struct epoll* ep, struct epoll_event_k* out, const int max, const bool consume,
+                                uint64_t* interest, struct file_s** deferred)
 {
     int count = 0;
     const struct dlist_node* n = dlist_first(&ep->entries);
@@ -95,17 +123,22 @@ static int epoll_collect(struct epoll* ep, struct epoll_event_k* out, const int 
         const struct dlist_node* next = dlist_next(n);
         struct epoll_entry* e = entry_of(n);
         n = next;
-        if (fd_get(e->fd) != e->file) {
-            if (consume) {
-                dlist_remove(&ep->entries, &e->link);
-                free(e);
-            }
+        struct file_s* pinned = fd_pin(e->fd);
+        if (pinned != e->file) {
+            file_unpin(pinned, deferred);
+            if (consume)
+                entry_remove(ep, e);
             continue;
         }
-        if (e->disabled)
+        if (e->disabled) {
+            file_unpin(pinned, deferred);
             continue;
+        }
 
+        if (interest)
+            *interest |= epoll_of(e->file) ? ~0ULL : socket_file_poll_bit(e->file);
         const uint32_t ready = entry_ready(e);
+        file_unpin(pinned, deferred);
         uint32_t report = ready;
         if (e->events & EPOLLET) {
             const uint32_t fresh = ready & ~e->reported;
@@ -124,15 +157,47 @@ static int epoll_collect(struct epoll* ep, struct epoll_event_k* out, const int 
     return count;
 }
 
+static int epoll_collect(struct epoll* ep, struct epoll_event_k* out, const int max, const bool consume,
+                         uint64_t* interest)
+{
+    bool kernel_locked = false, net_locked = false;
+    struct file_s* deferred = nullptr;
+
+    spinlock_acquire(&ep->lock);
+    if (ep->unsafe) {
+        spinlock_release(&ep->lock);
+        kernel_locked = kernel_lock_enter();
+        spinlock_acquire(&ep->lock);
+    } else {
+        net_locked = net_lock_enter();
+    }
+    const int count = epoll_collect_locked(ep, out, max, consume, interest, &deferred);
+    if (net_locked)
+        net_lock_exit();
+    spinlock_release(&ep->lock);
+
+    while (deferred) {
+        struct file_s* f = deferred;
+        deferred = f->deferred_next;
+        vfs_file_release(f);
+    }
+    if (kernel_locked)
+        kernel_lock_exit();
+    return count;
+}
+
 static long epoll_scan(void* ctx)
 {
     const struct epoll_scan* s = ctx;
-    return epoll_collect(s->ep, s->out, s->max, true);
+    uint64_t interest = 0;
+    const int count = epoll_collect(s->ep, s->out, s->max, true, &interest);
+    scheduler_get()->current->poll_interest = interest;
+    return count;
 }
 
 static int epoll_poll(struct file_s* f)
 {
-    return epoll_collect(epoll_of(f), nullptr, 1, false) ? VFS_POLLIN : 0;
+    return epoll_collect(epoll_of(f), nullptr, 1, false, nullptr) ? VFS_POLLIN : 0;
 }
 
 static int epoll_close(struct file_s* f)
@@ -190,6 +255,8 @@ long sys_epoll_create1(const int flags)
     if (!ep)
         return -ENOMEM;
     dlist_init(&ep->entries);
+    spinlock_init(&ep->lock, "epoll");
+    ep->unsafe = 0;
     const long fd = anon_install(&epoll_fops, ep, flags & EPOLL_CLOEXEC, 0);
     if (fd < 0)
         free(ep);
@@ -202,15 +269,17 @@ static bool epoll_loops(const struct epoll* ep, const struct epoll* target, cons
         return true;
     if (depth >= EPOLL_MAX_DEPTH)
         return true;
-    for (struct dlist_node* n = dlist_first(&target->entries); n; n = dlist_next(n)) {
+    spinlock_acquire((spinlock_t*)&target->lock);
+    bool found = false;
+    for (struct dlist_node* n = dlist_first(&target->entries); n && !found; n = dlist_next(n)) {
         const struct epoll_entry* e = entry_of(n);
         if (fd_get(e->fd) != e->file)
             continue;
         const struct epoll* inner = epoll_of(e->file);
-        if (inner && epoll_loops(ep, inner, depth + 1))
-            return true;
+        found = inner && epoll_loops(ep, inner, depth + 1);
     }
-    return false;
+    spinlock_release((spinlock_t*)&target->lock);
+    return found;
 }
 
 long sys_epoll_ctl(const int epfd, const int op, const int fd, const void* uevent)
@@ -228,70 +297,93 @@ long sys_epoll_ctl(const int epfd, const int op, const int fd, const void* ueven
     struct epoll_event_k ev = {0};
     if (op != EPOLL_CTL_DEL && copy_from_user(&ev, uevent, sizeof(ev)) < 0)
         return -EFAULT;
+    spinlock_acquire(&ep->lock);
     struct epoll_entry* e = epoll_find(ep, fd, f);
+    long ret = 0;
 
     switch (op) {
     case EPOLL_CTL_ADD: {
-        if (e)
-            return -EEXIST;
+        if (e) {
+            ret = -EEXIST;
+            break;
+        }
         const struct epoll* inner = epoll_of(f);
-        if (inner && epoll_loops(ep, inner, 0))
-            return -ELOOP;
+        if (inner && epoll_loops(ep, inner, 0)) {
+            ret = -ELOOP;
+            break;
+        }
         e = malloc(sizeof(struct epoll_entry));
-        if (!e)
-            return -ENOMEM;
+        if (!e) {
+            ret = -ENOMEM;
+            break;
+        }
         memset(e, 0, sizeof(*e));
         e->fd = fd;
         e->file = f;
         e->events = ev.events;
         e->data = ev.data;
+        e->unsafe = !file_poll_mpsafe(f);
+        ep->unsafe += e->unsafe;
         dlist_insert_tail(&ep->entries, &e->link);
         break;
     }
     case EPOLL_CTL_MOD:
-        if (!e)
-            return -ENOENT;
-        if ((ev.events & EPOLLEXCLUSIVE) || (e->events & EPOLLEXCLUSIVE))
-            return -EINVAL;
+        if (!e) {
+            ret = -ENOENT;
+            break;
+        }
+        if ((ev.events & EPOLLEXCLUSIVE) || (e->events & EPOLLEXCLUSIVE)) {
+            ret = -EINVAL;
+            break;
+        }
         e->events = ev.events;
         e->data = ev.data;
         e->reported = 0;
         e->disabled = false;
         break;
     case EPOLL_CTL_DEL:
-        if (!e)
-            return -ENOENT;
-        dlist_remove(&ep->entries, &e->link);
-        free(e);
+        if (!e) {
+            ret = -ENOENT;
+            break;
+        }
+        entry_remove(ep, e);
         break;
     default:
-        return -EINVAL;
+        ret = -EINVAL;
+        break;
     }
-    process_wakeup(WAIT_CHANNEL_POLL);
-    return 0;
+    spinlock_release(&ep->lock);
+    if (ret == 0)
+        process_wakeup_poll(~0ULL);
+    return ret;
 }
 
 long sys_epoll_pwait(const int epfd, void* uevents, const int maxevents, const int64_t timeout_ns,
                      const uint64_t* sigmask, const size_t sigsetsize)
 {
-    const struct file_s* epf = fd_get(epfd);
+    struct file_s* epf = fd_pin(epfd);
     if (!epf)
         return -EBADF;
     struct epoll* ep = epoll_of(epf);
-    if (!ep || maxevents <= 0)
-        return -EINVAL;
     const int max = maxevents < EPOLL_MAX_EVENTS ? maxevents : EPOLL_MAX_EVENTS;
-    if (!uaccess_ok_write(uevents, max * sizeof(struct epoll_event_k)))
-        return -EFAULT;
-
-    struct epoll_event_k* out = malloc(max * sizeof(struct epoll_event_k));
-    if (!out)
-        return -ENOMEM;
-    struct epoll_scan scan = { ep, out, max };
-    long r = poll_wait_sigmask(sigmask, sigsetsize, epoll_scan, &scan, timeout_ns);
-    if (r > 0 && copy_to_user(uevents, out, r * sizeof(struct epoll_event_k)) < 0)
+    long r;
+    if (!ep || maxevents <= 0) {
+        r = -EINVAL;
+    } else if (!uaccess_ok_write(uevents, max * sizeof(struct epoll_event_k))) {
         r = -EFAULT;
-    free(out);
+    } else {
+        struct epoll_event_k* out = malloc(max * sizeof(struct epoll_event_k));
+        if (!out) {
+            r = -ENOMEM;
+        } else {
+            struct epoll_scan scan = { ep, out, max };
+            r = poll_wait_sigmask(sigmask, sigsetsize, epoll_scan, &scan, timeout_ns);
+            if (r > 0 && copy_to_user(uevents, out, r * sizeof(struct epoll_event_k)) < 0)
+                r = -EFAULT;
+            free(out);
+        }
+    }
+    vfs_file_put(epf);
     return r;
 }
 
@@ -316,7 +408,7 @@ static int eventfd_wait_id(const struct eventfd* e)
 static void eventfd_notify(const struct eventfd* e)
 {
     process_wakeup(eventfd_wait_id(e));
-    process_wakeup(WAIT_CHANNEL_POLL);
+    process_wakeup_poll(~0ULL);
 }
 
 static ssize_t eventfd_read(struct file_s* f, void* buf, const size_t len)
@@ -374,6 +466,7 @@ static file_operations_t eventfd_fops = {
     .read = eventfd_read,
     .write = eventfd_write,
     .poll = eventfd_poll,
+    .poll_mpsafe = true,
     .close = eventfd_close,
 };
 

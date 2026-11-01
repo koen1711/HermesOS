@@ -2,6 +2,7 @@
 
 #include <os/stdbool.h>
 #include <os/stdint.h>
+#include <os/errno.h>
 #include <hardware/interrupts/pic.h>
 #include <hardware/interrupts/irq.h>
 #include <drivers/syscalls/syscalls.h>
@@ -53,11 +54,16 @@ static bool from_user_mode(const interrupt_context* context)
 
 static void handle_exception(const interrupt_context* context)
 {
+    const bool locked = from_user_mode(context) && kernel_lock_enter();
+
     uint64_t cr2 = 0;
     asm volatile("mov %%cr2, %0" : "=r"(cr2));
 
-    if (from_user_mode(context) && signal_fault(context, cr2))
+    if (from_user_mode(context) && signal_fault(context, cr2)) {
+        if (locked)
+            kernel_lock_exit();
         return;
+    }
 
     terminal_printf("\nException %d (%s), error code 0x%lx\n",
                     (int)context->interrupt_number, exception_names[context->interrupt_number],
@@ -105,6 +111,24 @@ static void deliver_pending_signals(interrupt_context* context)
         kernel_lock_exit();
 }
 
+static void deliver_syscall_signals(interrupt_context* context)
+{
+    if (!from_user_mode(context))
+        return;
+    process_t* current = scheduler_get()->current;
+    if (current == nullptr || current->pid == IDLE_PROC_PID)
+        return;
+    if ((int64_t)context->rax != -ERESTARTSYS && !(current->sig_pending & ~current->sig_blocked)
+        && !current->sig_restore_mask) {
+        current->syscall_nr = -1;
+        return;
+    }
+    const bool locked = kernel_lock_enter();
+    signal_deliver(context);
+    if (locked)
+        kernel_lock_exit();
+}
+
 void trap_handler(interrupt_context* context)
 {
     const uint64_t vector = context->interrupt_number;
@@ -116,10 +140,9 @@ void trap_handler(interrupt_context* context)
     if (vector == LAPIC_SPURIOUS_VECTOR)
         return;
 
-       if (vector == LAPIC_TIMER_VECTOR || vector == RESCHED_VECTOR) {
+    if (vector == LAPIC_TIMER_VECTOR || vector == RESCHED_VECTOR) {
         lapic_eoi();
     } else if (vector != PAGE_FAULT_VECTOR || !resolve_page_fault(context)) {
-        const bool locked = kernel_lock_enter();
         if (vector < EXCEPTION_COUNT)
             handle_exception(context);
         else if (vector == SYSCALL_VECTOR)
@@ -127,9 +150,7 @@ void trap_handler(interrupt_context* context)
         else if (vector >= IRQ_OFFSET && vector < IRQ_OFFSET + IRQ_MAX_LINES)
             handle_pic_interrupt(context);
         if (vector == SYSCALL_VECTOR)
-            signal_deliver(context);
-        if (locked)
-            kernel_lock_exit();
+            deliver_syscall_signals(context);
     }
 
     const bool tick = vector == LAPIC_TIMER_VECTOR || vector == IRQ_OFFSET + PIT_IRQ;

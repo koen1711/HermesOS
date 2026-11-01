@@ -3,6 +3,7 @@
 #include <drivers/net/socket/protosw.h>
 #include <drivers/net/core/netbuf.h>
 #include <drivers/timer/callout.h>
+#include <drivers/scheduler/process.h>
 #include <hardware/memory/alloc.h>
 #include <os/errno.h>
 
@@ -546,8 +547,14 @@ void sock_release(struct socket* so)
     sock_free(so);
 }
 
+uint64_t sock_poll_bit(const struct socket* so)
+{
+    return 1ULL << (((uintptr_t)so >> 6) * 0x9E3779B97F4A7C15ULL >> 58);
+}
+
 void sock_wakeup(struct socket* so)
 {
+    process_wakeup_poll(sock_poll_bit(so));
     sockbuf_wakeup(&so->rcv);
     sockbuf_wakeup(&so->snd);
     if (so->upcall)

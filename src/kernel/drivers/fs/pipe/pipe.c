@@ -29,7 +29,7 @@ static int pipe_wait_id(const struct pipe* p)
 static void pipe_notify(const struct pipe* p)
 {
     process_wakeup(pipe_wait_id(p));
-    process_wakeup(WAIT_CHANNEL_POLL);
+    process_wakeup_poll(~0ULL);
 }
 
 static ssize_t pipe_read(struct file_s* f, void* buf, const size_t len)
@@ -110,6 +110,7 @@ static file_operations_t pipe_fops = {
     .write = pipe_write,
     .close = pipe_close,
     .poll = pipe_poll,
+    .poll_mpsafe = true,
 };
 
 static struct file_s* pipe_end(struct pipe* p, const int flags)

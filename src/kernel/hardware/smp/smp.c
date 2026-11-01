@@ -28,8 +28,13 @@ extern void irq_lapic_timer(), irq_tlb_shootdown(), irq_resched(), irq_lapic_spu
 static struct cpu cpus[MAX_CPUS] = { [0] = { .self = &cpus[0], .index = 0, .online = true, .tss = &task_state_segment } };
 static int ncpus = 1;
 
-static volatile uint32_t kernel_lock;
-static volatile int kernel_lock_owner = -1;
+struct owner_lock {
+    volatile uint32_t locked;
+    volatile int owner;
+};
+
+static struct owner_lock kernel_lock = { .owner = -1 };
+static struct owner_lock net_lock = { .owner = -1 };
 
 static struct {
     uint16_t size;
@@ -79,33 +84,70 @@ static void tlb_poll(struct cpu* cpu)
     }
 }
 
-bool kernel_lock_enter()
+static void owner_lock_acquire(struct owner_lock* lock, struct cpu* cpu)
 {
-    struct cpu* cpu = cpu_this();
-    if (kernel_lock_owner == cpu->index)
-        return false;
-
-    while (__atomic_exchange_n(&kernel_lock, 1, __ATOMIC_ACQUIRE)) {
-        while (__atomic_load_n(&kernel_lock, __ATOMIC_RELAXED)) {
+    while (__atomic_exchange_n(&lock->locked, 1, __ATOMIC_ACQUIRE)) {
+        while (__atomic_load_n(&lock->locked, __ATOMIC_RELAXED)) {
             tlb_poll(cpu);
             asm volatile("pause");
         }
     }
-    kernel_lock_owner = cpu->index;
+    lock->owner = cpu->index;
+}
+
+static void owner_lock_release(struct owner_lock* lock)
+{
+    lock->owner = -1;
+    __atomic_store_n(&lock->locked, 0, __ATOMIC_RELEASE);
+}
+
+bool kernel_lock_enter()
+{
+    struct cpu* cpu = cpu_this();
+    if (kernel_lock.owner == cpu->index)
+        return false;
+    if (net_lock.owner == cpu->index) {
+        terminal_printf("\nlock order violation: kernel lock taken under net lock, from 0x%lx\n",
+                        (uint64_t)__builtin_return_address(0));
+        while (1)
+            asm volatile("cli; hlt");
+    }
+    owner_lock_acquire(&kernel_lock, cpu);
     return true;
 }
 
 void kernel_lock_exit()
 {
-    kernel_lock_owner = -1;
-    __atomic_store_n(&kernel_lock, 0, __ATOMIC_RELEASE);
+    owner_lock_release(&kernel_lock);
 }
 
 bool kernel_lock_drop()
 {
-    if (kernel_lock_owner != cpu_this()->index)
+    if (kernel_lock.owner != cpu_this()->index)
         return false;
     kernel_lock_exit();
+    return true;
+}
+
+bool net_lock_enter()
+{
+    struct cpu* cpu = cpu_this();
+    if (net_lock.owner == cpu->index)
+        return false;
+    owner_lock_acquire(&net_lock, cpu);
+    return true;
+}
+
+void net_lock_exit()
+{
+    owner_lock_release(&net_lock);
+}
+
+bool net_lock_drop()
+{
+    if (net_lock.owner != cpu_this()->index)
+        return false;
+    net_lock_exit();
     return true;
 }
 

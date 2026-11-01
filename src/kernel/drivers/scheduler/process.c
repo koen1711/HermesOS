@@ -74,6 +74,10 @@ static void process_free(process_t *proc);
 static void set_tss(const process_t *proc);
 static void schedule();
 static void sched_switch(uint64_t flags);
+static volatile uint64_t poll_wake_seq;
+volatile uint64_t poll_wake_calls;
+volatile uint64_t poll_wake_woken;
+
 static void reap_detached();
 static void switch_process(process_t *prev, process_t *next);
 
@@ -182,15 +186,57 @@ void process_wake(process_t *proc) {
     }
 }
 
-int process_sleep_interruptible(const int wait_id) {
+static bool signal_wakes(const process_t *proc) {
+    return proc->sig_pending & (~proc->sig_blocked | proc->sig_waiting);
+}
+
+static int sleep_interruptible(const int wait_id, const uint64_t *seq) {
     process_t *proc = scheduler_get()->current;
-    if (proc->sig_pending & (~proc->sig_blocked | proc->sig_waiting)) {
-        return -EINTR;
-    }
     proc->interruptible = true;
-    process_sleep(wait_id);
+    uint64_t flags;
+    spinlock_acquire_irqsave(&sched_lock, &flags);
+    if (signal_wakes(proc) || (seq && *seq != __atomic_load_n(&poll_wake_seq, __ATOMIC_SEQ_CST))) {
+        spinlock_release_irqrestore(&sched_lock, flags);
+    } else {
+        proc->state = PROC_SLOT_SLEEPING;
+        proc->wait_id = wait_id;
+        dlist_insert_tail(&scheduler.waiting, &proc->link);
+        sched_switch(flags);
+    }
     proc->interruptible = false;
-    return proc->sig_pending & (~proc->sig_blocked | proc->sig_waiting) ? -EINTR : 0;
+    return signal_wakes(proc) ? -EINTR : 0;
+}
+
+int process_sleep_interruptible(const int wait_id) {
+    return sleep_interruptible(wait_id, nullptr);
+}
+
+uint64_t process_poll_seq() {
+    return __atomic_load_n(&poll_wake_seq, __ATOMIC_SEQ_CST);
+}
+
+void process_wakeup_poll(const uint64_t interest) {
+    __atomic_add_fetch(&poll_wake_seq, 1, __ATOMIC_SEQ_CST);
+    __atomic_add_fetch(&poll_wake_calls, 1, __ATOMIC_RELAXED);
+    uint64_t flags;
+    spinlock_acquire_irqsave(&sched_lock, &flags);
+    int woken = 0;
+    for (struct dlist_node *node = dlist_first(&scheduler.waiting); node;) {
+        struct dlist_node *next = dlist_next(node);
+        process_t *proc = dlist_entry(node, process_t, link);
+        if (proc->wait_id == WAIT_CHANNEL_POLL && (proc->poll_interest & interest)) {
+            dlist_remove(&scheduler.waiting, node);
+            proc->state = PROC_SLOT_READY;
+            dlist_insert_tail(&scheduler.ready, &proc->link);
+            woken++;
+        }
+        node = next;
+    }
+    spinlock_release_irqrestore(&sched_lock, flags);
+    __atomic_add_fetch(&poll_wake_woken, woken, __ATOMIC_RELAXED);
+    if (woken && irq_in_interrupt()) {
+        kick_idle_cpu();
+    }
 }
 
 static void sleep_timeout(void *arg) {
@@ -199,20 +245,29 @@ static void sleep_timeout(void *arg) {
     process_wake(proc);
 }
 
-int process_sleep_timeout(const int wait_id, const uint64_t ticks) {
+static int sleep_timeout_checked(const int wait_id, const uint64_t ticks, const uint64_t *seq) {
     process_t *proc = scheduler_get()->current;
     proc->timed_out = false;
     struct callout timer;
     callout_init(&timer);
+    timer.mpsafe = true;
     if (ticks) {
         callout_reset(&timer, ticks, sleep_timeout, proc);
     }
-    const int err = process_sleep_interruptible(wait_id);
+    const int err = sleep_interruptible(wait_id, seq);
     callout_stop(&timer);
     if (err) {
         return err;
     }
     return proc->timed_out ? -ETIMEDOUT : 0;
+}
+
+int process_sleep_timeout(const int wait_id, const uint64_t ticks) {
+    return sleep_timeout_checked(wait_id, ticks, nullptr);
+}
+
+int process_sleep_poll(const uint64_t seq, const uint64_t ticks) {
+    return sleep_timeout_checked(WAIT_CHANNEL_POLL, ticks, &seq);
 }
 
 void process_interrupt(process_t *proc) {
@@ -264,22 +319,27 @@ struct proc_files *files_create() {
     if (files == nullptr) return nullptr;
     memset(files, 0, sizeof(*files));
     files->ref_count = 1;
+    spinlock_init(&files->lock, "files");
     files->cwd[0] = '/';
     files->root[0] = '/';
     files->umask = 022;
     return files;
 }
 
-struct proc_files *files_clone(const struct proc_files *src) {
+struct proc_files *files_clone(struct proc_files *src) {
     struct proc_files *files = malloc(sizeof(struct proc_files));
     if (files == nullptr) return nullptr;
+    uint64_t flags;
+    spinlock_acquire_irqsave(&src->lock, &flags);
     memcpy(files, src, sizeof(*files));
-    files->ref_count = 1;
     for (int i = 0; i<PROC_MAX_FILE_DESCRIPTORS; i++) {
         if (files->file[i] != nullptr) {
             __atomic_fetch_add(&files->file[i]->ref_count, 1, __ATOMIC_RELAXED);
         }
     }
+    spinlock_release_irqrestore(&src->lock, flags);
+    files->ref_count = 1;
+    spinlock_init(&files->lock, "files");
     return files;
 }
 
@@ -342,7 +402,7 @@ void process_exit() {
         process_wakeup(WAIT_CHANNEL_CHILD | proc->ppid);
     }
     if (leader)
-        process_wakeup(WAIT_CHANNEL_POLL);
+        process_wakeup_poll(~0ULL);
 
     uint64_t flags;
     spinlock_acquire_irqsave(&sched_lock, &flags);
@@ -665,9 +725,13 @@ int process_exec(process_t *proc, const char *path, char *const argv[], char *co
     }
     for (int i = 0; proc->files != nullptr && i<PROC_MAX_FILE_DESCRIPTORS; i++) {
         if (proc->files->file[i] != nullptr && proc->files->cloexec[i]) {
-            vfs_close((int)proc->files->file[i]->id);
+            uint64_t flags;
+            spinlock_acquire_irqsave(&proc->files->lock, &flags);
+            const int id = (int)proc->files->file[i]->id;
             proc->files->file[i] = nullptr;
             proc->files->cloexec[i] = false;
+            spinlock_release_irqrestore(&proc->files->lock, flags);
+            vfs_close(id);
         }
     }
 
@@ -753,12 +817,16 @@ static void schedule() {
 }
 
 static void sched_switch(const uint64_t flags) {
+    const bool had_net_lock = net_lock_drop();
     const bool had_kernel_lock = kernel_lock_drop();
     schedule();
     spinlock_release_irqrestore(&sched_lock, flags);
     if (had_kernel_lock) {
         kernel_lock_enter();
         reap_detached();
+    }
+    if (had_net_lock) {
+        net_lock_enter();
     }
 }
 

@@ -12,6 +12,7 @@ struct callout {
     callout_func_t func;
     void* arg;
     bool pending;
+    bool mpsafe;
     uint32_t dispatched;
 };
 

@@ -288,6 +288,42 @@ static long rw_vector(const int fd, const void* uiov, const int iov_cnt, const i
     return total;
 }
 
+static long socket_rw_one(struct file_s* f, void* buf, const size_t len, const bool write)
+{
+    if (!(write ? uaccess_ok(buf, len) : uaccess_ok_write(buf, len)))
+        return -EFAULT;
+    return write ? socket_file_write(f, buf, len) : socket_file_read(f, buf, len);
+}
+
+long sys_socket_rw(struct file_s* f, void* buf, const size_t len, const bool write)
+{
+    return socket_rw_one(f, buf, len, write);
+}
+
+long sys_socket_rwv(struct file_s* f, const void* uiov, const int iov_cnt, const bool write)
+{
+    struct iovec_k* iov;
+    const long err = iov_in(uiov, iov_cnt, &iov);
+    if (err)
+        return err;
+    long total = 0;
+    for (int i = 0; i < iov_cnt; i++) {
+        if (iov[i].iov_len == 0)
+            continue;
+        const long n = socket_rw_one(f, iov[i].iov_base, iov[i].iov_len, write);
+        if (n < 0) {
+            if (total == 0)
+                total = n;
+            break;
+        }
+        total += n;
+        if ((size_t)n < iov[i].iov_len)
+            break;
+    }
+    free(iov);
+    return total;
+}
+
 long sys_readv(const int fd, const void* iov, const int iov_cnt)
 {
     return rw_vector(fd, iov, iov_cnt, -1, false);

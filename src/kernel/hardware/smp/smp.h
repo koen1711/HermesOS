@@ -16,6 +16,7 @@ struct cpu {
     volatile bool online;
     volatile bool tlb_flush;
     tss_t* tss;
+    uint32_t irq_depth;
 };
 
 struct cpu* cpu_this();
@@ -25,6 +26,9 @@ int cpu_count();
 bool kernel_lock_enter();
 void kernel_lock_exit();
 bool kernel_lock_drop();
+bool net_lock_enter();
+void net_lock_exit();
+bool net_lock_drop();
 
 void smp_early_initialize();
 void smp_initialize();

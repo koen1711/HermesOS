@@ -128,6 +128,7 @@ struct socket* sock_new_conn(struct socket* head);
 
 void sock_release(struct socket* so);
 void sock_wakeup(struct socket* so);
+uint64_t sock_poll_bit(const struct socket* so);
 void sock_set_upcall(struct socket* so, void (*upcall)(struct socket* so, void* arg), void* arg);
 
 #endif //NET_SOCKET_SOCKET_H

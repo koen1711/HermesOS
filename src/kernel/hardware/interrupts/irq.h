@@ -9,6 +9,7 @@
 typedef void (*irq_handler_t)(uint8_t irq, void* ctx);
 
 int irq_register_handler(uint8_t irq, irq_handler_t handler, void* ctx);
+int irq_register_handler_mpsafe(uint8_t irq, irq_handler_t handler, void* ctx);
 void irq_unregister_handler(uint8_t irq, irq_handler_t handler, const void* ctx);
 
 void irq_dispatch(uint8_t irq);

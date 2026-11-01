@@ -28,6 +28,7 @@ void callout_init(struct callout* c)
     c->func = nullptr;
     c->arg = nullptr;
     c->pending = false;
+    c->mpsafe = false;
     c->dispatched = 0;
 }
 
@@ -97,6 +98,7 @@ void callout_tick()
     spinlock_acquire_irqsave(&callout_lock, &flags);
     const uint64_t now = ++ticks;
     const struct dlist* slot = &wheel[now % WHEEL_SIZE];
+    bool big_locks = false, kernel_locked = false, net_locked = false;
 
     for (;;) {
         struct callout* due = nullptr;
@@ -109,6 +111,15 @@ void callout_tick()
         }
         if (!due)
             break;
+
+        if (!due->mpsafe && !big_locks) {
+            spinlock_release_irqrestore(&callout_lock, flags);
+            kernel_locked = kernel_lock_enter();
+            net_locked = net_lock_enter();
+            big_locks = true;
+            spinlock_acquire_irqsave(&callout_lock, &flags);
+            continue;
+        }
 
         callout_unlink(due);
         __atomic_add_fetch(&due->dispatched, 1, __ATOMIC_RELEASE);
@@ -123,6 +134,10 @@ void callout_tick()
         spinlock_acquire_irqsave(&callout_lock, &flags);
     }
     spinlock_release_irqrestore(&callout_lock, flags);
+    if (net_locked)
+        net_lock_exit();
+    if (kernel_locked)
+        kernel_lock_exit();
 }
 
 void callout_poll()

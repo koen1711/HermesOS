@@ -290,7 +290,10 @@ void netif_link_state_change(struct netif* nif, const uint32_t link_state)
 
 void netif_poll_all()
 {
+    const bool locked = net_lock_enter();
     for (struct netif* nif = netif_first(); nif; nif = netif_next(nif))
         if ((nif->flags & NETIF_UP) && nif->ops && nif->ops->poll)
             nif->ops->poll(nif);
+    if (locked)
+        net_lock_exit();
 }

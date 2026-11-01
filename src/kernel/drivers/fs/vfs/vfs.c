@@ -2,6 +2,7 @@
 #include "drivers/terminal/terminal.h"
 #include "utils/str/str.h"
 #include <drivers/fs/notify/inotify.h>
+#include <hardware/smp/smp.h>
 #include <os/errno.h>
 
 
@@ -576,24 +577,37 @@ int vfs_resolve_root(const char* root, const char* base, const char* path, char*
     return 0;
 }
 
+void vfs_file_release(struct file_s* f)
+{
+    const bool locked = kernel_lock_enter();
+    const size_t id = f->id;
+    if (f->node->fops != nullptr && f->node->fops->close != nullptr)
+        f->node->fops->close(f);
+    if (f->mount != nullptr)
+    {
+        notify_file(f, f->flags & O_WRONLY ? IN_CLOSE_WRITE : IN_CLOSE_NOWRITE);
+        release_node(f->mount, f->node);
+        f->mount->open_count--;
+    }
+    free(f);
+    fd_table[id] = nullptr;
+    if (locked)
+        kernel_lock_exit();
+}
+
+void vfs_file_put(struct file_s* f)
+{
+    if (__atomic_sub_fetch(&f->ref_count, 1, __ATOMIC_ACQ_REL) == 0)
+        vfs_file_release(f);
+}
+
 int vfs_close(const int fd)
 {
     struct file_s* f = get_file(fd);
 
     if (f == nullptr) 
         return -1;
-    if (__atomic_sub_fetch(&f->ref_count, 1, __ATOMIC_ACQ_REL) == 0) {
-        if (f->node->fops != nullptr && f->node->fops->close != nullptr)
-            f->node->fops->close(f);
-        if (f->mount != nullptr)
-        {
-            notify_file(f, f->flags & O_WRONLY ? IN_CLOSE_WRITE : IN_CLOSE_NOWRITE);
-            release_node(f->mount, f->node);
-            f->mount->open_count--;
-        }
-        free(f);
-        fd_table[fd] = nullptr;
-    }
+    vfs_file_put(f);
     return 0;
 }
 

@@ -8,6 +8,9 @@
 struct timespec_k;
 struct timeval_k;
 
+struct file_s;
+long sys_socket_rw(struct file_s* f, void* buf, size_t len, bool write);
+long sys_socket_rwv(struct file_s* f, const void* uiov, int iov_cnt, bool write);
 long sys_read(int fd, void* buf, size_t len);
 long sys_write(int fd, const void* buf, size_t len);
 long sys_openat(int dirfd, const char* path, int flags, uint32_t mode);

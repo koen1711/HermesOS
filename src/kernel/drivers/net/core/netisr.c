@@ -4,6 +4,7 @@
 #include <drivers/net/core/netif.h>
 #include <drivers/net/core/netqueue.h>
 #include <hardware/interrupts/irq.h>
+#include <hardware/smp/smp.h>
 #include <os/errno.h>
 
 #define NETISR_POLL_BUDGET 64
@@ -90,13 +91,13 @@ bool netisr_pending()
 static bool netisr_drain()
 {
     static bool running;
-    const uint64_t flags = irq_save();
+    const bool locked = net_lock_enter();
     if (running) {
-        irq_restore(flags);
+        if (locked)
+            net_lock_exit();
         return false;
     }
     running = true;
-    irq_restore(flags);
 
     bool did = false;
     bool more = true;
@@ -121,12 +122,15 @@ static bool netisr_drain()
         }
     }
     running = false;
+    if (locked)
+        net_lock_exit();
     return did;
 }
 
 void netisr_poll()
 {
-    netisr_drain();
+    if (netisr_pending())
+        netisr_drain();
 }
 
 void netisr_purge(struct netif* nif)
