@@ -1,5 +1,7 @@
 #include "terminal.h"
 
+#include "drivers/scheduler/process.h"
+#include "drivers/timer/callout.h"
 #include "hardware/interrupts/panic.h"
 #include "hardware/memory/alloc.h"
 #include <utils/str/vsnprintf.h>
@@ -11,21 +13,65 @@
 #include "procs/vga.h"
 #include "procs/lfb.h"
 
+#define WAIT_CHANNEL_TERMINAL_REFRESH 0x39200000
+#define TERMINAL_REFRESH_HZ 60
+
 static vt_t terminals[TERMINAL_COUNT];
 static const terminal_backend* backend = nullptr;
 static int active = 0;
 static spinlock_t terminal_lock = { .name = "terminal" };
+static bool refresh_started = false;
+static bool refresh_pending = false;
+
+static void terminal_flush_row(vt_t* vt, const size_t y)
+{
+    if (!vt->dirty[y])
+        return;
+    vt->dirty[y] = 0;
+    for (size_t x = 0; x < vt->cols; x++)
+        backend->draw(x, y, vt->cells[y * vt->cols + x]);
+}
 
 static void terminal_flush(vt_t* vt)
 {
-    for (size_t y = 0; y < vt->rows; y++) {
-        if (!vt->dirty[y])
-            continue;
-        vt->dirty[y] = 0;
-        for (size_t x = 0; x < vt->cols; x++)
-            backend->draw(x, y, vt->cells[y * vt->cols + x]);
-    }
+    for (size_t y = 0; y < vt->rows; y++)
+        terminal_flush_row(vt, y);
     backend->cursor(vt->x, vt->y, vt->cursor_visible);
+}
+
+static void terminal_refresh()
+{
+    uint64_t flags;
+    spinlock_acquire_irqsave(&terminal_lock, &flags);
+    const bool pending = refresh_pending;
+    refresh_pending = false;
+    spinlock_release_irqrestore(&terminal_lock, flags);
+    if (!pending)
+        return;
+
+    for (size_t y = 0;; y++) {
+        spinlock_acquire_irqsave(&terminal_lock, &flags);
+        vt_t* vt = &terminals[active];
+        const bool done = y >= vt->rows;
+        if (done)
+            backend->cursor(vt->x, vt->y, vt->cursor_visible);
+        else
+            terminal_flush_row(vt, y);
+        spinlock_release_irqrestore(&terminal_lock, flags);
+        if (done)
+            return;
+    }
+}
+
+static void terminal_refresher(void* arg)
+{
+    (void)arg;
+    const uint64_t interval = ticks_hz() / TERMINAL_REFRESH_HZ;
+    const uint64_t ticks = interval ? interval : 1;
+    for (;;) {
+        process_sleep_timeout(WAIT_CHANNEL_TERMINAL_REFRESH, ticks);
+        terminal_refresh();
+    }
 }
 
 static void terminal_attach(const terminal_backend* next)
@@ -52,6 +98,11 @@ void terminal_initialize(const terminal_mode mode)
     terminal_attach(initial);
 }
 
+void terminal_start_refresh()
+{
+    refresh_started = process_create_kernel(terminal_refresher, nullptr) != nullptr;
+}
+
 void terminal_switch_mode(const terminal_mode mode)
 {
     const terminal_backend* next = mode == VGA_LFB_MODE ? lfb_text_backend() : vga_text_backend();
@@ -64,7 +115,7 @@ void terminal_switch_mode(const terminal_mode mode)
     spinlock_release_irqrestore(&terminal_lock, flags);
 }
 
-void terminal_write(const int index, const char* buf, const size_t len, const bool onlcr)
+static void terminal_output(const int index, const char* buf, const size_t len, const bool onlcr, const bool sync)
 {
     if (backend == nullptr || index < 0 || index >= TERMINAL_COUNT)
         return;
@@ -78,8 +129,12 @@ void terminal_write(const int index, const char* buf, const size_t len, const bo
             vt_putc(vt, '\r');
         vt_putc(vt, (uint8_t)buf[i]);
     }
-    if (index == active)
-        terminal_flush(vt);
+    if (index == active) {
+        if (sync || !refresh_started)
+            terminal_flush(vt);
+        else
+            refresh_pending = true;
+    }
     const size_t response_len = vt->response_len;
     memcpy(response, vt->response, response_len);
     vt->response_len = 0;
@@ -87,6 +142,11 @@ void terminal_write(const int index, const char* buf, const size_t len, const bo
 
     for (size_t i = 0; i < response_len; i++)
         tty_receive(index, response[i]);
+}
+
+void terminal_write(const int index, const char* buf, const size_t len, const bool onlcr)
+{
+    terminal_output(index, buf, len, onlcr, false);
 }
 
 void terminal_printf(const char* format, ...)
@@ -108,7 +168,7 @@ void terminal_printf(const char* format, ...)
     vsnprintf(buf, required_length + 1, format, args);
     va_end(args);
 
-    terminal_write(0, buf, required_length, true);
+    terminal_output(0, buf, required_length, true, true);
     if (buf != small)
         free(buf);
 }

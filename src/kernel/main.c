@@ -42,6 +42,7 @@ void kernel_main(void* multiboot_info_ptr)
     tty_initialize();
 
     lfb_initialize();
+    terminal_start_refresh();
     smp_initialize();
 
     irq_restore(0x200);

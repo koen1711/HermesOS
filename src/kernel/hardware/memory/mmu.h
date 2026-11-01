@@ -10,6 +10,7 @@
 #define MMU_USER          0x004
 #define MMU_PDE_TWO_MB    0x080
 #define MMU_CACHE_DISABLE 0x010
+#define MMU_WRITE_COMBINE 0x008
 
 #define TWO_MEGABYTES     0x200000
 #define IDENTITY_MAP_SIZE 0x40000000ULL
@@ -22,6 +23,7 @@
 #define USER_MEMORY_SIZE  (16 * PAGE_SIZE)
 
 void mmu_initialize(void);
+void mmu_cpu_initialize(void);
 int  map_page(uint64_t virtual_addr, uint64_t physical_addr, uint64_t flags);
 void unmap_page(uint64_t virtual_addr);
 void* vmalloc(size_t size);

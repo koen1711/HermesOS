@@ -22,6 +22,7 @@ typedef struct
 } terminal_backend;
 
 void terminal_initialize(terminal_mode mode);
+void terminal_start_refresh();
 void terminal_switch_mode(terminal_mode mode);
 void terminal_printf(const char* format, ...);
 void terminal_write(int index, const char* buf, size_t len, bool onlcr);

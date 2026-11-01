@@ -168,10 +168,11 @@ static void ap_main()
     asm volatile("pushq $0x08; leaq 1f(%%rip), %%rax; pushq %%rax; lretq; 1:" : : : "rax", "memory");
     asm volatile("lidt %0" : : "m"(kernel_idtr));
     install_tss(cpu->index, cpu->tss);
+    mmu_cpu_initialize();
     syscalls_cpu_initialize();
 
     asm volatile("fninit");
-    const uint32_t mxcsr = 0x1F80;
+    constexpr uint32_t mxcsr = 0x1F80;
     asm volatile("ldmxcsr %0" : : "m"(mxcsr));
 
     lapic_enable(true);

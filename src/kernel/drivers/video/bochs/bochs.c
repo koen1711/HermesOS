@@ -16,7 +16,7 @@ static void* map_mmio_region(const uint64_t phys, size_t size, const uint64_t vi
         map_page(
             virt_base + i * page_size,
             phys + i * page_size,
-            MMU_PRESENT | MMU_WRITABLE | MMU_CACHE_DISABLE
+            MMU_PRESENT | MMU_WRITABLE | MMU_WRITE_COMBINE
         );
     }
     return (void*)virt_base;

@@ -18,12 +18,9 @@ echo "Building cross-compiler with $THREADS thread(s)"
 echo "Installing cross-compiler to $PREFIX"
 echo "Building in directory $WORKDIR"
 
-# install mlibc headers into the sysroot so gcc can find them
 bash "$CUR_DIR/mlibc-headers.sh"
 
 cd "$WORKDIR" || exit
-
-# get and extract sources
 
 if [ ! -d binutils-gdb-$BINUTILS ]
 then
@@ -39,22 +36,18 @@ then
 	patch -d gcc-releases-$GCC -p1 < "$CUR_DIR/patches/gcc-hermes.patch"
 fi
 
-# build and install libtools
 cd binutils-gdb-$BINUTILS || exit
 ./configure --prefix="$PREFIX" --target=$TARGET --disable-nls --disable-werror --enable-default-execstack=no --with-sysroot="$SYSROOT"
 make -j "$THREADS"
 make install
 cd ..
 
-# gcc needs the freshly installed binutils on PATH
 export PATH="$PREFIX/bin:$PATH"
 
-# download gcc prerequisites
 cd gcc-releases-$GCC || exit
 ./contrib/download_prerequisites
 cd ..
 
-# build and install gcc
 mkdir $GCC-objs
 cd $GCC-objs || exit
 ../gcc-releases-$GCC/configure --prefix="$PREFIX" \

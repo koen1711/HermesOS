@@ -50,16 +50,17 @@ static void lfb_text_draw(const size_t x, const size_t y, const vt_cell cell)
 
 static void lfb_text_cursor(const size_t x, const size_t y, const bool visible)
 {
-    if (x == cursor_x && y == cursor_y && visible == cursor_visible)
-        return;
-    if (cursor_visible)
-        lfb_text_render(cursor_x, cursor_y, shadow[cursor_y * lfb_backend.cols + cursor_x], false);
+    if (x != cursor_x || y != cursor_y || visible != cursor_visible) {
+        if (cursor_visible)
+            lfb_text_render(cursor_x, cursor_y, shadow[cursor_y * lfb_backend.cols + cursor_x], false);
 
-    cursor_x = x < lfb_backend.cols ? x : lfb_backend.cols - 1;
-    cursor_y = y < lfb_backend.rows ? y : lfb_backend.rows - 1;
-    cursor_visible = visible;
-    if (cursor_visible)
-        lfb_text_render(cursor_x, cursor_y, shadow[cursor_y * lfb_backend.cols + cursor_x], true);
+        cursor_x = x < lfb_backend.cols ? x : lfb_backend.cols - 1;
+        cursor_y = y < lfb_backend.rows ? y : lfb_backend.rows - 1;
+        cursor_visible = visible;
+        if (cursor_visible)
+            lfb_text_render(cursor_x, cursor_y, shadow[cursor_y * lfb_backend.cols + cursor_x], true);
+    }
+    asm volatile("sfence");
 }
 
 const terminal_backend* lfb_text_backend()

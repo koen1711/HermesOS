@@ -9,6 +9,9 @@
 #include <utils/sync/spinlock.h>
 
 #define PTE_ADDR 0x000FFFFFFFFFF000ULL
+#define MSR_PAT 0x277
+#define PAT_WC_AT_ENTRY_1 0x0007040600070106ULL
+#define CPUID_EDX_PAT (1u << 16)
 
 uint64_t direct_map_offset = 0;
 static uint64_t kernel_pml4;
@@ -147,7 +150,15 @@ static void setup_direct_mapping(uint64_t* pml4) {
     }
 }
 
+void mmu_cpu_initialize(void) {
+    uint32_t eax = 1, ebx, ecx = 0, edx;
+    asm volatile("cpuid" : "+a"(eax), "=b"(ebx), "+c"(ecx), "=d"(edx));
+    if (!(edx & CPUID_EDX_PAT)) return;
+    asm volatile("wrmsr" : : "c"(MSR_PAT), "a"((uint32_t)PAT_WC_AT_ENTRY_1), "d"((uint32_t)(PAT_WC_AT_ENTRY_1 >> 32)));
+}
+
 void mmu_initialize(void) {
+    mmu_cpu_initialize();
     kernel_pml4 = allocate_page_table();
     uint64_t* pml4 = table_at(kernel_pml4);
 
