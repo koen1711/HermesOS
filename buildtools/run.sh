@@ -1,7 +1,7 @@
 #!/bin/sh
 set -e
 BINARY_DIR=$1
-sh ./create_image.sh "$BINARY_DIR"
+python3 "$(dirname "$0")/disk-mngr/disk_mngr.py" "$BINARY_DIR"
 ACCEL=""
 [ -w /dev/kvm ] && ACCEL="-enable-kvm -cpu host"
 
