@@ -8,7 +8,7 @@ SECTIONS
     .boottext :
     {
         *(.multiboot)
-        *(.text)
+        *(.text .text.*)
     }
 
     .bootrodata :
