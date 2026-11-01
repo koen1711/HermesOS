@@ -146,7 +146,7 @@ static bool inpcb_port_in_use(const struct inpcb* inp, const struct in6_addr* la
             continue;
         if ((inp->flags & INPCB_REUSEPORT) && (other->flags & INPCB_REUSEPORT))
             continue;
-        if ((inp->flags & INPCB_REUSEADDR) && !inpcb_addr_is_any(&other->faddr))
+        if (inp->socket && (inp->socket->options & SO_REUSEADDR) && !inpcb_addr_is_any(&other->faddr))
             continue;
         if (inpcb_bindings_overlap(other, inp, laddr))
             return true;
