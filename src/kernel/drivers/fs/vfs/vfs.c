@@ -1,6 +1,7 @@
 #include "vfs.h"
 #include "drivers/terminal/terminal.h"
 #include "utils/str/str.h"
+#include <drivers/fs/notify/inotify.h>
 #include <os/errno.h>
 
 
@@ -10,11 +11,17 @@ static struct mounted_file_system_s mount_table[MAX_MOUNTED_FILESYSTEMS];
 
 static int driver_count = 0;
 
+static void notify_file(const struct file_s* f, const uint32_t mask)
+{
+    if (f->filename[0] != '\0' && inotify_active())
+        inotify_notify(f->filename, mask, f->node->type == INODE_DIR);
+}
+
 static struct registered_driver_s* get_driver(const char* fs_name)
 {
     for (int i = 0; i < driver_count; i++)
     {
-        if ((strcmp((driver_table[i].name), fs_name) == 0))
+        if ((strcmp((driver_table[i].name), fs_name) == nullptr))
         {
             return &driver_table[i];
         }
@@ -230,6 +237,7 @@ int vfs_open(const char* path, const int flags)
             f->id = i;
             fd_table[i] = f;
             mount->open_count++;
+            notify_file(f, IN_OPEN);
             return i;
         }
     }
@@ -253,8 +261,11 @@ ssize_t vfs_read(const int fd, void* buf, const size_t length)
         return -EISDIR;
     if (f->node->fops == nullptr || f->node->fops->read == nullptr) 
         return -EINVAL;
-    
-    return f->node->fops->read(f, buf, length);
+
+    const ssize_t n = f->node->fops->read(f, buf, length);
+    if (n > 0)
+        notify_file(f, IN_ACCESS);
+    return n;
 }
 
 ssize_t vfs_write(const int fd, const void* buf, const size_t length)
@@ -270,7 +281,10 @@ ssize_t vfs_write(const int fd, const void* buf, const size_t length)
         return -EISDIR;
     if (f->node->fops == nullptr || f->node->fops->write == nullptr)
         return -EROFS;
-    return f->node->fops->write(f, buf, length);
+    const ssize_t n = f->node->fops->write(f, buf, length);
+    if (n > 0)
+        notify_file(f, IN_MODIFY);
+    return n;
 }
 
 // The directory holding path and the last component of path, which points into path
@@ -311,6 +325,8 @@ int vfs_create(const char* path, const bool directory)
         return err;
     err = dir->iops && dir->iops->create ? dir->iops->create(dir, name, directory) : -EROFS;
     release_node(mount, dir);
+    if (err == 0)
+        inotify_notify(path, IN_CREATE, directory);
     return err;
 }
 
@@ -324,6 +340,8 @@ int vfs_unlink(const char* path, const bool directory)
         return err;
     err = dir->iops && dir->iops->unlink ? dir->iops->unlink(dir, name, directory) : -EROFS;
     release_node(mount, dir);
+    if (err == 0)
+        inotify_deleted(path, directory);
     return err;
 }
 
@@ -332,6 +350,10 @@ int vfs_rename(const char* old_path, const char* new_path, const bool no_replace
     const size_t old_len = strlen(old_path);
     if (strncmp(new_path, old_path, old_len) == 0 && new_path[old_len] == '/')
         return -EINVAL;
+
+    size_t old_type = INODE_FILE;
+    if (inotify_active())
+        vfs_path_type(old_path, &old_type);
 
     mounted_file_system_t* old_mount;
     mounted_file_system_t* new_mount;
@@ -355,7 +377,21 @@ int vfs_rename(const char* old_path, const char* new_path, const bool no_replace
         err = old_dir->iops->rename(old_dir, old_name, new_dir, new_name, no_replace);
     release_node(new_mount, new_dir);
     release_node(old_mount, old_dir);
+    if (err == 0)
+        inotify_moved(old_path, new_path, old_type == INODE_DIR);
     return err;
+}
+
+int vfs_path_type(const char* path, size_t* type)
+{
+    mounted_file_system_t* mount;
+    struct inode_s* node;
+    const int err = vfs_walk(path, &mount, &node);
+    if (err)
+        return err;
+    *type = node->type;
+    release_node(mount, node);
+    return 0;
 }
 
 int vfs_truncate(const int fd, const size_t size)
@@ -367,7 +403,10 @@ int vfs_truncate(const int fd, const size_t size)
         return -EISDIR;
     if (f->node->fops == nullptr || f->node->fops->truncate == nullptr)
         return -EINVAL;
-    return f->node->fops->truncate(f, size);
+    const int err = f->node->fops->truncate(f, size);
+    if (err == 0)
+        notify_file(f, IN_MODIFY);
+    return err;
 }
 
 int64_t vfs_seek(const int fd, const int64_t offset, const enum seek_origin origin)
@@ -452,7 +491,10 @@ int vfs_setxattr(const struct file_s* f, const char* name, const void* value, co
     const inode_operations_t* ops = f->node->iops;
     if (ops == nullptr || ops->setxattr == nullptr)
         return -EOPNOTSUPP;
-    return ops->setxattr(f->node, name, value, size, flags);
+    const int err = ops->setxattr(f->node, name, value, size, flags);
+    if (err == 0)
+        notify_file(f, IN_ATTRIB);
+    return err;
 }
 
 ssize_t vfs_listxattr(const struct file_s* f, char* list, const size_t size)
@@ -545,6 +587,7 @@ int vfs_close(const int fd)
             f->node->fops->close(f);
         if (f->mount != nullptr)
         {
+            notify_file(f, f->flags & O_WRONLY ? IN_CLOSE_WRITE : IN_CLOSE_NOWRITE);
             release_node(f->mount, f->node);
             f->mount->open_count--;
         }
@@ -575,5 +618,8 @@ int vfs_fallocate(int fd, int mode, int64_t offset, int64_t len)
         return -EINVAL;
     if (f->node->fops == nullptr || f->node->fops->fallocate == nullptr)
         return -EOPNOTSUPP;
-    return f->node->fops->fallocate(f, mode, offset, len);
+    const int err = f->node->fops->fallocate(f, mode, offset, len);
+    if (err == 0)
+        notify_file(f, IN_MODIFY);
+    return err;
 }

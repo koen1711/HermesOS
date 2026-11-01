@@ -93,6 +93,11 @@ long sys_epoll_pwait(int epfd, void* events, int maxevents, int64_t timeout_ns, 
 long sys_epoll_pwait2(int epfd, void* events, int maxevents, const struct timespec_k* timeout,
                       const uint64_t* sigmask, size_t sigsetsize);
 long sys_eventfd2(unsigned int initval, int flags);
+struct file_operations_s;
+long anon_install(struct file_operations_s* fops, void* data, bool cloexec, int status_flags);
+long sys_inotify_init1(int flags);
+long sys_inotify_add_watch(int fd, const char* path, uint32_t mask);
+long sys_inotify_rm_watch(int fd, int wd);
 long sys_pidfd_open(int pid, unsigned int flags);
 int pidfd_pid(const struct file_s* f);
 

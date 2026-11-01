@@ -13,7 +13,7 @@ diff --color -ruN a/config.sub b/config.sub
 diff --color -ruN a/gcc/config/hermes.h b/gcc/config/hermes.h
 --- a/gcc/config/hermes.h	1970-01-01 01:00:00.000000000 +0100
 +++ b/gcc/config/hermes.h	2026-10-28 21:56:04.376988743 +0100
-@@ -0,0 +1,35 @@
+@@ -0,0 +1,38 @@
 +/* Target definitions for HermesOS (mlibc-based userspace).  */
 +
 +#undef TARGET_HERMES
@@ -45,8 +45,11 @@ diff --color -ruN a/gcc/config/hermes.h b/gcc/config/hermes.h
 +  do {                                    \
 +    builtin_define ("__hermes__");        \
 +    builtin_define ("__unix__");          \
++    builtin_define ("__linux__");         \
++    builtin_define ("__linux");           \
 +    builtin_assert ("system=hermes");     \
 +    builtin_assert ("system=unix");       \
++    builtin_assert ("system=linux");      \
 +    builtin_assert ("system=posix");      \
 +  } while (0)
 diff --color -ruN a/gcc/config.gcc b/gcc/config.gcc

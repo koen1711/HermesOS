@@ -46,6 +46,7 @@ ssize_t vfs_write(int fd, const void *buf, size_t length);
 int vfs_close(int fd);
 int vfs_sync();
 int vfs_create(const char *path, bool directory);
+int vfs_path_type(const char *path, size_t *type);
 int vfs_unlink(const char *path, bool directory);
 int vfs_rename(const char *old_path, const char *new_path, bool no_replace);
 int vfs_truncate(int fd, size_t size);

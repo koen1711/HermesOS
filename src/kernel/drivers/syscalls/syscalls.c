@@ -260,6 +260,14 @@ static long file_syscall(const interrupt_context* c)
             return sys_eventfd2((unsigned int)c->rdi, 0);
         case SYSCALL_EVENTFD2:
             return sys_eventfd2((unsigned int)c->rdi, (int)c->rsi);
+        case SYSCALL_INOTIFY_INIT:
+            return sys_inotify_init1(0);
+        case SYSCALL_INOTIFY_INIT1:
+            return sys_inotify_init1((int)c->rdi);
+        case SYSCALL_INOTIFY_ADD_WATCH:
+            return sys_inotify_add_watch((int)c->rdi, (const char*)c->rsi, (uint32_t)c->rdx);
+        case SYSCALL_INOTIFY_RM_WATCH:
+            return sys_inotify_rm_watch((int)c->rdi, (int)c->rsi);
         case SYSCALL_STATFS:
             return sys_statfs((const char*)c->rdi, (void*)c->rsi);
         case SYSCALL_FSTATFS:

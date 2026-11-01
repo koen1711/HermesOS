@@ -153,7 +153,7 @@ static file_operations_t epoll_fops = {
     .close = epoll_close,
 };
 
-static long anon_install(file_operations_t* fops, void* data, const bool cloexec, const int status_flags)
+long anon_install(file_operations_t* fops, void* data, const bool cloexec, const int status_flags)
 {
     inode_t* node = malloc(sizeof(inode_t));
     struct file_s* f = malloc(sizeof(struct file_s));

@@ -14,6 +14,8 @@
 
 #define EXEC_MAX_ARGS 4096
 #define EXEC_STRINGS_MAX (128 * 1024)
+#define SCRIPT_LINE_MAX 256
+#define SCRIPT_MAX_DEPTH 4
 #define ARCH_SET_FS 0x1002
 #define ARCH_GET_FS 0x1003
 #define RLIM_INFINITY (~0ULL)
@@ -237,6 +239,82 @@ long sys_waitid(const int idtype, const int id, void* uinfo, const int options, 
     return 0;
 }
 
+static int read_script_line(const char* path, char* line, char** interp, char** arg)
+{
+    const int fd = vfs_open(path, O_RDONLY);
+    if (fd < 0)
+        return fd;
+    const ssize_t n = vfs_read(fd, line, SCRIPT_LINE_MAX);
+    vfs_close(fd);
+    if (n < 2 || line[0] != '#' || line[1] != '!')
+        return 0;
+
+    char* end = line + 2;
+    while (end < line + n && *end != '\n')
+        end++;
+    if (end == line + SCRIPT_LINE_MAX)
+        return -ENOEXEC;
+    *end = '\0';
+
+    char* p = line + 2;
+    while (*p == ' ' || *p == '\t')
+        p++;
+    if (*p == '\0')
+        return -ENOEXEC;
+    *interp = p;
+    while (*p != '\0' && *p != ' ' && *p != '\t')
+        p++;
+    *arg = nullptr;
+    if (*p == '\0')
+        return 1;
+    *p++ = '\0';
+    while (*p == ' ' || *p == '\t')
+        p++;
+    while (end > p && (end[-1] == ' ' || end[-1] == '\t'))
+        *--end = '\0';
+    if (*p != '\0')
+        *arg = p;
+    return 1;
+}
+
+static long script_argv(char*** argv, const char* interp, const char* arg, const char* script)
+{
+    char** old = *argv;
+    size_t count = 0;
+    while (old[count])
+        count++;
+    const size_t rest = count > 1 ? count - 1 : 0;
+    const size_t new_count = (arg ? 3 : 2) + rest;
+    if (new_count >= EXEC_MAX_ARGS)
+        return -E2BIG;
+
+    size_t bytes = strlen(interp) + 1 + (arg ? strlen(arg) + 1 : 0) + strlen(script) + 1;
+    for (size_t i = 1; i < count; i++)
+        bytes += strlen(old[i]) + 1;
+    if (bytes > EXEC_STRINGS_MAX)
+        return -E2BIG;
+
+    char** array = malloc((new_count + 1) * sizeof(char*) + bytes);
+    if (array == nullptr)
+        return -ENOMEM;
+    char* strings = (char*)(array + new_count + 1);
+    size_t idx = 0;
+    const char* head[] = { interp, arg, script };
+    for (size_t i = 0; i < 3 + rest; i++) {
+        const char* s = i < 3 ? head[i] : old[i - 2];
+        if (s == nullptr)
+            continue;
+        const size_t len = strlen(s) + 1;
+        memcpy(strings, s, len);
+        array[idx++] = strings;
+        strings += len;
+    }
+    array[idx] = nullptr;
+    free(old);
+    *argv = array;
+    return 0;
+}
+
 long sys_execve(const char* upath, char* const* uargv, char* const* uenvp)
 {
     char raw[VFS_PATH_MAX];
@@ -256,6 +334,25 @@ long sys_execve(const char* upath, char* const* uargv, char* const* uenvp)
     err = copy_string_array(uargv, &argv, &budget);
     if (err == 0)
         err = copy_string_array(uenvp, &envp, &budget);
+    char line[SCRIPT_LINE_MAX];
+    const char* script = raw;
+    for (int depth = 0; err == 0; depth++) {
+        char* interp;
+        char* arg;
+        const int is_script = read_script_line(path, line, &interp, &arg);
+        if (is_script <= 0) {
+            err = is_script;
+            break;
+        }
+        if (depth == SCRIPT_MAX_DEPTH) {
+            err = -ELOOP;
+            break;
+        }
+        err = script_argv(&argv, interp, arg, script);
+        if (err == 0)
+            err = vfs_resolve_root(current()->files->root, current()->files->cwd, interp, path);
+        script = argv[0];
+    }
     if (err == 0)
         err = process_exec(current(), path, argv, envp);
     free(argv);
@@ -310,10 +407,10 @@ static void set_field(char* field, const char* value)
 long sys_uname(void* buf)
 {
     struct utsname_k u = {0};
-    set_field(u.sysname, "Hermes");
+    set_field(u.sysname, "Linux");
     set_field(u.nodename, "hermes");
-    set_field(u.release, "0.1.0");
-    set_field(u.version, "#1");
+    set_field(u.release, "6.12.0-hermes");
+    set_field(u.version, "#1 HermesOS");
     set_field(u.machine, "x86_64");
     set_field(u.domainname, "(none)");
     return copy_to_user(buf, &u, sizeof(u));

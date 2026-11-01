@@ -521,33 +521,6 @@ int process_fork() {
     return (int)process_clone(SIGCHLD, 0, nullptr, nullptr, 0);
 }
 
-static int load_flat(struct vm_space *vm, const int fd, const size_t size, uint64_t *entry, uint64_t *sp) {
-    if (size > USER_MEMORY_SIZE - STACK_SIZE) {
-        return -ENOEXEC;
-    }
-    int err = vm_map(vm, USER_VIRTUAL_BASE, USER_MEMORY_SIZE, VM_READ | VM_WRITE | VM_EXEC, 0, true, nullptr);
-    uint8_t *buf = malloc(PAGE_SIZE);
-    if (buf == nullptr) {
-        return -ENOMEM;
-    }
-    size_t loaded = 0;
-    while (err == 0 && loaded < size) {
-        const size_t want = size - loaded < PAGE_SIZE ? size - loaded : PAGE_SIZE;
-        const ssize_t n = vfs_read(fd, buf, want);
-        if (n <= 0) {
-            err = -EIO;
-            break;
-        }
-        err = vm_write(vm, USER_VIRTUAL_BASE + loaded, buf, (size_t)n);
-        loaded += (size_t)n;
-    }
-    free(buf);
-    vm->brk_start = vm->brk = USER_STACK_START;
-    *entry = USER_VIRTUAL_BASE;
-    *sp = USER_STACK_START;
-    return err;
-}
-
 static size_t count_strings(char *const list[], size_t *bytes) {
     size_t n = 0;
     for (; list != nullptr && list[n] != nullptr; n++) {
@@ -666,7 +639,7 @@ int process_exec(process_t *proc, const char *path, char *const argv[], char *co
         vm->brk_start = vm->brk = img.brk_start;
     }
     else if (err == 0) {
-        err = vfs_seek(fd, 0, SEEK_SET) < 0 ? -EIO : load_flat(vm, fd, stat.size, &entry, &sp);
+        err = -ENOEXEC;
     }
     vfs_close(fd);
     if (err) {
