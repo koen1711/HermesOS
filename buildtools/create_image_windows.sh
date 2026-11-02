@@ -11,7 +11,6 @@ fi
 IMG=$BINARY_DIR/core.img
 IMG_WIN=$(cygpath -w "$IMG")
 
-# FIX: Pointed directly to the deep directory where part_gpt.mod and other modules live
 GRUB_MODULES_WINDOWS="C:\\Users\\manue\\grub-modules\\usr\\lib\\grub\\x86_64-efi"
 GRUB_MODULES_DIR=$(cygpath -u "$GRUB_MODULES_WINDOWS")
 
@@ -28,7 +27,6 @@ if [ ! -d "$ISODIR" ]; then
     exit 1
 fi
 
-# Fix Windows line endings in grub.cfg
 sed -i 's/\r//' "$ISODIR/boot/grub/grub.cfg"
 
 rm -f "$IMG"
@@ -57,7 +55,6 @@ with open(img, 'r+b') as f:
 
     disk_guid  = uuid.uuid4().bytes_le
     part_guid  = uuid.uuid4().bytes_le
-    # GPT stores GUIDs mixed-endian, like uuid's bytes_le
     type_guid  = uuid.UUID('EBD0A0A2-B9E5-4433-87C0-68B6B72699C7').bytes_le
 
     name_utf16  = 'EFI SYSTEM'.encode('utf-16-le').ljust(72, b'\x00')
@@ -96,7 +93,6 @@ echo "Generating GRUB EFI image"
 rm -f /tmp/grub-efi-out/BOOTX64.efi
 mkdir -p /tmp/grub-efi-out
 
-# FIX: Explicitly embedding video and terminal modules directly into the EFI app
 grub-mkimage \
     --directory="$GRUB_MODULES_WINDOWS" \
     --prefix="(hd0,gpt1)/boot/grub" \
