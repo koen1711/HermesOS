@@ -10,23 +10,16 @@ file(GLOB_RECURSE ALL_ASM_SOURCES "src/*.asm")
 list(APPEND SOURCES ${ALL_ASM_SOURCES})
 set_source_files_properties(${ALL_ASM_SOURCES} PROPERTIES LANGUAGE ASM)
 
-# If ASM compiler is a GCC driver (not raw 'as'), it needs -x assembler for .asm files.
-# NAME_WE strips the .exe suffix on Windows so the suffix check works there too.
 get_filename_component(_asm_name "${CMAKE_ASM_COMPILER}" NAME_WE)
 if(NOT _asm_name MATCHES "-as$" AND NOT _asm_name STREQUAL "as")
     set_source_files_properties(${ALL_ASM_SOURCES} PROPERTIES
         COMPILE_FLAGS "-x assembler")
 endif()
 
-# Split CMAKE_BINARY_DIR into everything after the last /
-# Find the last occurrence of "/"
 string(FIND ${CMAKE_BINARY_DIR} "/" LAST_SLASH REVERSE)
 string(SUBSTRING ${CMAKE_BINARY_DIR} ${LAST_SLASH} -1 CMAKE_BINARY_DIR_NAME)
 string(REGEX REPLACE "^/" "" CMAKE_BINARY_DIR_NAME "${CMAKE_BINARY_DIR_NAME}")
 
-# Run the code at assets/compile_pci_ids.py to generate pci_ids.c
-# (find_package instead of a bare "python3": on Windows that can resolve to MSYS2's
-# python, which can't open C:/ paths)
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 add_custom_command(
         OUTPUT ${CMAKE_BINARY_DIR}/pci_ids.c
@@ -47,7 +40,6 @@ add_executable(${PROJECT_NAME}
 include_directories(src/kernel)
 include_directories(include)
 
-# Freestanding kernel compile/link flags (C only — as doesn't understand GCC flags)
 target_compile_options(${PROJECT_NAME} PRIVATE
     $<$<COMPILE_LANGUAGE:C>:-m64 -ffreestanding -fno-builtin -nostdinc
     -fno-pie -mno-red-zone -mno-sse>)
@@ -57,8 +49,7 @@ target_link_options(${PROJECT_NAME} PRIVATE
 set(MLIBC_LIB_DIR ${CMAKE_SOURCE_DIR}/buildtools/cross/usr/lib)
 set(MLIBC_SHARED_LIBS ld.so libc.so libdl.so libm.so libpthread.so libresolv.so librt.so libssp.so libutil.so)
 list(TRANSFORM MLIBC_SHARED_LIBS PREPEND ${MLIBC_LIB_DIR}/)
-# libgcc_s/libstdc++ are only needed by dynamically linked C++ userspace programs;
-# the Windows toolchain script doesn't build them, so ship them only if present.
+
 foreach(_lib libgcc_s.so.1 libstdc++.so.6)
     set(_lib_path ${CMAKE_SOURCE_DIR}/buildtools/cross/x86_64-hermes/lib/${_lib})
     if(EXISTS ${_lib_path})
