@@ -40,5 +40,5 @@ if not defined QEMU (
 )
 echo Using QEMU: %QEMU%
 echo Booting:    %BINARY_DIR%\core.img
-"%QEMU%" -machine q35 -drive if=pflash,format=raw,readonly=on,file="C:\Program Files\qemu\share\OVMF.fd" -drive file="%BINARY_DIR%\core.img",format=raw,if=ide -serial stdio -device bochs-display -rtc base=localtime -m 4G
+"%QEMU%" -machine pc -smp 4 -drive if=pflash,format=raw,readonly=on,file="C:\Program Files\qemu\share\OVMF.fd" -drive file="%BINARY_DIR%\core.img",format=raw,if=ide -serial stdio -device bochs-display -rtc base=localtime -m 4G
 exit /b %ERRORLEVEL%

@@ -6,3 +6,8 @@ cmake-build-release/
 .idea/
 tools/build/
 programs/
+
+# build logs and local Windows checkout state
+buildtools/*.log
+tools/*.log
+buildtools/.mlibc-symlinks.txt
