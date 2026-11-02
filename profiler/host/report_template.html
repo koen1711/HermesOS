@@ -1,0 +1,662 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Kernel profile</title>
+    <style>
+        :root {
+            color-scheme: light;
+            --surface: #fcfcfb; --surface-2: #f1f0ed; --ink: #0b0b0b; --ink-2: #52514e; --muted: #64635e;
+            --line: #d6d4cd; --accent: #1f65c0; --accent-ink: #ffffff;
+            --warn-bg: #fff0cf; --warn-ink: #4d3000; --warn-line: #b07400;
+            --h0: #fbd9b5; --h1: #f6b27a; --h2: #ee8a3e; --h3: #cf6118; --h4: #8f3c0b;
+            --neutral: #c9c7c0; --cell-dark: #0b0b0b; --cell-light: #ffffff;
+        }
+        @media (prefers-color-scheme: dark) {
+            :root:not([data-theme="light"]) {
+                color-scheme: dark;
+                --surface: #1a1a19; --surface-2: #262624; --ink: #f0efec; --ink-2: #c3c2b7; --muted: #a09f96;
+                --line: #3d3d3a; --accent: #6aa5f0; --accent-ink: #0b0b0b;
+                --warn-bg: #3b2c08; --warn-ink: #ffe0a0; --warn-line: #d49a1c;
+                --h0: #4f3826; --h1: #7d5030; --h2: #ad6b2c; --h3: #dd8a33; --h4: #ffb15c;
+                --neutral: #4a4944;
+            }
+        }
+        :root[data-theme="dark"] {
+            color-scheme: dark;
+            --surface: #1a1a19; --surface-2: #262624; --ink: #f0efec; --ink-2: #c3c2b7; --muted: #a09f96;
+            --line: #3d3d3a; --accent: #6aa5f0; --accent-ink: #0b0b0b;
+            --warn-bg: #3b2c08; --warn-ink: #ffe0a0; --warn-line: #d49a1c;
+            --h0: #4f3826; --h1: #7d5030; --h2: #ad6b2c; --h3: #dd8a33; --h4: #ffb15c;
+            --neutral: #4a4944;
+        }
+        * { box-sizing: border-box; }
+        body { margin: 0; background: var(--surface); color: var(--ink); font: 14px/1.45 system-ui, sans-serif; }
+        main { max-width: 1400px; margin: 0 auto; padding: 16px; }
+        h1 { font-size: 18px; margin: 0 0 12px; }
+        h2 { font-size: 14px; margin: 0 0 8px; }
+        button, input { font: inherit; color: inherit; }
+        button { background: var(--surface-2); border: 1px solid var(--line); border-radius: 4px; padding: 3px 10px; cursor: pointer; }
+        button:hover { border-color: var(--muted); }
+        :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+        input[type=search] { background: var(--surface); border: 1px solid var(--line); border-radius: 4px; padding: 4px 8px; min-width: 0; width: 260px; max-width: 100%; }
+        .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+        .warn { display: flex; gap: 10px; align-items: flex-start; background: var(--warn-bg); color: var(--warn-ink); border: 2px solid var(--warn-line); border-radius: 6px; padding: 10px 14px; margin: 0 0 12px; font-weight: 600; }
+        .warn span:first-child { flex: none; }
+        dl.meta { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px 16px; margin: 0 0 12px; }
+        dl.meta div { border-left: 3px solid var(--line); padding-left: 8px; min-width: 0; }
+        dl.meta dt { color: var(--muted); font-size: 12px; }
+        dl.meta dd { margin: 0; font-weight: 600; overflow-wrap: anywhere; }
+        dl.meta .flag dd::after { content: " \25B2"; font-size: 10px; }
+        .limits { background: var(--surface-2); border-radius: 6px; padding: 8px 14px 8px 28px; margin: 0 0 12px; color: var(--ink-2); font-size: 13px; }
+        .limits li { margin: 3px 0; }
+        .controls { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; margin: 0 0 8px; }
+        fieldset { border: 0; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: center; }
+        legend { float: left; padding: 0; margin-right: 8px; color: var(--ink-2); }
+        fieldset label { white-space: nowrap; }
+        .crumbs { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; margin: 0 0 6px; min-height: 26px; }
+        .crumbs button { max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .crumbs button[aria-current] { background: transparent; border-color: transparent; font-weight: 600; cursor: default; }
+        .chart { border: 1px solid var(--line); border-radius: 6px; padding: 4px; position: relative; }
+        #flame { display: block; width: 100%; }
+        #flame:focus-visible { outline-offset: 0; }
+        .legend { display: flex; flex-wrap: wrap; gap: 4px 16px; align-items: center; color: var(--ink-2); font-size: 12px; margin: 6px 0 0; }
+        .ramp { display: inline-block; width: 120px; height: 10px; border: 1px solid var(--line); vertical-align: middle; background: linear-gradient(90deg, var(--h0), var(--h1), var(--h2), var(--h3), var(--h4)); }
+        .swatch { display: inline-block; width: 12px; height: 10px; border: 1px solid var(--line); background: var(--neutral); vertical-align: middle; }
+        .cols { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: 16px; margin-top: 16px; align-items: start; }
+        @media (max-width: 900px) { .cols { grid-template-columns: minmax(0, 1fr); } }
+        .scroll { overflow: auto; max-height: 520px; }
+        thead th { position: sticky; top: 0; background: var(--surface); }
+        table { border-collapse: collapse; width: 100%; }
+        th, td { text-align: right; padding: 3px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+        th:first-child, td:first-child { min-width: 150px; text-align: left; white-space: normal; overflow-wrap: anywhere; }
+        th button { background: none; border: 0; padding: 0; font-weight: 600; }
+        th[aria-sort] button::after { content: " \25B2"; font-size: 10px; }
+        th[aria-sort=descending] button::after { content: " \25BC"; }
+        tr.sel td { background: var(--surface-2); }
+        td.fn button { background: none; border: 0; padding: 0; text-align: left; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; overflow-wrap: anywhere; }
+        td.fn button:hover { text-decoration: underline; }
+        .bar { display: inline-block; height: 8px; background: var(--h2); border: 1px solid var(--ink-2); border-radius: 1px; vertical-align: middle; margin-left: 6px; }
+        .bar.w { max-width: 60px; }
+        .panel ul { list-style: none; margin: 0 0 12px; padding: 0; }
+        .panel li { display: flex; gap: 8px; justify-content: space-between; align-items: baseline; padding: 3px 0; border-bottom: 1px solid var(--line); }
+        .panel li button { background: none; border: 0; padding: 0; text-align: left; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; overflow-wrap: anywhere; min-width: 0; }
+        .panel li button:hover { text-decoration: underline; }
+        .panel li .n { white-space: nowrap; color: var(--ink-2); }
+        .panel .name-self { font-style: italic; color: var(--ink-2); }
+        .note { color: var(--muted); font-size: 12px; margin: 4px 0; }
+        #tip { position: fixed; z-index: 10; pointer-events: none; background: var(--ink); color: var(--surface); padding: 4px 8px; border-radius: 4px; font-size: 12px; max-width: 420px; overflow-wrap: anywhere; display: none; }
+        #empty { font-size: 16px; padding: 24px 0; }
+        .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+        [hidden] { display: none !important; }
+    </style>
+</head>
+<body>
+<main>
+    <h1>Kernel profile</h1>
+    <div id="warn" class="warn" role="alert" hidden></div>
+    <dl class="meta" id="meta"></dl>
+    <ul class="limits" aria-label="Limits of this profile">
+        <li>Percentages are shares of guest CPU cycles, not wall-clock time. Time spent outside the guest, such as e1000 register writes handled by QEMU, isn't counted, so functions that are slow because of device exits look cheaper than they are.</li>
+        <li>Idle time doesn't appear, because halted CPUs don't count cycles.</li>
+        <li>Samples can land a few instructions after the code that caused them, because the interrupt arrives through KVM.</li>
+        <li>The profiling build adds frame pointers and disables sibling calls, so its code differs slightly from a normal build.</li>
+        <li>Fast functions without a frame pointer, such as memset and memcpy, can lose their immediate caller.</li>
+        <li>Functions inlined at -O3 are attributed to their caller unless debug info resolves them.</li>
+        <li>Observer effect: sampling itself costs CPU time, so the profiled load runs slightly slower than an unprofiled one. The overhead figure above estimates this inside the guest only.</li>
+        <li>Percentages include the [userspace] bucket, so kernel functions look small next to it. Zoom into a kernel frame to compare them.</li>
+        <li>The counter counts core clocks, not TSC time, so the real rate on a busy CPU was measured at 1% to 24% above the request. Sampled busy time is overestimated by that much, and the overhead share understated by the same factor.</li>
+    </ul>
+    <noscript><p>This report needs JavaScript to draw the flame graph; the data is embedded in the page.</p></noscript>
+    <p id="empty" hidden>No samples were recorded.</p>
+    <div id="body">
+        <div class="controls">
+            <label>Search <input id="search" type="search" placeholder="function name" autocomplete="off"></label>
+            <span id="matchinfo" class="note" aria-live="polite"></span>
+            <fieldset id="cpus"><legend>CPU filter</legend></fieldset>
+            <button id="reset" type="button">Reset zoom</button>
+        </div>
+        <nav class="crumbs" id="crumbs" aria-label="Zoom path"></nav>
+        <div class="chart"><canvas id="flame" tabindex="0" role="application" aria-label="Flame graph. Arrow left and right move between neighbours, arrow down goes to the caller, arrow up to the heaviest callee, Enter zooms, Escape resets zoom."></canvas></div>
+        <div id="status" class="sr" aria-live="polite"></div>
+        <div class="legend">
+            <span>Frame colour: function self share <span class="ramp"></span> <span id="rampmax"></span></span>
+            <span><span class="swatch"></span> special frame ([userspace], [truncated], [unknown])</span>
+            <span>Frame width: share of samples. Frames under 1 px are not drawn.</span>
+        </div>
+        <div class="cols">
+            <section>
+                <h2>Functions</h2>
+                <div class="scroll"><table id="table"><thead><tr id="thead"></tr></thead><tbody id="tbody"></tbody></table></div>
+                <p class="note" id="tablenote"></p>
+            </section>
+            <section class="panel" aria-live="polite">
+                <h2 id="ptitle">Callers and callees</h2>
+                <p class="note" id="phint">Select a function in the table or the flame graph.</p>
+                <div id="pbody" hidden>
+                    <p id="pstats" class="note"></p>
+                    <h2>Callers</h2><ul id="callers"></ul>
+                    <h2>Callees</h2><ul id="callees"></ul>
+                </div>
+            </section>
+        </div>
+    </div>
+    <div id="tip" role="presentation"></div>
+</main>
+<script type="application/json" id="data">/*__REPORT_DATA__*/</script>
+<script>
+    (() => {
+        const D = JSON.parse(document.getElementById("data").textContent);
+        const $ = id => document.getElementById(id);
+        const meta = D.meta || {};
+        const sum = D.summary || {};
+        const UNK = "unknown";
+        const has = v => v != null && v !== "";
+        const finite = v => typeof v === "number" && isFinite(v);
+        const pct = (a, b) => b > 0 ? (100 * a / b).toFixed(a / b < 0.001 && a > 0 ? 2 : 1) + "%" : "0%";
+        const int = v => finite(v) ? Math.round(v).toLocaleString("en-US") : UNK;
+        const sumOf = v => Array.isArray(v) ? v.reduce((a, b) => a + (finite(b) ? b : 0), 0) : v;
+        const first = (...vs) => vs.find(has);
+
+        function metaItems() {
+            const commit = first(meta.kernel_commit, meta.commit);
+            const dirty = first(meta.kernel_dirty, meta.dirty);
+            const flags = first(meta.build_flags, meta.flags);
+            const cpuCount = first(meta.cpu_count, Array.isArray(meta.cpus) ? meta.cpus.length : meta.cpus);
+            const duration = meta.duration_s;
+            const handler = sumOf(meta.handler_tsc_total);
+            const spurious = sumOf(meta.spurious);
+            const dropped = first(sum.dropped, meta.dropped);
+            const rate = meta.rate_hz, tscHz = meta.tsc_hz;
+            const fired = finite(sum.samples) ? sum.samples + (finite(dropped) ? dropped : 0) : null;
+            const busyS = finite(fired) && finite(rate) && rate > 0 ? fired / rate : null;
+            const windowS = finite(cpuCount) && finite(duration) && cpuCount * duration > 0 ? cpuCount * duration : null;
+            let busy = UNK;
+            if (finite(busyS)) {
+                busy = busyS.toFixed(1) + " CPU-s";
+                if (windowS) busy += " (" + (100 * busyS / windowS).toFixed(1) + "% of " + cpuCount + " CPUs x " + duration.toFixed(1) + " s)";
+            }
+            const overhead = finite(handler) && finite(tscHz) && tscHz > 0 && busyS > 0
+                ? (100 * handler / (busyS * tscHz)).toFixed(2) + "% of sampled busy time, " + (1e6 * handler / tscHz / fired).toFixed(1) + " us per sample; excludes the NMI-delivery VM exit"
+                : UNK;
+            const hz = v => finite(v) ? v.toFixed(0) + " Hz" : UNK;
+            return [
+                ["Commit", has(commit) ? String(commit).slice(0, 12) : UNK],
+                ["Working tree", dirty === true ? "dirty" : dirty === false ? "clean" : UNK],
+                ["Build flags", has(flags) ? (Array.isArray(flags) ? flags.join(" ") : String(flags)) : UNK],
+                ["CPUs", finite(cpuCount) ? String(cpuCount) : UNK],
+                ["Requested rate", hz(meta.rate_hz)],
+                ["Duration", finite(duration) ? duration.toFixed(1) + " s" : UNK],
+                ["Samples", int(sum.samples)],
+                ["Sampled busy time", busy, false, "Samples, including dropped ones, divided by the requested rate."],
+                ["Dropped", int(dropped), finite(dropped) && dropped > 0],
+                ["Truncated stacks", int(sum.truncated), finite(sum.truncated) && sum.truncated > 0],
+                ["User share", finite(sum.user_share) ? (100 * sum.user_share).toFixed(1) + "%" : UNK],
+                ["Profiler overhead (est.)", overhead],
+                ["Spurious NMIs", int(spurious)],
+                ["Frames rejected", int(sum.frames_rejected)],
+                ["Kernel depth zero", int(sum.kernel_depth_zero), false, "Kernel samples with no stack: syscall entry and exit windows and assembly stubs, recorded with RIP only."],
+            ];
+        }
+
+        function renderHeader() {
+            const dl = $("meta");
+            for (const [label, value, flag, tip] of metaItems()) {
+                const d = document.createElement("div");
+                if (flag) d.className = "flag";
+                if (tip) d.title = tip;
+                const dt = document.createElement("dt");
+                dt.textContent = label;
+                const dd = document.createElement("dd");
+                dd.textContent = value;
+                d.append(dt, dd);
+                dl.append(d);
+            }
+            const warnings = [];
+            const dropped = first(sum.dropped, meta.dropped);
+            if (finite(dropped) && dropped > 0) {
+                warnings.push("Warning: " + dropped.toLocaleString("en-US") + " samples were dropped because the buffer filled. This profile is incomplete; lower the sampling rate or shorten the run.");
+            }
+            if (Array.isArray(meta.missing_cpus) && meta.missing_cpus.length) {
+                warnings.push("Warning: CPU " + meta.missing_cpus.join(", ") + " recorded nothing this round, so samples are missing from this profile. Those CPUs were not armed for it.");
+            }
+            if (warnings.length) {
+                const w = $("warn");
+                const svg = document.createElement("span");
+                svg.textContent = "\u26A0";
+                svg.setAttribute("aria-hidden", "true");
+                svg.style.fontSize = "20px";
+                svg.style.lineHeight = "1";
+                const t = document.createElement("span");
+                for (const text of warnings) {
+                    const line = document.createElement("div");
+                    line.textContent = text;
+                    t.append(line);
+                }
+                w.append(svg, t);
+                w.hidden = false;
+            }
+        }
+
+        renderHeader();
+
+        if (!D.samples.length) {
+            $("empty").hidden = false;
+            $("body").hidden = true;
+            return;
+        }
+
+        const names = D.functions;
+        const F = names.length;
+        const stacks = D.stacks;
+        const cpuIds = [...new Set(D.samples.map(s => s[1]))].sort((a, b) => a - b);
+        const NC = cpuIds.length;
+        const cpuIdx = new Map(cpuIds.map((c, i) => [c, i]));
+
+        const fnOf = [-1], par = [-1], kids = [[]], maps = [new Map()];
+        const stackEnd = new Int32Array(stacks.length);
+        for (let s = 0; s < stacks.length; s++) {
+            let n = 0;
+            for (const f of stacks[s]) {
+                let m = maps[n].get(f);
+                if (m == null) {
+                    m = fnOf.length;
+                    fnOf.push(f); par.push(n); kids.push([]); maps.push(new Map());
+                    maps[n].set(f, m);
+                    kids[n].push(m);
+                }
+                n = m;
+            }
+            stackEnd[s] = n;
+        }
+        maps.length = 0;
+        const N = fnOf.length;
+        const selfC = new Int32Array(N * NC);
+        for (const [s, cpu, n] of D.samples) selfC[stackEnd[s] * NC + cpuIdx.get(cpu)] += n;
+        const nameOf = n => n === 0 ? "all" : names[fnOf[n]];
+        for (const k of kids) k.sort((a, b) => names[fnOf[a]] < names[fnOf[b]] ? -1 : names[fnOf[a]] > names[fnOf[b]] ? 1 : 0);
+        const uniq = stacks.map(st => [...new Set(st)]);
+        const special = names.map(n => n.startsWith("[") && n.endsWith("]") || n.startsWith("[unknown"));
+
+        const enabled = new Array(NC).fill(true);
+        const tot = new Int32Array(N);
+        const sc = new Float64Array(stacks.length);
+        const fSelf = new Float64Array(F), fTot = new Float64Array(F);
+        let total = 0, maxSelfShare = 0;
+
+        function recompute() {
+            tot.fill(0);
+            for (let n = 0; n < N; n++) {
+                let v = 0;
+                for (let c = 0; c < NC; c++) if (enabled[c]) v += selfC[n * NC + c];
+                tot[n] = v;
+            }
+            for (let n = N - 1; n > 0; n--) tot[par[n]] += tot[n];
+            total = tot[0];
+            sc.fill(0); fSelf.fill(0); fTot.fill(0);
+            for (const [s, cpu, n] of D.samples) {
+                if (!enabled[cpuIdx.get(cpu)]) continue;
+                sc[s] += n;
+                const st = stacks[s];
+                if (st.length) fSelf[st[st.length - 1]] += n;
+                for (const f of uniq[s]) fTot[f] += n;
+            }
+            maxSelfShare = 0;
+            for (let f = 0; f < F; f++) if (total && fSelf[f] / total > maxSelfShare) maxSelfShare = fSelf[f] / total;
+            $("rampmax").textContent = "low to " + (100 * maxSelfShare).toFixed(1) + "%";
+        }
+
+        let view = 0, cursor = -1, selFn = -1, query = "";
+        let matchFn = new Uint8Array(F);
+        let css = {}, ramp = [];
+
+        function readColors() {
+            const cs = getComputedStyle(document.documentElement);
+            const g = k => cs.getPropertyValue(k).trim();
+            css = { ink: g("--ink"), ink2: g("--ink-2"), accent: g("--accent"), neutral: g("--neutral"), surface: g("--surface"), dark: g("--cell-dark"), light: g("--cell-light") };
+            ramp = [0, 1, 2, 3, 4].map(i => hex(g("--h" + i)));
+        }
+        function hex(h) { const v = parseInt(h.slice(1), 16); return [v >> 16 & 255, v >> 8 & 255, v & 255]; }
+        function lum([r, g, b]) { const f = c => { c /= 255; return c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4); }; return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b); }
+        const colorCache = new Map();
+        function cellColor(n) {
+            const f = fnOf[n];
+            if (n === 0 || special[f]) return [css.neutral, css.ink];
+            const key = f + ":" + total;
+            let hit = colorCache.get(key);
+            if (hit) return hit;
+            const t = maxSelfShare > 0 ? Math.min(1, Math.sqrt(fSelf[f] / total / maxSelfShare)) : 0;
+            const x = t * 4, i = Math.min(3, Math.floor(x)), u = x - i;
+            const rgb = ramp[i].map((v, k) => Math.round(v + (ramp[i + 1][k] - v) * u));
+            hit = ["rgb(" + rgb.join(",") + ")", lum(rgb) > 0.3 ? css.dark : css.light];
+            colorCache.set(key, hit);
+            return hit;
+        }
+
+        const RH = 20, MINW = 1;
+        const cv = $("flame");
+        const ctx = cv.getContext("2d");
+        let rn = [], rx = [], rw = [], rd = [], rows = [], W = 0, maxD = 0, charW = 7;
+
+        function layout() {
+            rn = []; rx = []; rw = []; rd = []; rows = []; maxD = 0;
+            W = Math.max(200, cv.parentElement.clientWidth - 10);
+            const vt = tot[view];
+            if (!vt) return;
+            const scale = W / vt;
+            const walk = (n, x, d) => {
+                const i = rn.length;
+                rn.push(n); rx.push(x); rw.push(tot[n] * scale); rd.push(d);
+                (rows[d] = rows[d] || []).push(i);
+                if (d > maxD) maxD = d;
+                let cx = x;
+                for (const c of kids[n]) {
+                    const cw = tot[c] * scale;
+                    if (cw >= MINW) walk(c, cx, d + 1);
+                    cx += cw;
+                }
+            };
+            walk(view, 0, 0);
+        }
+
+        function matches(n) { return query && n !== 0 && matchFn[fnOf[n]] === 1; }
+
+        function draw() {
+            colorCache.clear();
+            layout();
+            const H = Math.max(RH + 4, (maxD + 1) * RH + 4);
+            const dpr = window.devicePixelRatio || 1;
+            cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr);
+            cv.style.width = W + "px"; cv.style.height = H + "px";
+            ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+            ctx.clearRect(0, 0, W, H);
+            ctx.font = "12px ui-monospace, SFMono-Regular, Menlo, monospace";
+            ctx.textBaseline = "middle";
+            charW = ctx.measureText("M").width;
+            const selected = selFn >= 0;
+            for (let i = 0; i < rn.length; i++) {
+                const n = rn[i], x = rx[i], w = rw[i], y = H - 2 - (rd[i] + 1) * RH;
+                const [fill, ink] = cellColor(n);
+                ctx.globalAlpha = query && !matches(n) ? 0.3 : 1;
+                ctx.fillStyle = fill;
+                ctx.fillRect(x, y, Math.max(w - (w > 3 ? 1 : 0), 1), RH - 1);
+                ctx.globalAlpha = 1;
+                if (w > 5 * charW) {
+                    const max = Math.floor((w - 6) / charW);
+                    let t = nameOf(n);
+                    if (t.length > max) t = t.slice(0, Math.max(1, max - 1)) + "…";
+                    ctx.globalAlpha = query && !matches(n) ? 0.45 : 1;
+                    ctx.fillStyle = ink;
+                    ctx.fillText(t, x + 3, y + RH / 2);
+                    ctx.globalAlpha = 1;
+                }
+                if (matches(n) && w > 2) { ctx.strokeStyle = css.ink; ctx.lineWidth = 1.5; ctx.strokeRect(x + 0.75, y + 0.75, w - 2.5, RH - 2.5); }
+                if (selected && n !== 0 && fnOf[n] === selFn && w > 2) { ctx.setLineDash([4, 2]); ctx.strokeStyle = css.accent; ctx.lineWidth = 2; ctx.strokeRect(x + 1, y + 1, w - 3, RH - 3); ctx.setLineDash([]); }
+                if (n === cursor && w > 2) { ctx.strokeStyle = css.accent; ctx.lineWidth = 3; ctx.strokeRect(x + 1.5, y + 1.5, w - 4, RH - 4); }
+            }
+        }
+
+        function hitTest(px, py) {
+            const H = parseFloat(cv.style.height);
+            const d = Math.floor((H - 2 - py) / RH);
+            const row = rows[d];
+            if (!row || py > H - 2) return -1;
+            let lo = 0, hi = row.length - 1;
+            while (lo <= hi) {
+                const mid = (lo + hi) >> 1, i = row[mid];
+                if (px < rx[i]) hi = mid - 1;
+                else if (px >= rx[i] + rw[i]) lo = mid + 1;
+                else return i;
+            }
+            return -1;
+        }
+
+        const tip = $("tip");
+        function describe(n) {
+            const base = total ? tot[n] + " samples, " + pct(tot[n], total) + " of total" : tot[n] + " samples";
+            const self = n === 0 ? 0 : sumSelf(n);
+            return nameOf(n) + ": " + base + ", self " + self;
+        }
+        function sumSelf(n) { let v = 0; for (let c = 0; c < NC; c++) if (enabled[c]) v += selfC[n * NC + c]; return v; }
+
+        cv.addEventListener("mousemove", e => {
+            const r = cv.getBoundingClientRect();
+            const i = hitTest(e.clientX - r.left, e.clientY - r.top);
+            if (i < 0) { tip.style.display = "none"; cv.style.cursor = "default"; return; }
+            tip.textContent = describe(rn[i]);
+            tip.style.display = "block";
+            tip.style.left = Math.min(e.clientX + 12, window.innerWidth - tip.offsetWidth - 8) + "px";
+            tip.style.top = (e.clientY + 16) + "px";
+            cv.style.cursor = "pointer";
+        });
+        cv.addEventListener("mouseleave", () => { tip.style.display = "none"; });
+        cv.addEventListener("click", e => {
+            const r = cv.getBoundingClientRect();
+            const i = hitTest(e.clientX - r.left, e.clientY - r.top);
+            if (i < 0) return;
+            cursor = rn[i];
+            selectFn(cursor === 0 ? -1 : fnOf[cursor], true);
+            zoomTo(cursor);
+        });
+
+        function zoomTo(n) { view = n; renderCrumbs(); draw(); }
+
+        function say(n) { $("status").textContent = describe(n); }
+
+        cv.addEventListener("keydown", e => {
+            if (e.key === "Escape") { e.preventDefault(); zoomTo(0); return; }
+            if (!rn.length) return;
+            let i = cursor >= 0 ? rn.indexOf(cursor) : -1;
+            if (i < 0) i = 0;
+            const d = rd[i], row = rows[d], pos = row.indexOf(i);
+            let next = -1;
+            if (e.key === "ArrowLeft") next = row[Math.max(0, pos - 1)];
+            else if (e.key === "ArrowRight") next = row[Math.min(row.length - 1, pos + 1)];
+            else if (e.key === "ArrowDown") next = rd[i] > 0 ? rn.indexOf(par[rn[i]]) : i;
+            else if (e.key === "ArrowUp") {
+                let best = -1;
+                for (const k of kids[rn[i]]) if (tot[k] > 0 && (best < 0 || tot[k] > tot[best])) best = k;
+                next = best < 0 ? i : rn.indexOf(best);
+                if (next < 0) next = i;
+            } else if (e.key === "Enter") { e.preventDefault(); if (cursor >= 0) { selectFn(cursor === 0 ? -1 : fnOf[cursor], true); zoomTo(cursor); } return; }
+            else return;
+            e.preventDefault();
+            cursor = rn[next];
+            selectFn(cursor === 0 ? -1 : fnOf[cursor], true);
+            say(cursor);
+        });
+
+        function renderCrumbs() {
+            const c = $("crumbs");
+            c.replaceChildren();
+            const path = [];
+            for (let n = view; n >= 0; n = par[n]) path.unshift(n);
+            path.forEach((n, i) => {
+                const b = document.createElement("button");
+                b.type = "button";
+                b.textContent = nameOf(n);
+                b.title = nameOf(n);
+                if (i === path.length - 1) b.setAttribute("aria-current", "true");
+                else b.addEventListener("click", () => zoomTo(n));
+                c.append(b);
+                if (i < path.length - 1) c.append(document.createTextNode("›"));
+            });
+        }
+
+        let sortKey = "self", sortDir = -1;
+        const cols = [["name", "Function"], ["self", "Self"], ["selfp", "Self %"], ["total", "Total"], ["totalp", "Total %"]];
+        function renderHead() {
+            const tr = $("thead");
+            tr.replaceChildren();
+            for (const [k, label] of cols) {
+                const th = document.createElement("th");
+                th.scope = "col";
+                const key = k === "selfp" ? "self" : k === "totalp" ? "total" : k;
+                if (k === key && key === sortKey) th.setAttribute("aria-sort", sortDir < 0 ? "descending" : "ascending");
+                const b = document.createElement("button");
+                b.type = "button";
+                b.textContent = label;
+                b.addEventListener("click", () => {
+                    if (sortKey === key) sortDir = -sortDir; else { sortKey = key; sortDir = key === "name" ? 1 : -1; }
+                    renderHead(); renderTable();
+                });
+                th.append(b);
+                tr.append(th);
+            }
+        }
+
+        const ROW_LIMIT = 300;
+        function renderTable() {
+            const list = [];
+            for (let f = 0; f < F; f++) if (fTot[f] > 0 && (!query || matchFn[f])) list.push(f);
+            const cmp = sortKey === "name" ? (a, b) => sortDir * (names[a] < names[b] ? -1 : names[a] > names[b] ? 1 : 0)
+                : sortKey === "self" ? (a, b) => sortDir * (fSelf[a] - fSelf[b]) || fTot[b] - fTot[a]
+                    : (a, b) => sortDir * (fTot[a] - fTot[b]) || fSelf[b] - fSelf[a];
+            list.sort((a, b) => cmp(a, b) || (names[a] < names[b] ? -1 : 1));
+            const body = $("tbody");
+            body.replaceChildren();
+            const frag = document.createDocumentFragment();
+            for (const f of list.slice(0, ROW_LIMIT)) {
+                const tr = document.createElement("tr");
+                if (f === selFn) { tr.className = "sel"; tr.setAttribute("aria-selected", "true"); }
+                const td0 = document.createElement("td");
+                td0.className = "fn";
+                const b = document.createElement("button");
+                b.type = "button";
+                b.textContent = names[f];
+                b.addEventListener("click", () => selectFn(f, false));
+                td0.append(b);
+                tr.append(td0);
+                const cell = (v, share) => {
+                    const td = document.createElement("td");
+                    td.textContent = v;
+                    if (share != null) {
+                        const bar = document.createElement("span");
+                        bar.className = "bar w";
+                        bar.style.width = Math.max(1, Math.min(60, share * 60)) + "px";
+                        bar.setAttribute("aria-hidden", "true");
+                        td.append(bar);
+                    }
+                    tr.append(td);
+                };
+                cell(int(fSelf[f]));
+                cell(pct(fSelf[f], total), total ? fSelf[f] / total : 0);
+                cell(int(fTot[f]));
+                cell(pct(fTot[f], total), total ? fTot[f] / total : 0);
+                frag.append(tr);
+            }
+            body.append(frag);
+            $("tablenote").textContent = list.length > ROW_LIMIT ? "Showing " + ROW_LIMIT + " of " + list.length + " functions. Search to narrow the list." : list.length + " functions";
+        }
+
+        function edgeList(f) {
+            const callers = new Map(), callees = new Map();
+            const add = (m, k, n) => m.set(k, (m.get(k) || 0) + n);
+            for (let s = 0; s < stacks.length; s++) {
+                if (!sc[s]) continue;
+                const st = stacks[s];
+                const seenA = new Set(), seenB = new Set();
+                for (let i = 0; i < st.length; i++) {
+                    if (st[i] !== f) continue;
+                    const a = i > 0 ? st[i - 1] : -1;
+                    const b = i < st.length - 1 ? st[i + 1] : -2;
+                    if (!seenA.has(a)) { seenA.add(a); add(callers, a, sc[s]); }
+                    if (!seenB.has(b)) { seenB.add(b); add(callees, b, sc[s]); }
+                }
+            }
+            return [callers, callees];
+        }
+
+        function fillList(ul, map, f, selfLabel) {
+            ul.replaceChildren();
+            const items = [...map].sort((a, b) => b[1] - a[1] || a[0] - b[0]);
+            if (!items.length) {
+                const li = document.createElement("li");
+                li.textContent = "none";
+                ul.append(li);
+            }
+            for (const [k, n] of items) {
+                const li = document.createElement("li");
+                const label = k === -1 ? "(root: no caller)" : k === -2 ? "(self: leaf)" : names[k];
+                let el;
+                if (k < 0) { el = document.createElement("span"); el.className = "name-self"; }
+                else { el = document.createElement("button"); el.type = "button"; el.addEventListener("click", () => selectFn(k, false)); }
+                el.textContent = label;
+                const c = document.createElement("span");
+                c.className = "n";
+                c.textContent = int(n) + " · " + pct(n, fTot[f]);
+                li.append(el, c);
+                ul.append(li);
+            }
+        }
+
+        function renderPanel() {
+            if (selFn < 0 || !fTot[selFn]) {
+                $("pbody").hidden = true; $("phint").hidden = false;
+                $("ptitle").textContent = "Callers and callees";
+                return;
+            }
+            $("phint").hidden = true; $("pbody").hidden = false;
+            $("ptitle").textContent = names[selFn];
+            $("ptitle").className = "mono";
+            $("pstats").textContent = "Self " + int(fSelf[selFn]) + " (" + pct(fSelf[selFn], total) + "), total " + int(fTot[selFn]) + " (" + pct(fTot[selFn], total) + "). Shares below are of this function's total.";
+            const [callers, callees] = edgeList(selFn);
+            fillList($("callers"), callers, selFn);
+            fillList($("callees"), callees, selFn);
+        }
+
+        function selectFn(f, fromFlame) {
+            selFn = f;
+            if (!fromFlame) cursor = -1;
+            renderPanel(); renderTable(); draw();
+        }
+
+        function setQuery(q) {
+            query = q.trim().toLowerCase();
+            matchFn = new Uint8Array(F);
+            let count = 0;
+            if (query) for (let f = 0; f < F; f++) if (names[f].toLowerCase().includes(query)) { matchFn[f] = 1; count++; }
+            let hit = 0;
+            if (query) for (let s = 0; s < stacks.length; s++) if (sc[s] && stacks[s].some(f => matchFn[f])) hit += sc[s];
+            $("matchinfo").textContent = query ? count + " functions match, " + pct(hit, total) + " of samples pass through them" : "";
+        }
+
+        function refresh() {
+            recompute();
+            setQuery($("search").value);
+            if (tot[view] === 0) view = 0;
+            renderCrumbs(); renderTable(); renderPanel(); draw();
+        }
+
+        const cpuBox = $("cpus");
+        cpuIds.forEach((id, i) => {
+            const l = document.createElement("label");
+            const cb = document.createElement("input");
+            cb.type = "checkbox"; cb.checked = true;
+            cb.addEventListener("change", () => { enabled[i] = cb.checked; refresh(); });
+            l.append(cb, document.createTextNode(" CPU " + id));
+            cpuBox.append(l);
+        });
+        const setAll = v => { cpuBox.querySelectorAll("input").forEach((cb, i) => { cb.checked = v; enabled[i] = v; }); refresh(); };
+        for (const [label, v] of [["All", true], ["None", false]]) {
+            const b = document.createElement("button");
+            b.type = "button"; b.textContent = label;
+            b.addEventListener("click", () => setAll(v));
+            cpuBox.append(b);
+        }
+
+        $("search").addEventListener("input", () => { setQuery($("search").value); renderTable(); draw(); });
+        $("reset").addEventListener("click", () => zoomTo(0));
+
+        let raf = 0;
+        new ResizeObserver(() => { cancelAnimationFrame(raf); raf = requestAnimationFrame(() => { if (cv.parentElement.clientWidth - 10 !== W) draw(); }); }).observe(cv.parentElement);
+        window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => { readColors(); draw(); });
+
+        readColors();
+        renderHead();
+        refresh();
+    })();
+</script>
+</body>
+</html>

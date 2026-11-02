@@ -123,3 +123,10 @@ void lapic_timer_start()
     lapic_write(LAPIC_LVT_TIMER, LAPIC_TIMER_PERIODIC | LAPIC_TIMER_VECTOR);
     lapic_write(LAPIC_TIMER_INITIAL, timer_count);
 }
+
+#ifdef HERMES_PROFILER
+void lapic_set_perf_lvt(const uint32_t value)
+{
+    lapic_write(0x340, value);
+}
+#endif

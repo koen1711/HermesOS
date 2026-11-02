@@ -7,6 +7,16 @@ set(OS_TARGET_PLATFORM "x86_64")
 
 file(GLOB_RECURSE SOURCES "src/kernel/*.h" "src/kernel/*.c" )
 file(GLOB_RECURSE ALL_ASM_SOURCES "src/*.asm")
+
+option(HERMES_PROFILER "Build the sampling profiler" OFF)
+set(HERMES_PROFILER_BUFFER_MIB 48 CACHE STRING "Profiler sample buffer per CPU, in MiB")
+if(HERMES_PROFILER)
+    file(GLOB PROFILER_C_SOURCES "profiler/kernel/*.c")
+    file(GLOB PROFILER_ASM_SOURCES "profiler/kernel/*.asm")
+    list(APPEND SOURCES ${PROFILER_C_SOURCES})
+    list(APPEND ALL_ASM_SOURCES ${PROFILER_ASM_SOURCES})
+endif()
+
 list(APPEND SOURCES ${ALL_ASM_SOURCES})
 set_source_files_properties(${ALL_ASM_SOURCES} PROPERTIES LANGUAGE ASM)
 
@@ -45,6 +55,14 @@ target_compile_options(${PROJECT_NAME} PRIVATE
     -fno-pie -mno-red-zone -mno-sse>)
 target_link_options(${PROJECT_NAME} PRIVATE
     -m64 -nostdlib -no-pie -static -z max-page-size=0x1000)
+
+if(HERMES_PROFILER)
+    target_include_directories(${PROJECT_NAME} PRIVATE profiler/kernel)
+    target_compile_definitions(${PROJECT_NAME} PRIVATE
+        $<$<COMPILE_LANGUAGE:C>:HERMES_PROFILER HERMES_PROFILER_BUFFER_MIB=${HERMES_PROFILER_BUFFER_MIB}>)
+    target_compile_options(${PROJECT_NAME} PRIVATE
+        $<$<COMPILE_LANGUAGE:C>:-fno-omit-frame-pointer -fno-optimize-sibling-calls -g>)
+endif()
 
 set(MLIBC_LIB_DIR ${CMAKE_SOURCE_DIR}/buildtools/cross/usr/lib)
 set(MLIBC_SHARED_LIBS ld.so libc.so libdl.so libm.so libpthread.so libresolv.so librt.so libssp.so libutil.so)

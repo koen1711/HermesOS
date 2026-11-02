@@ -1,0 +1,93 @@
+#!/usr/bin/env python3
+import argparse
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+
+from host import session as profiler_session
+from host.session import ProfilerError
+from host.vm import CONTROL_SYMBOL, Vm, symbol_address
+
+
+def rate(value: str) -> int:
+    hz = int(value)
+    if hz < 0:
+        raise argparse.ArgumentTypeError("the rate must not be negative")
+    return hz
+
+
+def parse_args(argv):
+    parser = argparse.ArgumentParser(prog="profiler", description="Control the HermesOS kernel sampling profiler.")
+    commands = parser.add_subparsers(dest="command", required=True, metavar="{start,stop,status,report}")
+    start = commands.add_parser("start", help="start recording")
+    start.add_argument("--rate", type=rate, default=profiler_session.DEFAULT_RATE_HZ, metavar="HZ")
+    commands.add_parser("stop", help="stop recording, copy the samples out and write the report")
+    commands.add_parser("status", help="show per-CPU state and buffer fullness")
+    report = commands.add_parser("report", help="regenerate report.html from a session directory")
+    report.add_argument("dir")
+    begin = commands.add_parser("_session-begin")
+    for name in ("monitor-socket", "elf", "output-root", "qemu-pidfile", "kernel-commit", "build-flags"):
+        begin.add_argument(f"--{name}", required=True)
+    begin.add_argument("--gdb-port", type=int, required=True)
+    begin.add_argument("--kernel-dirty", choices=("true", "false", "unknown"), required=True)
+    commands.add_parser("_session-end")
+    commands.add_parser("_session-dir")
+    commands.add_parser("_refuse-live-session")
+    return parser.parse_args(argv)
+
+
+def begin_session(args) -> None:
+    profiler_session.begin_session(
+        monitor_socket=args.monitor_socket,
+        gdb_port=args.gdb_port,
+        elf=args.elf,
+        output_root=args.output_root,
+        qemu_pidfile=args.qemu_pidfile,
+        kernel_commit=args.kernel_commit,
+        kernel_dirty={"true": True, "false": False}.get(args.kernel_dirty),
+        build_flags=args.build_flags,
+    )
+
+
+def run(args) -> None:
+    if args.command == "report":
+        profiler_session.report(args.dir)
+        return
+    if args.command == "_session-begin":
+        begin_session(args)
+        return
+    if args.command == "_session-dir":
+        print(profiler_session.session_dir())
+        return
+    if args.command == "_refuse-live-session":
+        profiler_session.refuse_live_session()
+        return
+    session = profiler_session.load_session()
+    if args.command == "_session-end":
+        profiler_session.end_session()
+        return
+    vm = Vm(session["monitor_socket"], session["gdb_port"], session["elf"],
+            symbol_address(session["elf"], CONTROL_SYMBOL))
+    if args.command == "start":
+        profiler_session.start(vm, args.rate)
+    elif args.command == "stop":
+        profiler_session.stop(vm, session)
+    else:
+        print(profiler_session.status(vm))
+
+
+def main(argv=None) -> int:
+    args = parse_args(argv)
+    try:
+        run(args)
+    except ProfilerError as e:
+        print(f"profiler: {e}", file=sys.stderr)
+        return 1
+    except KeyboardInterrupt:
+        return 130
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

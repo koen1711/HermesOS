@@ -14,6 +14,10 @@
 #include <hardware/smp/lapic.h>
 #include <hardware/smp/smp.h>
 
+#ifdef HERMES_PROFILER
+#include <profiler.h>
+#endif
+
 #define EXCEPTION_COUNT   32
 #define PAGE_FAULT_VECTOR 14
 
@@ -154,6 +158,10 @@ void trap_handler(interrupt_context* context)
     }
 
     const bool tick = vector == LAPIC_TIMER_VECTOR || vector == IRQ_OFFSET + PIT_IRQ;
+#ifdef HERMES_PROFILER
+    if (tick)
+        profiler_tick();
+#endif
     const bool wake = vector == RESCHED_VECTOR || (vector >= IRQ_OFFSET && vector < IRQ_OFFSET + IRQ_MAX_LINES);
     if ((tick && should_preempt(context)) || (wake && scheduler_get()->current->pid == IDLE_PROC_PID))
         process_yield();

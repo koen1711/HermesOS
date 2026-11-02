@@ -20,5 +20,8 @@ void lapic_send_others(uint32_t vector);
 void lapic_send_ipi(uint32_t apic_id, uint32_t vector);
 void lapic_timer_calibrate(uint32_t hz);
 void lapic_timer_start();
+#ifdef HERMES_PROFILER
+void lapic_set_perf_lvt(uint32_t value);
+#endif
 
 #endif //SMP_LAPIC_H

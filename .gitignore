@@ -11,3 +11,8 @@ programs/
 buildtools/*.log
 tools/*.log
 buildtools/.mlibc-symlinks.txt
+
+# profiler
+profiler/output/
+profiler/tests
+__pycache__
