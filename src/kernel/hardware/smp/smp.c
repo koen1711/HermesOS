@@ -139,6 +139,15 @@ bool net_lock_enter()
     return true;
 }
 
+bool net_lock_try_enter()
+{
+    if (__atomic_load_n(&net_lock.locked, __ATOMIC_RELAXED)
+        || __atomic_exchange_n(&net_lock.locked, 1, __ATOMIC_ACQUIRE))
+        return false;
+    net_lock.owner = cpu_this()->index;
+    return true;
+}
+
 bool net_lock_held()
 {
     return net_lock.owner == cpu_this()->index;
@@ -146,8 +155,11 @@ bool net_lock_held()
 
 void net_lock_exit()
 {
-    netif_tx_flush();
+    struct netif* bells[NETIF_TX_BELLS];
+    const size_t n = netif_tx_take(bells);
     owner_lock_release(&net_lock);
+    __atomic_thread_fence(__ATOMIC_SEQ_CST);
+    netif_tx_ring(bells, n);
 }
 
 bool net_lock_drop()

@@ -8,6 +8,7 @@
 
 #define NETIF_NAME_LEN   16
 #define NETIF_HWADDR_LEN 6
+#define NETIF_TX_BELLS   4
 
 enum netif_flags
 {
@@ -107,6 +108,8 @@ void netif_input(struct netif* nif, struct netbuf* nb);
 int netif_output(struct netif* nif, struct netbuf* nb);
 bool netif_tx_defer(struct netif* nif);
 void netif_tx_flush();
+size_t netif_tx_take(struct netif** bells);
+void netif_tx_ring(struct netif** bells, size_t n);
 
 struct netif* netif_find_by_name(const char* name);
 struct netif* netif_find_by_index(uint32_t index);

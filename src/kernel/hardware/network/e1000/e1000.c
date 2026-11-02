@@ -337,6 +337,7 @@ bool e1000_rx_init(struct e1000_device* dev)
     e1000_write_command(dev, REG_RXDESCHEAD, 0);
     e1000_write_command(dev, REG_RXDESCTAIL, E1000_NUM_RX_DESC-1);
     dev->rx_cur = 0;
+    spinlock_init(&dev->rx_lock, "e1000_rx");
     e1000_write_command(dev, REG_RCTRL, RCTL_EN | RCTL_LBM_NONE | RCTL_RDMTS_HALF | RCTL_BAM | RCTL_SECRC | RCTL_BSIZE_2048);
     return true;
 }
@@ -370,6 +371,7 @@ bool e1000_tx_init(struct e1000_device* dev)
     e1000_write_command(dev, REG_TXDESCTAIL, 0);
     dev->tx_cur = 0;
     dev->tx_tail = 0;
+    dev->tx_ready = 0;
     dev->tx_clean = 0;
 
     if (dev->pci.device_id == E1000_I217 || dev->pci.device_id == E1000_82577LM) {
@@ -404,21 +406,22 @@ void e1000_interrupt(const uint8_t irq, void* ctx)
         return;
 
     const uint32_t status = e1000_read_command(dev, REG_ICR);
-    const bool locked = net_lock_enter();
-    if (status & ICR_LSC)
+    if (status & ICR_LSC) {
+        const bool locked = net_lock_enter();
         netif_link_state_change(dev->nif, e1000_link_up(dev) ? NETIF_LINK_UP : NETIF_LINK_DOWN);
+        if (locked)
+            net_lock_exit();
+    }
     if (status & (ICR_RXT0 | ICR_RXDMT0 | ICR_RXO))
         e1000_handle_receive(dev);
-    if (status & ICR_TXDW)
-        e1000_reclaim_tx(dev);
-    if (locked)
-        net_lock_exit();
 }
 
 void e1000_handle_receive(struct e1000_device* dev)
 {
     struct netif* nif = dev->nif;
 
+    uint64_t flags;
+    spinlock_acquire_irqsave(&dev->rx_lock, &flags);
     int last_done = -1;
     dma_map_sync(dev->rx_ring_map, DMA_SYNC_POSTREAD);
     while (dev->rx_descs[dev->rx_cur]->status & RX_STATUS_DD)
@@ -454,6 +457,7 @@ void e1000_handle_receive(struct e1000_device* dev)
     }
     if (last_done >= 0)
         e1000_write_command(dev, REG_RXDESCTAIL, (uint16_t)last_done);
+    spinlock_release_irqrestore(&dev->rx_lock, flags);
 }
 
 void e1000_reclaim_tx(struct e1000_device* dev)
@@ -492,10 +496,27 @@ int e1000_netif_init(struct netif* nif)
 void e1000_tx_flush(struct netif* nif)
 {
     const auto dev = (struct e1000_device*)nif->softc;
-    if (dev->tx_tail == dev->tx_cur)
-        return;
-    dev->tx_tail = dev->tx_cur;
-    e1000_write_command(dev, REG_TXDESCTAIL, dev->tx_cur);
+    __atomic_store_n(&dev->tx_bell_pending, true, __ATOMIC_SEQ_CST);
+    while (__atomic_load_n(&dev->tx_bell_pending, __ATOMIC_SEQ_CST)
+           && !__atomic_exchange_n(&dev->tx_bell_busy, true, __ATOMIC_ACQUIRE)) {
+        __atomic_store_n(&dev->tx_bell_pending, false, __ATOMIC_SEQ_CST);
+        const uint16_t ready = __atomic_load_n(&dev->tx_ready, __ATOMIC_ACQUIRE);
+        if (__atomic_load_n(&dev->tx_tail, __ATOMIC_RELAXED) != ready) {
+            __atomic_store_n(&dev->tx_tail, ready, __ATOMIC_RELAXED);
+            e1000_write_command(dev, REG_TXDESCTAIL, ready);
+        }
+        __atomic_store_n(&dev->tx_bell_busy, false, __ATOMIC_SEQ_CST);
+    }
+}
+
+static void e1000_tx_flush_wait(struct netif* nif)
+{
+    const auto dev = (struct e1000_device*)nif->softc;
+    e1000_tx_flush(nif);
+    while (__atomic_load_n(&dev->tx_bell_busy, __ATOMIC_ACQUIRE)) {
+        smp_spin_poll();
+        asm volatile("pause");
+    }
 }
 
 int e1000_transmit(struct netif* nif, struct netbuf* nb)
@@ -512,6 +533,10 @@ int e1000_transmit(struct netif* nif, struct netbuf* nb)
     }
 
     e1000_reclaim_tx(dev);
+    if (e1000_tx_free(dev) < E1000_TX_BATCH) {
+        e1000_tx_flush_wait(nif);
+        e1000_reclaim_tx(dev);
+    }
     const uint16_t avail = e1000_tx_free(dev);
     uint16_t used = 0;
     int err = 0;
@@ -564,8 +589,12 @@ int e1000_transmit(struct netif* nif, struct netbuf* nb)
 
     nif->stats.tx_packets++;
     nif->stats.tx_bytes += length;
-    const uint16_t unsent = (dev->tx_cur + E1000_NUM_TX_DESC - dev->tx_tail) % E1000_NUM_TX_DESC;
-    if (unsent >= E1000_TX_BATCH || !netif_tx_defer(nif))
+    __atomic_store_n(&dev->tx_ready, dev->tx_cur, __ATOMIC_RELEASE);
+    const uint16_t tail = __atomic_load_n(&dev->tx_tail, __ATOMIC_RELAXED);
+    const uint16_t unsent = (dev->tx_cur + E1000_NUM_TX_DESC - tail) % E1000_NUM_TX_DESC;
+    if (unsent >= E1000_TX_BATCH)
+        e1000_tx_flush_wait(nif);
+    else if (!netif_tx_defer(nif))
         e1000_tx_flush(nif);
     return 0;
 }

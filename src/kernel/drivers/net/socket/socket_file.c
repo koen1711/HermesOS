@@ -38,8 +38,10 @@ ssize_t socket_file_read(struct file_s* f, void* buf, const size_t len)
 
 ssize_t socket_file_write(struct file_s* f, const void* buf, const size_t len)
 {
+    struct socket* so = socket_of(f);
+    struct netbuf* nb = sock_send_prebuild(so, buf, len);
     const bool locked = net_lock_enter();
-    const ssize_t n = sock_send(socket_of(f), buf, len, 0, nullptr, 0);
+    const ssize_t n = nb ? sock_send_prebuilt(so, nb, buf, len) : sock_send(so, buf, len, 0, nullptr, 0);
     if (locked)
         net_lock_exit();
     return n;

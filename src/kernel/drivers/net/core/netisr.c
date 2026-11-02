@@ -88,10 +88,23 @@ bool netisr_pending()
     return false;
 }
 
-static bool netisr_drain()
+static bool netisr_backlogged()
+{
+    for (int p = 1; p < NETISR_MAX; p++)
+        if (protos[p].queue.max_len && netqueue_len(&protos[p].queue) >= protos[p].queue.max_len / 2)
+            return true;
+    return false;
+}
+
+static bool netisr_drain(const bool wait)
 {
     static bool running;
-    const bool locked = net_lock_enter();
+    bool locked = false;
+    if (!net_lock_held()) {
+        locked = wait ? net_lock_enter() : net_lock_try_enter();
+        if (!locked)
+            return false;
+    }
     if (running) {
         if (locked)
             net_lock_exit();
@@ -130,7 +143,7 @@ static bool netisr_drain()
 void netisr_poll()
 {
     if (netisr_pending())
-        netisr_drain();
+        netisr_drain(netisr_backlogged());
 }
 
 void netisr_purge(struct netif* nif)
@@ -143,5 +156,5 @@ void netisr_purge(struct netif* nif)
 
 bool netisr_poll_pending()
 {
-    return netisr_pending() && netisr_drain();
+    return netisr_pending() && netisr_drain(true);
 }

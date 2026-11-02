@@ -6,6 +6,7 @@
 #include <hardware/memory/dma.h>
 #include <hardware/port/pci.h>
 #include <hardware/network/e1000/types.h>
+#include <utils/sync/spinlock.h>
 
 struct netif;
 struct netbuf;
@@ -35,7 +36,11 @@ struct e1000_device {
     uint16_t rx_cur;
     uint16_t tx_cur;
     uint16_t tx_tail;
+    uint16_t tx_ready;
     uint16_t tx_clean;
+    bool tx_bell_busy;
+    bool tx_bell_pending;
+    spinlock_t rx_lock;
     bool irq_registered;
 };
 

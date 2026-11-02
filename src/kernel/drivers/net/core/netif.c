@@ -192,6 +192,28 @@ void netif_tx_flush()
     }
 }
 
+size_t netif_tx_take(struct netif** bells)
+{
+    size_t n = 0;
+    while (tx_deferred && n < NETIF_TX_BELLS) {
+        struct netif* nif = tx_deferred;
+        tx_deferred = nif->tx_next;
+        nif->tx_deferred = false;
+        netif_ref(nif);
+        bells[n++] = nif;
+    }
+    netif_tx_flush();
+    return n;
+}
+
+void netif_tx_ring(struct netif** bells, const size_t n)
+{
+    for (size_t i = 0; i < n; i++) {
+        bells[i]->ops->tx_flush(bells[i]);
+        netif_rele(bells[i]);
+    }
+}
+
 struct netif* netif_find_by_name(const char* name)
 {
     for (struct netif* nif = netif_first(); nif; nif = netif_next(nif)) {
@@ -315,7 +337,7 @@ void netif_poll_all()
 {
     const bool locked = net_lock_enter();
     for (struct netif* nif = netif_first(); nif; nif = netif_next(nif))
-        if ((nif->flags & NETIF_UP) && nif->ops && nif->ops->poll)
+        if (nif->flags & NETIF_UP && nif->ops && nif->ops->poll)
             nif->ops->poll(nif);
     if (locked)
         net_lock_exit();

@@ -249,6 +249,25 @@ ssize_t sock_send(struct socket* so, const void* buf, const size_t len, const in
     return (ssize_t)sent;
 }
 
+struct netbuf* sock_send_prebuild(const struct socket* so, const void* buf, const size_t len)
+{
+    const uint32_t flags = so->proto->flags;
+    if (!(flags & PR_CONNREQUIRED) || (flags & PR_ATOMIC) || !len || len > sockbuf_space(&so->snd))
+        return nullptr;
+    return sock_make_netbuf(buf, len);
+}
+
+ssize_t sock_send_prebuilt(struct socket* so, struct netbuf* nb, const void* buf, const size_t len)
+{
+    if ((so->state & SS_CANTSENDMORE) || so->error || !(so->state & SS_ISCONNECTED)
+        || !so->proto->pr_send || sockbuf_space(&so->snd) < len) {
+        netbuf_free_chain(nb);
+        return sock_send(so, buf, len, 0, nullptr, 0);
+    }
+    const int err = so->proto->pr_send(so, nb, nullptr, 0, 0);
+    return err < 0 ? err : (ssize_t)len;
+}
+
 static const struct netbuf* sock_record_addr(const struct netbuf* rec)
 {
     return rec && rec->flags & NETBUF_SOCKADDR ? rec : nullptr;

@@ -107,6 +107,8 @@ int sock_bind(struct socket* so, const struct sockaddr* addr, socklen_t len);
 int sock_listen(struct socket* so, int backlog);
 int sock_connect(struct socket* so, const struct sockaddr* addr, socklen_t len);
 int sock_accept(struct socket* so, struct socket** out, struct sockaddr* addr, socklen_t* len);
+struct netbuf* sock_send_prebuild(const struct socket* so, const void* buf, size_t len);
+ssize_t sock_send_prebuilt(struct socket* so, struct netbuf* nb, const void* buf, size_t len);
 ssize_t sock_send(struct socket* so, const void* buf, size_t len, int flags,
                   const struct sockaddr* dst, socklen_t dst_len);
 ssize_t sock_recv(struct socket* so, void* buf, size_t len, int flags,
