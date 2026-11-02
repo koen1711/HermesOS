@@ -296,7 +296,7 @@ static void tcp_input_listen(struct tcpcb* lp, struct netbuf* nb, struct tcp_seg
     if (!so)
         return;
     if (tcp_attach_pcb(so)) {
-        sock_is_disconnected(so);
+        sock_drop_embryo(so);
         return;
     }
 

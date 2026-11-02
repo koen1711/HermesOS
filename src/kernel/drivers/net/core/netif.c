@@ -20,6 +20,7 @@
 static struct dlist netif_list;
 static spinlock_t netif_list_lock;
 static uint32_t netif_next_index = 1;
+static struct netif* tx_deferred;
 
 void netif_initialize()
 {
@@ -167,6 +168,28 @@ int netif_output(struct netif* nif, struct netbuf* nb)
     }
 
     return nif->ops->transmit(nif, nb);
+}
+
+bool netif_tx_defer(struct netif* nif)
+{
+    if (!net_lock_held())
+        return false;
+    if (!nif->tx_deferred) {
+        nif->tx_deferred = true;
+        nif->tx_next = tx_deferred;
+        tx_deferred = nif;
+    }
+    return true;
+}
+
+void netif_tx_flush()
+{
+    while (tx_deferred) {
+        struct netif* nif = tx_deferred;
+        tx_deferred = nif->tx_next;
+        nif->tx_deferred = false;
+        nif->ops->tx_flush(nif);
+    }
 }
 
 struct netif* netif_find_by_name(const char* name)

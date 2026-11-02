@@ -34,6 +34,7 @@ struct e1000_device {
     struct netbuf* tx_netbufs[E1000_NUM_TX_DESC];
     uint16_t rx_cur;
     uint16_t tx_cur;
+    uint16_t tx_tail;
     uint16_t tx_clean;
     bool irq_registered;
 };
@@ -63,6 +64,7 @@ void e1000_reclaim_tx(struct e1000_device* dev);
 int e1000_netif_init(struct netif* nif);
 
 int e1000_transmit(struct netif* nif, struct netbuf* nb);
+void e1000_tx_flush(struct netif* nif);
 int e1000_ioctl(struct netif* nif, uint32_t cmd, void* arg);
 void e1000_qflush(struct netif* nif);
 void e1000_poll(struct netif* nif);

@@ -50,6 +50,7 @@ struct netif_ops {
     int (*ioctl)(struct netif* nif, uint32_t cmd, void* arg);
     void (*qflush)(struct netif* nif);
     void (*poll)(struct netif* nif);
+    void (*tx_flush)(struct netif* nif);
 };
 
 typedef int (*netif_output_t)(struct netif* nif, struct netbuf* nb, const void* dst, uint16_t family);
@@ -77,6 +78,8 @@ struct netif {
     void* softc;
 
     netif_output_t output;
+    struct netif* tx_next;
+    bool tx_deferred;
     netif_input_t input;
 
     struct dlist ipv4_addrs;
@@ -102,6 +105,8 @@ void netif_detach(struct netif* nif);
 
 void netif_input(struct netif* nif, struct netbuf* nb);
 int netif_output(struct netif* nif, struct netbuf* nb);
+bool netif_tx_defer(struct netif* nif);
+void netif_tx_flush();
 
 struct netif* netif_find_by_name(const char* name);
 struct netif* netif_find_by_index(uint32_t index);

@@ -52,6 +52,7 @@ static void* e1000_dma_alloc(struct dma_tag* tag, const dma_size_t len, struct d
 static const struct netif_ops e1000_netif_ops = {
     .init = e1000_netif_init,
     .transmit = e1000_transmit,
+    .tx_flush = e1000_tx_flush,
     .ioctl = e1000_ioctl,
     .qflush = e1000_qflush,
     .poll = e1000_poll,
@@ -368,6 +369,7 @@ bool e1000_tx_init(struct e1000_device* dev)
     e1000_write_command(dev, REG_TXDESCHEAD, 0);
     e1000_write_command(dev, REG_TXDESCTAIL, 0);
     dev->tx_cur = 0;
+    dev->tx_tail = 0;
     dev->tx_clean = 0;
 
     if (dev->pci.device_id == E1000_I217 || dev->pci.device_id == E1000_82577LM) {
@@ -487,6 +489,15 @@ int e1000_netif_init(struct netif* nif)
     return 0;
 }
 
+void e1000_tx_flush(struct netif* nif)
+{
+    const auto dev = (struct e1000_device*)nif->softc;
+    if (dev->tx_tail == dev->tx_cur)
+        return;
+    dev->tx_tail = dev->tx_cur;
+    e1000_write_command(dev, REG_TXDESCTAIL, dev->tx_cur);
+}
+
 int e1000_transmit(struct netif* nif, struct netbuf* nb)
 {
     const auto dev = (struct e1000_device*)nif->softc;
@@ -553,7 +564,9 @@ int e1000_transmit(struct netif* nif, struct netbuf* nb)
 
     nif->stats.tx_packets++;
     nif->stats.tx_bytes += length;
-    e1000_write_command(dev, REG_TXDESCTAIL, dev->tx_cur);
+    const uint16_t unsent = (dev->tx_cur + E1000_NUM_TX_DESC - dev->tx_tail) % E1000_NUM_TX_DESC;
+    if (unsent >= E1000_TX_BATCH || !netif_tx_defer(nif))
+        e1000_tx_flush(nif);
     return 0;
 }
 

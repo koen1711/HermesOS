@@ -105,7 +105,7 @@ struct tcpcb* tcp_close(struct tcpcb* tp)
         free(tp);
     }
 
-    if (inp->flags & INPCB_DETACHED) {
+    if (inp->flags & INPCB_DETACHED || sock_drop_embryo(inp->socket)) {
         tcp_pcb_release(inp);
     } else {
         inpcb_hash_remove(inp);

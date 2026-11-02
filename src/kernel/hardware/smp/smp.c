@@ -12,6 +12,7 @@
 #include <drivers/syscalls/syscalls.h>
 #include <drivers/terminal/terminal.h>
 #include <drivers/timer/tsc.h>
+#include <drivers/net/core/netif.h>
 
 #define AP_TRAMPOLINE_BASE 0x8000
 #define AP_STARTUP_TIMEOUT_US 200000
@@ -138,8 +139,14 @@ bool net_lock_enter()
     return true;
 }
 
+bool net_lock_held()
+{
+    return net_lock.owner == cpu_this()->index;
+}
+
 void net_lock_exit()
 {
+    netif_tx_flush();
     owner_lock_release(&net_lock);
 }
 

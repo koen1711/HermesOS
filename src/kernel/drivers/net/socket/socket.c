@@ -487,6 +487,7 @@ void sock_is_connected(struct socket* so)
     if (head && !was_connected) {
         dlist_remove(&head->incomplete, &so->listen_link);
         dlist_insert_tail(&head->complete, &so->listen_link);
+        so->embryonic = false;
         sock_wakeup(head);
     }
     sock_wakeup(so);
@@ -506,6 +507,18 @@ void sock_is_disconnected(struct socket* so)
     so->snd.flags |= SB_CANTMORE;
     so->rcv.flags |= SB_CANTMORE;
     sock_wakeup(so);
+}
+
+bool sock_drop_embryo(struct socket* so)
+{
+    struct socket* head = so->listen_head;
+    if (!head || !so->embryonic)
+        return false;
+    dlist_remove(&head->incomplete, &so->listen_link);
+    so->listen_head = nullptr;
+    so->embryonic = false;
+    sock_release(so);
+    return true;
 }
 
 void sock_cant_send_more(struct socket* so)
@@ -536,6 +549,7 @@ struct socket* sock_new_conn(struct socket* head)
     so->rcv.hiwat = head->rcv.hiwat;
 
     so->listen_head = head;
+    so->embryonic = true;
     dlist_insert_tail(&head->incomplete, &so->listen_link);
     return so;
 }

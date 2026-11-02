@@ -84,6 +84,7 @@ struct socket {
     void* pcb;
 
     struct socket* listen_head;
+    bool embryonic;
     struct dlist incomplete;
     struct dlist complete;
     struct dlist_node listen_link;
@@ -121,6 +122,7 @@ void sock_is_connecting(struct socket* so);
 void sock_is_connected(struct socket* so);
 void sock_is_disconnecting(struct socket* so);
 void sock_is_disconnected(struct socket* so);
+bool sock_drop_embryo(struct socket* so);
 void sock_cant_send_more(struct socket* so);
 void sock_cant_recv_more(struct socket* so);
 

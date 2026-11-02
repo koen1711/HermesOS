@@ -7,6 +7,7 @@
 #include <hardware/interrupts/irq.h>
 #include <drivers/scheduler/process.h>
 #include <hardware/memory/alloc.h>
+#include <hardware/smp/smp.h>
 #include <os/errno.h>
 
 static bool sockbuf_is_addr(const struct netbuf* nb)
@@ -202,6 +203,8 @@ static bool sockbuf_can_sleep()
 
 static void sockbuf_poll_once()
 {
+    if (net_lock_held())
+        netif_tx_flush();
     const uint64_t rflags = irq_save();
     irq_restore(rflags);
     if (rflags & 0x200)

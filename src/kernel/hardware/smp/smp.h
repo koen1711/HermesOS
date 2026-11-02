@@ -27,6 +27,7 @@ bool kernel_lock_enter();
 void kernel_lock_exit();
 bool kernel_lock_drop();
 bool net_lock_enter();
+bool net_lock_held();
 void net_lock_exit();
 bool net_lock_drop();
 
