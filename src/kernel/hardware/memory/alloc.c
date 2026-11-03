@@ -262,11 +262,8 @@ void free(void* ptr) {
     spinlock_release_irqrestore(&heap_lock, flags);
 }
 
-void memcpy(void* dest, const void* src, const uintptr_t size) {
-    uintptr_t qwords = size / 8;
-    uintptr_t bytes = size % 8;
-    asm volatile("rep movsq" : "+D"(dest), "+S"(src), "+c"(qwords) : : "memory");
-    asm volatile("rep movsb" : "+D"(dest), "+S"(src), "+c"(bytes) : : "memory");
+void memcpy(void* dest, const void* src, uintptr_t size) {
+    asm volatile("rep movsb" : "+D"(dest), "+S"(src), "+c"(size) : : "memory");
 }
 
 bool memcmp(void* v1, void* v2, const uintptr_t size) {
