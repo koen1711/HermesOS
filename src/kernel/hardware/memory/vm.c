@@ -17,9 +17,30 @@ struct vm_flush {
     uint64_t frame;
 };
 
-static struct vm_area* area_of(const struct dlist_node* node)
+static struct vm_area* area_of(const struct rb_node* node)
 {
-    return node ? dlist_entry(node, struct vm_area, link) : nullptr;
+    return node ? rb_entry(node, struct vm_area, tree_node) : nullptr;
+}
+
+static struct vm_area* area_next(const struct vm_area* a)
+{
+    return area_of(rb_next(&a->tree_node));
+}
+
+static struct vm_area* area_at_or_after(const struct vm_space* vm, const uint64_t addr)
+{
+    struct vm_area* found = nullptr;
+    const struct rb_node* n = vm->areas.root;
+    while (n) {
+        struct vm_area* a = area_of(n);
+        if (addr < a->end) {
+            found = a;
+            n = n->child[RB_LEFT];
+        } else {
+            n = n->child[RB_RIGHT];
+        }
+    }
+    return found;
 }
 
 static uint64_t pte_flags(const uint32_t prot)
@@ -60,13 +81,18 @@ static struct vm_area* area_new(const uint64_t start, const uint64_t end, const 
 
 static void area_insert(struct vm_space* vm, struct vm_area* a)
 {
-    for (struct dlist_node* n = dlist_first(&vm->areas); n; n = dlist_next(n)) {
-        if (area_of(n)->start > a->start) {
-            dlist_insert_before(&vm->areas, n, &a->link);
-            return;
-        }
+    struct rb_node* parent = nullptr;
+    struct rb_node** link = &vm->areas.root;
+    while (*link) {
+        parent = *link;
+        link = &parent->child[a->start >= area_of(parent)->start];
     }
-    dlist_insert_tail(&vm->areas, &a->link);
+    rb_insert(&vm->areas, parent, link, &a->tree_node);
+}
+
+static void area_remove(struct vm_space* vm, struct vm_area* a)
+{
+    rb_remove(&vm->areas, &a->tree_node);
 }
 
 static void area_set_file(struct vm_area* a, const struct vm_area* src, const uint64_t offset)
@@ -150,16 +176,13 @@ static int area_split(struct vm_space* vm, struct vm_area* a, const uint64_t at)
         return -ENOMEM;
     area_set_file(b, a, a->offset + (at - a->start));
     a->end = at;
-    dlist_insert_after(&vm->areas, &a->link, &b->link);
+    area_insert(vm, b);
     return 0;
 }
 
 static int range_isolate(struct vm_space* vm, const uint64_t start, const uint64_t end)
 {
-    for (struct dlist_node* n = dlist_first(&vm->areas); n; n = dlist_next(n)) {
-        struct vm_area* a = area_of(n);
-        if (a->start >= end)
-            break;
+    for (struct vm_area* a = area_at_or_after(vm, start); a && a->start < end; a = area_next(a)) {
         int err = 0;
         if (a->start < start && start < a->end)
             err = area_split(vm, a, start);
@@ -238,7 +261,7 @@ struct vm_space* vm_create()
     spinlock_init(&vm->lock, "vm");
     vm->ref_count = 1;
     vm->mmap_base = USER_MMAP_BASE;
-    dlist_init(&vm->areas);
+    rb_init(&vm->areas);
     return vm;
 }
 
@@ -251,15 +274,14 @@ static struct vm_space* clone_locked(struct vm_space* src)
     vm->brk = src->brk;
     vm->mmap_base = src->mmap_base;
 
-    for (const struct dlist_node* n = dlist_first(&src->areas); n; n = dlist_next(n)) {
-        const struct vm_area* a = area_of(n);
+    for (const struct vm_area* a = area_of(rb_first(&src->areas)); a; a = area_next(a)) {
         struct vm_area* copy = area_new(a->start, a->end, a->prot, a->flags);
         if (!copy) {
             vm_release(vm);
             return nullptr;
         }
         area_set_file(copy, a, a->offset);
-        dlist_insert_tail(&vm->areas, &copy->link);
+        area_insert(vm, copy);
 
         for (uint64_t va = a->start; va < a->end; va += PAGE_SIZE) {
             uint64_t* pte = mmu_find_pte(src->page_map, va);
@@ -298,15 +320,14 @@ void vm_release(struct vm_space* vm)
 {
     if (!vm || --vm->ref_count > 0)
         return;
-    while (!dlist_empty(&vm->areas)) {
-        struct dlist_node* n = dlist_first(&vm->areas);
-        const struct vm_area* a = area_of(n);
+    struct vm_area* a;
+    while ((a = area_of(rb_first(&vm->areas)))) {
         if (a->file) {
             queue_dirty(vm, a, a->start, a->end, false);
             queue(vm, a, 0, 0);
         }
-        dlist_remove(&vm->areas, n);
-        free(area_of(n));
+        area_remove(vm, a);
+        free(a);
     }
     run_flush(vm->pending);
     free_vm(vm->page_map);
@@ -315,14 +336,8 @@ void vm_release(struct vm_space* vm)
 
 struct vm_area* vm_find(const struct vm_space* vm, const uint64_t addr)
 {
-    for (struct dlist_node* n = dlist_first(&vm->areas); n; n = dlist_next(n)) {
-        struct vm_area* a = area_of(n);
-        if (addr < a->start)
-            return nullptr;
-        if (addr < a->end)
-            return a;
-    }
-    return nullptr;
+    struct vm_area* a = area_at_or_after(vm, addr);
+    return a && a->start <= addr ? a : nullptr;
 }
 
 bool vm_range_available(struct vm_space* vm, const uint64_t start, const uint64_t end)
@@ -335,23 +350,14 @@ bool vm_range_available(struct vm_space* vm, const uint64_t start, const uint64_
 
 bool vm_range_free(const struct vm_space* vm, const uint64_t start, const uint64_t end)
 {
-    for (struct dlist_node* n = dlist_first(&vm->areas); n; n = dlist_next(n)) {
-        const struct vm_area* a = area_of(n);
-        if (a->start >= end)
-            break;
-        if (start < a->end)
-            return false;
-    }
-    return true;
+    const struct vm_area* a = area_at_or_after(vm, start);
+    return !a || a->start >= end;
 }
 
 static uint64_t find_gap(const struct vm_space* vm, const size_t len)
 {
     uint64_t candidate = vm->mmap_base;
-    for (struct dlist_node* n = dlist_first(&vm->areas); n; n = dlist_next(n)) {
-        const struct vm_area* a = area_of(n);
-        if (a->end <= candidate)
-            continue;
+    for (const struct vm_area* a = area_at_or_after(vm, candidate); a; a = area_next(a)) {
         if (a->start >= candidate + len)
             break;
         candidate = a->end;
@@ -399,22 +405,19 @@ static int unmap_locked(struct vm_space* vm, const uint64_t addr, const size_t l
     if (err)
         return err;
 
-    struct dlist_node* n = dlist_first(&vm->areas);
-    while (n) {
-        struct dlist_node* next = dlist_next(n);
-        struct vm_area* a = area_of(n);
-        if (a->start >= end)
-            break;
+    struct vm_area* a = area_at_or_after(vm, addr);
+    while (a && a->start < end) {
+        struct vm_area* next = area_next(a);
         if (a->start >= addr) {
             if (a->file) {
                 queue_dirty(vm, a, a->start, a->end, false);
                 queue(vm, a, 0, 0);
             }
             free_frames(vm, a->start, a->end);
-            dlist_remove(&vm->areas, n);
+            area_remove(vm, a);
             free(a);
         }
-        n = next;
+        a = next;
     }
     smp_tlb_shootdown();
     return 0;
@@ -439,10 +442,7 @@ static int protect_locked(struct vm_space* vm, const uint64_t addr, const size_t
     if (err)
         return err;
 
-    for (struct dlist_node* n = dlist_first(&vm->areas); n; n = dlist_next(n)) {
-        struct vm_area* a = area_of(n);
-        if (a->start >= end)
-            break;
+    for (struct vm_area* a = area_at_or_after(vm, addr); a && a->start < end; a = area_next(a)) {
         if (a->start < addr)
             continue;
         a->prot = prot;
@@ -572,7 +572,7 @@ static int move_locked(struct vm_space* vm, const uint64_t old_addr, const size_
         return -ENOMEM;
     }
 
-    dlist_remove(&vm->areas, &src->link);
+    area_remove(vm, src);
     free(src);
     area_insert(vm, dst);
     smp_tlb_shootdown();

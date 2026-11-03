@@ -4,7 +4,7 @@
 #include <os/stdint.h>
 #include <os/stddef.h>
 #include <os/stdbool.h>
-#include <utils/queue/queue.h>
+#include <utils/rbtree/rbtree.h>
 #include <hardware/memory/mmu.h>
 #include <utils/sync/spinlock.h>
 
@@ -44,7 +44,7 @@ struct vm_file_ops {
 };
 
 struct vm_area {
-    struct dlist_node link;
+    struct rb_node tree_node;
     uint64_t start;
     uint64_t end;
     uint32_t prot;
@@ -60,7 +60,7 @@ struct vm_space {
     spinlock_t lock;
     uint64_t page_map;
     int ref_count;
-    struct dlist areas;
+    struct rb_tree areas;
     uint64_t brk_start;
     uint64_t brk;
     uint64_t mmap_base;
