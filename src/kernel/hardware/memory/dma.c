@@ -52,7 +52,7 @@ static void* alloc_pages(const size_t count, dma_size_t alignment, const dma_add
     if (!raw)
         return nullptr;
 
-    const auto base = (uint8_t*)(((uintptr_t)raw + alignment - 1) & ~(uintptr_t)(alignment - 1));
+    const auto base = (uint8_t*)(((uintptr_t)raw + alignment - 1) & ~(alignment - 1));
     const size_t head = (base - raw) / PAGE_SIZE;
     const size_t tail = total - head - count;
     if (head)
@@ -359,11 +359,11 @@ void dma_map_sync(struct dma_map* map, const uint32_t op)
     if (!map || !map->loaded)
         return;
 
-    if (map->bounced && (op & DMA_SYNC_PREWRITE))
+    if (map->bounced && op & DMA_SYNC_PREWRITE)
         memcpy(map->bounce, map->buffer, map->buffer_len);
 
     asm volatile("mfence" : : : "memory");
 
-    if (map->bounced && (op & DMA_SYNC_POSTREAD))
+    if (map->bounced && op & DMA_SYNC_POSTREAD)
         memcpy(map->buffer, map->bounce, map->buffer_len);
 }
