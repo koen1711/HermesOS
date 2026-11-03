@@ -103,9 +103,9 @@ static void e1000_reset(const struct e1000_device* dev)
 
 struct e1000_device* e1000_probe(const pci_device* pci)
 {
-    struct e1000_device* dev = malloc(sizeof(struct e1000_device));
+    struct e1000_device* dev = malloc_safe(sizeof(struct e1000_device));
     if (!dev) return nullptr;
-    memset(dev, 0, sizeof(*dev));
+
     dev->pci = *pci;
 
     const uint32_t bar0 = pci_config_read_u32(pci->bus, pci->device, pci->function, PCI_BAR0);

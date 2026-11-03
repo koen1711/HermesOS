@@ -42,7 +42,7 @@ static long map_file(struct vm_space* vm, struct file_s* f, const uint64_t start
     const size_t avail = f->node->size - (size_t)offset;
     const size_t total = len < avail ? len : avail;
 
-    uint8_t* buf = malloc(PAGE_SIZE);
+    uint8_t* buf = malloc_safe(PAGE_SIZE);
     if (buf == nullptr)
         return -ENOMEM;
     const size_t saved = f->file_position;

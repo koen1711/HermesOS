@@ -144,7 +144,7 @@ void pci_scan_bus(const int type, const int bus, scan_result *result) {
 }
 
 scan_result* pci_scan(const int type) {
-	scan_result* result = malloc(sizeof(scan_result));
+	scan_result* result = malloc_safe(sizeof(scan_result));
 	result->count = 0;
 
 	// Check if the system is a single PCI bus system

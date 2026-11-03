@@ -219,18 +219,18 @@ static file_operations_t epoll_fops = {
 
 long anon_install(file_operations_t* fops, void* data, const bool cloexec, const int status_flags)
 {
-    inode_t* node = malloc(sizeof(inode_t));
-    struct file_s* f = malloc(sizeof(struct file_s));
+    inode_t* node = malloc_safe(sizeof(inode_t));
+    struct file_s* f = malloc_safe(sizeof(struct file_s));
     if (!node || !f) {
         free(node);
         free(f);
         return -ENOMEM;
     }
-    memset(node, 0, sizeof(*node));
+
     node->type = INODE_ANON;
     node->fops = fops;
     node->private_data = data;
-    memset(f, 0, sizeof(*f));
+
     f->node = node;
     f->flags = O_RDONLY | O_WRONLY;
     f->status_flags = status_flags;
@@ -250,7 +250,7 @@ long sys_epoll_create1(const int flags)
 {
     if (flags & ~EPOLL_CLOEXEC)
         return -EINVAL;
-    struct epoll* ep = malloc(sizeof(struct epoll));
+    struct epoll* ep = malloc_safe(sizeof(struct epoll));
     if (!ep)
         return -ENOMEM;
     dlist_init(&ep->entries);
@@ -270,7 +270,7 @@ static bool epoll_loops(const struct epoll* ep, const struct epoll* target, cons
         return true;
     spinlock_acquire((spinlock_t*)&target->lock);
     bool found = false;
-    for (struct dlist_node* n = dlist_first(&target->entries); n && !found; n = dlist_next(n)) {
+    for (const struct dlist_node* n = dlist_first(&target->entries); n && !found; n = dlist_next(n)) {
         const struct epoll_entry* e = entry_of(n);
         if (fd_get(e->fd) != e->file)
             continue;
@@ -311,12 +311,12 @@ long sys_epoll_ctl(const int epfd, const int op, const int fd, const void* ueven
             ret = -ELOOP;
             break;
         }
-        e = malloc(sizeof(struct epoll_entry));
+        e = malloc_safe(sizeof(struct epoll_entry));
         if (!e) {
             ret = -ENOMEM;
             break;
         }
-        memset(e, 0, sizeof(*e));
+
         e->fd = fd;
         e->file = f;
         e->events = ev.events;
@@ -473,9 +473,10 @@ long sys_eventfd2(const unsigned int initval, const int flags)
 {
     if (flags & ~(EFD_SEMAPHORE | EFD_NONBLOCK | EFD_CLOEXEC))
         return -EINVAL;
-    struct eventfd* e = malloc(sizeof(struct eventfd));
+    struct eventfd* e = malloc_safe(sizeof(struct eventfd));
     if (!e)
         return -ENOMEM;
+
     e->count = initval;
     e->semaphore = flags & EFD_SEMAPHORE;
     const long fd = anon_install(&eventfd_fops, e, flags & EFD_CLOEXEC, flags & EFD_NONBLOCK);

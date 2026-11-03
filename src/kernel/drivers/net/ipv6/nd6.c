@@ -90,10 +90,10 @@ void nd6_ifattach(struct netif* nif)
 {
     if (nif->nd6_info)
         return;
-    struct nd6_ifinfo* info = malloc(sizeof(struct nd6_ifinfo));
+    struct nd6_ifinfo* info = malloc_safe(sizeof(struct nd6_ifinfo));
     if (!info)
         return;
-    memset(info, 0, sizeof(struct nd6_ifinfo));
+
     dlist_init(&info->neighbors);
     dlist_init(&info->prefixes);
     dlist_init(&info->routers);
@@ -159,10 +159,10 @@ static struct nd6_neighbor* nd6_create(struct nd6_ifinfo* info, const struct in6
 {
     if (info->neighbors.count >= ND6_MAX_NEIGHBORS)
         return nullptr;
-    struct nd6_neighbor* e = malloc(sizeof(struct nd6_neighbor));
+    struct nd6_neighbor* e = malloc_safe(sizeof(struct nd6_neighbor));
     if (!e)
         return nullptr;
-    memset(e, 0, sizeof(struct nd6_neighbor));
+
     e->addr = *addr;
     e->state = ND6_INCOMPLETE;
     dlist_insert_tail(&info->neighbors, &e->link);
@@ -505,10 +505,10 @@ static struct nd6_dad* nd6_dad_find(const struct in6_addr* addr)
 
 void nd6_dad_start(struct netif* nif, const struct in6_addr* addr)
 {
-    struct nd6_dad* d = malloc(sizeof(struct nd6_dad));
+    struct nd6_dad* d = malloc_safe(sizeof(struct nd6_dad));
     if (!d)
         return;
-    memset(d, 0, sizeof(struct nd6_dad));
+
     d->nif = nif;
     d->addr = *addr;
     callout_init(&d->timer);
@@ -785,9 +785,8 @@ static void nd6_prefix_onlink(struct netif* nif, const struct in6_addr* prefix, 
     spinlock_acquire_irqsave(&nd6_lock, &flags);
     struct nd6_prefix* p = nd6_prefix_find(info, prefix, len);
     if (!p && valid) {
-        p = malloc(sizeof(struct nd6_prefix));
+        p = malloc_safe(sizeof(struct nd6_prefix));
         if (p) {
-            memset(p, 0, sizeof(struct nd6_prefix));
             p->prefix = *prefix;
             p->prefix_len = len;
             p->on_link = true;
@@ -910,7 +909,7 @@ void nd6_ra_input(struct netbuf* nb, const size_t offset)
     struct nd6_router* r = nd6_router_find(info, &ip.src);
     if (lifetime) {
         if (!r) {
-            r = malloc(sizeof(struct nd6_router));
+            r = malloc_safe(sizeof(struct nd6_router));
             if (r) {
                 memset(r, 0, sizeof(struct nd6_router));
                 r->addr = ip.src;

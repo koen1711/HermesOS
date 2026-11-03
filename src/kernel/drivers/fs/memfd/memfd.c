@@ -316,15 +316,14 @@ static file_operations_t memfd_fops = {
 
 inode_t* mem_inode_create()
 {
-    struct memfd* m = malloc(sizeof(struct memfd));
-    inode_t* node = malloc(sizeof(inode_t));
+    struct memfd* m = malloc_safe(sizeof(struct memfd));
+    inode_t* node = malloc_safe(sizeof(inode_t));
     if (!m || !node) {
         free(m);
         free(node);
         return nullptr;
     }
-    memset(m, 0, sizeof(*m));
-    memset(node, 0, sizeof(*node));
+
     node->id = next_ino++;
     node->type = INODE_FILE;
     node->fops = &memfd_fops;
@@ -344,7 +343,7 @@ void mem_inode_unlink(inode_t* node)
 int vfs_memfd_create(const char* name)
 {
     inode_t* node = mem_inode_create();
-    struct file_s* f = malloc(sizeof(struct file_s));
+    struct file_s* f = malloc_safe(sizeof(struct file_s));
     if (!node || !f) {
         if (node)
             mem_inode_free(node);

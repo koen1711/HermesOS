@@ -31,12 +31,11 @@ void netif_initialize()
 
 struct netif* netif_alloc(const uint32_t type, const char* name_prefix)
 {
-    struct netif* nif = malloc(sizeof(struct netif));
+    struct netif* nif = malloc_safe(sizeof(struct netif));
     if (nif == nullptr) {
         return nullptr;
     }
 
-    memset(nif, 0, sizeof(struct netif));
     nif->type = type;
     nif->link_state = NETIF_LINK_UNKNOWN;
     nif->mtu = 1500;

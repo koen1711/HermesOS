@@ -20,7 +20,7 @@ full_map* map_create(const uint64_t capacity,
                 int (*key_compare)(void*,void*),
                 void (*key_destructor)(void*),
                 void (*value_destructor)(void*)) {
-    full_map* map = malloc(sizeof(full_map));
+    full_map* map = malloc_safe(sizeof(full_map));
     if (!map) return nullptr;
 
     map->capacity = capacity > 0 ? capacity : 16;
@@ -63,7 +63,7 @@ int map_put(full_map* map, void* key, void* value) {
     }
 
     // Create new entry
-    struct map_entry* new_entry = malloc(sizeof(struct map_entry));
+    struct map_entry* new_entry = malloc_safe(sizeof(struct map_entry));
     if (!new_entry) return 0;
 
     new_entry->key = key;

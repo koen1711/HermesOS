@@ -115,18 +115,18 @@ static file_operations_t pipe_fops = {
 
 static struct file_s* pipe_end(struct pipe* p, const int flags)
 {
-    inode_t* node = malloc(sizeof(inode_t));
-    struct file_s* f = malloc(sizeof(struct file_s));
+    inode_t* node = malloc_safe(sizeof(inode_t));
+    struct file_s* f = malloc_safe(sizeof(struct file_s));
     if (!node || !f) {
         free(node);
         free(f);
         return nullptr;
     }
-    memset(node, 0, sizeof(*node));
+
     node->type = INODE_PIPE;
     node->fops = &pipe_fops;
     node->private_data = p;
-    memset(f, 0, sizeof(*f));
+
     f->node = node;
     f->flags = flags;
     f->ref_count = 1;
@@ -140,11 +140,11 @@ static struct file_s* pipe_end(struct pipe* p, const int flags)
 
 int pipe_create(struct file_s** read_end, struct file_s** write_end)
 {
-    struct pipe* p = malloc(sizeof(struct pipe));
+    struct pipe* p = malloc_safe(sizeof(struct pipe));
     if (!p)
         return -ENOMEM;
-    memset(p, 0, sizeof(*p));
-    p->buf = malloc(PIPE_BUFFER_SIZE);
+
+    p->buf = malloc_safe(PIPE_BUFFER_SIZE);
     if (!p->buf) {
         free(p);
         return -ENOMEM;

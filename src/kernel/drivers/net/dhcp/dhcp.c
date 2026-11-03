@@ -662,12 +662,12 @@ int dhcp_start(struct netif* nif)
         return -EALREADY;
     }
     if (!client) {
-        client = malloc(sizeof(struct dhcp_client));
+        client = malloc_safe(sizeof(struct dhcp_client));
         if (!client) {
             spinlock_release_irqrestore(&dhcp_lock, flags);
             return -ENOMEM;
         }
-        memset(client, 0, sizeof(struct dhcp_client));
+
         client->nif = nif;
         client->socket = dhcp_socket;
         callout_init(&client->timer);

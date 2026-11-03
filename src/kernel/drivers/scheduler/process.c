@@ -613,11 +613,11 @@ static int setup_stack(struct vm_space *vm, const char *path, char *const argv[]
     if (err) {
         return err;
     }
-    uint8_t *image = malloc(total);
+    uint8_t *image = malloc_safe(total);
     if (image == nullptr) {
         return -ENOMEM;
     }
-    memset(image, 0, total);
+
     const uint64_t base = USER_STACK_TOP - total;
     uint64_t top = USER_STACK_TOP;
 
@@ -625,11 +625,12 @@ static int setup_stack(struct vm_space *vm, const char *path, char *const argv[]
     top -= 16;
     const uint64_t random = top;
     random_fill(image + (top - base), 16);
-    uint64_t *arg_ptrs = malloc((argc + envc + 1) * sizeof(uint64_t));
+    uint64_t *arg_ptrs = malloc_safe((argc + envc + 1) * sizeof(uint64_t));
     if (arg_ptrs == nullptr) {
         free(image);
         return -ENOMEM;
     }
+
     for (size_t i = 0; i<argc; i++) {
         arg_ptrs[i] = push_string(image, base, &top, argv[i]);
     }

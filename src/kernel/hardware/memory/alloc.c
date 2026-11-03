@@ -216,9 +216,29 @@ void* malloc(const uintptr_t size) {
         if (!ptr && !heap_grow(aligned_size)) return nullptr;
     }
 
+    return ptr;
+}
+
+void* malloc_safe(const uintptr_t size) {
+    if (size == 0 || size > (1ULL << 40)) return nullptr;
+
+    const uintptr_t aligned_size = (size + 7) & ~7;
+
+    void* ptr = nullptr;
+    if (aligned_size <= CLASS_MAX_SIZE)
+        ptr = class_alloc(aligned_size);
+    else if (aligned_size >= LARGE_ALLOC_THRESHOLD)
+        ptr = large_alloc(aligned_size);
+    while (!ptr) {
+        ptr = heap_take(aligned_size);
+        if (!ptr && !heap_grow(aligned_size)) return nullptr;
+    }
+
     memset(ptr, 0, ((memory_block_t*)ptr - 1)->size);
     return ptr;
 }
+
+
 
 void free(void* ptr) {
     if (ptr == nullptr) return;
@@ -270,7 +290,7 @@ void* memset(void* dest, const int value, const uintptr_t size) {
 
 void* calloc(const uintptr_t num, const uintptr_t size) {
     if (num && size > (uintptr_t)-1 / num) return nullptr;
-    return malloc(num * size);
+    return malloc_safe(num * size);
 }
 
 void* memmove(void* dest, const void* src, const uintptr_t size) {
@@ -297,7 +317,7 @@ void strncpy(char* dest, const char* src, const size_t n) {
 
 void* realloc(void* ptr, const uintptr_t size) {
     if (ptr == nullptr) {
-        return malloc(size);
+        return malloc_safe(size);
     }
     if (size == 0) {
         free(ptr);
@@ -308,7 +328,7 @@ void* realloc(void* ptr, const uintptr_t size) {
     const uint64_t old_size = block->size;
     if (size <= old_size) return ptr;
 
-    void* new_ptr = malloc(size);
+    void* new_ptr = malloc_safe(size);
     if (new_ptr) {
         memcpy(new_ptr, ptr, old_size);
         free(ptr);

@@ -90,7 +90,7 @@ static int load_object(struct vm_space* vm, const int fd, const uint64_t dyn_bas
         || eh.e_phentsize != sizeof(elf64_phdr) || eh.e_phnum == 0 || eh.e_phnum > ELF_MAX_PHDRS)
         return -ENOEXEC;
 
-    elf64_phdr* ph = malloc(eh.e_phnum * sizeof(elf64_phdr));
+    elf64_phdr* ph = malloc_safe(eh.e_phnum * sizeof(elf64_phdr));
     if (!ph)
         return -ENOMEM;
     err = read_at(fd, eh.e_phoff, ph, eh.e_phnum * sizeof(elf64_phdr));
@@ -129,7 +129,7 @@ static int load_object(struct vm_space* vm, const int fd, const uint64_t dyn_bas
 
 int elf_load(struct vm_space* vm, const int fd, const char* root, struct elf_image* out)
 {
-    char* interp = malloc(2 * MAX_PATH_LENGTH);
+    char* interp = malloc_safe(2 * MAX_PATH_LENGTH);
     if (!interp)
         return -ENOMEM;
     interp[0] = '\0';

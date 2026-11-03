@@ -161,7 +161,7 @@ static long copy_string_array(char* const* uarray, char*** out, size_t* budget)
                 break;
         }
     }
-    char** array = malloc((count + 1) * sizeof(char*) + *budget);
+    char** array = malloc_safe((count + 1) * sizeof(char*) + *budget);
     if (array == nullptr)
         return -ENOMEM;
     char* strings = (char*)(array + count + 1);
@@ -294,7 +294,7 @@ static long script_argv(char*** argv, const char* interp, const char* arg, const
     if (bytes > EXEC_STRINGS_MAX)
         return -E2BIG;
 
-    char** array = malloc((new_count + 1) * sizeof(char*) + bytes);
+    char** array = malloc_safe((new_count + 1) * sizeof(char*) + bytes);
     if (array == nullptr)
         return -ENOMEM;
     char* strings = (char*)(array + new_count + 1);

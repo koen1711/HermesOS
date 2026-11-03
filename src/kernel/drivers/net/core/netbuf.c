@@ -10,10 +10,10 @@ void netbuf_initialize()
 
 static struct netbuf* netbuf_alloc_sized(const size_t size, const bool pkthdr)
 {
-    struct netbuf* nb = malloc(sizeof(struct netbuf) + size);
+    struct netbuf* nb = malloc_safe(sizeof(struct netbuf) + size);
     if (!nb)
         return nullptr;
-    memset(nb, 0, sizeof(struct netbuf));
+
     nb->buf = (uint8_t*)(nb + 1);
     nb->buf_size = size;
     nb->data = nb->buf + (pkthdr ? NETBUF_HEADROOM : 0);

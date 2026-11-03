@@ -210,13 +210,13 @@ int vfs_open(const char* path, const int flags)
         return -EACCES;
     }
 
-    struct file_s* f = malloc(sizeof(struct file_s));
+    struct file_s* f = malloc_safe(sizeof(struct file_s));
     if (f == nullptr)
     {
         release_node(mount, current);
         return -ENOMEM;
     }
-    memset(f, 0, sizeof(*f));
+
     f->node = current;
     f->flags = flags;
     f->file_position = 0;

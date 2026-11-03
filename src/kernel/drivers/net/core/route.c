@@ -43,12 +43,12 @@ int route_add4(struct in_addr dst, const uint8_t prefix_len, const struct in_add
     spinlock_acquire_irqsave(&route_lock, &irq);
     struct route_entry* r = route_find4(dst, prefix_len);
     if (!r) {
-        r = malloc(sizeof(struct route_entry));
+        r = malloc_safe(sizeof(struct route_entry));
         if (!r) {
             spinlock_release_irqrestore(&route_lock, irq);
             return -ENOMEM;
         }
-        memset(r, 0, sizeof(struct route_entry));
+
         dlist_insert_tail(&routes4, &r->link);
     }
     r->family = AF_INET;
@@ -143,12 +143,12 @@ int route_add6(const struct in6_addr* dst, const uint8_t prefix_len, const struc
     spinlock_acquire_irqsave(&route_lock, &irq);
     struct route_entry* r = route_find6(&key, prefix_len);
     if (!r) {
-        r = malloc(sizeof(struct route_entry));
+        r = malloc_safe(sizeof(struct route_entry));
         if (!r) {
             spinlock_release_irqrestore(&route_lock, irq);
             return -ENOMEM;
         }
-        memset(r, 0, sizeof(struct route_entry));
+
         dlist_insert_tail(&routes6, &r->link);
     }
     r->family = AF_INET6;

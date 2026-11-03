@@ -89,7 +89,7 @@ static char* strcpy(char* dest, const char* src)
 
 static char* strdup(const char* str)
 {
-    size_t len = strlen(str) + 1;
+    const size_t len = strlen(str) + 1;
     char* copy = malloc(len);
     if (copy == nullptr) return nullptr;
     memcpy(copy, str, len);
@@ -114,7 +114,7 @@ static const char* str_concat_variadic(const int count, ...)
     va_end(args_copy);
 
     // Allocate memory for the result
-    char* result = malloc(total_len + 1);
+    char* result = malloc_safe(total_len + 1);
     if (result == nullptr) {
         va_end(args);
         return nullptr;
@@ -140,7 +140,7 @@ static const char* str_concat(const char* str1, const char* str2)
 {
     const size_t len1 = strlen(str1);
     const size_t len2 = strlen(str2);
-    char* result = malloc(len1 + len2 + 1);
+    char* result = malloc_safe(len1 + len2 + 1);
     for (size_t i = 0; i < len1; i++)
         result[i] = str1[i];
     for (size_t i = 0; i < len2; i++)
@@ -156,7 +156,7 @@ static char* str_u64(uint64_t n)
 
     // Special case for 0
     if (n == 0) {
-        char* buffer = malloc(2);
+        char* buffer = malloc_safe(2);
         if (buffer == nullptr)
             return nullptr;
         buffer[0] = '0';
@@ -171,7 +171,7 @@ static char* str_u64(uint64_t n)
     }
 
     // Allocate exact space needed
-    char* buffer = malloc(pos + 1); // digits + null terminator
+    char* buffer = malloc_safe(pos + 1); // digits + null terminator
     if (buffer == nullptr) return nullptr;
 
     // Reverse the digits and copy to final buffer
@@ -190,7 +190,7 @@ static char* str_u32(uint32_t n)
 
     // Special case for 0
     if (n == 0) {
-        char* buffer = malloc(2);
+        char* buffer = malloc_safe(2);
         if (buffer == nullptr) return nullptr;
         buffer[0] = '0';
         buffer[1] = '\0';
@@ -204,7 +204,7 @@ static char* str_u32(uint32_t n)
     }
 
     // Allocate exact space needed
-    char* buffer = malloc(pos + 1); // digits + null terminator
+    char* buffer = malloc_safe(pos + 1); // digits + null terminator
     if (buffer == nullptr) return nullptr;
 
     // Reverse the digits and copy to final buffer
@@ -223,7 +223,7 @@ static char* str_u16(uint16_t n)
 
     // Special case for 0
     if (n == 0) {
-        char* buffer = malloc(2);
+        char* buffer = malloc_safe(2);
         if (buffer == nullptr) return nullptr;
         buffer[0] = '0';
         buffer[1] = '\0';
@@ -237,7 +237,7 @@ static char* str_u16(uint16_t n)
     }
 
     // Allocate exact space needed
-    char* buffer = malloc(pos + 1); // digits + null terminator
+    char* buffer = malloc_safe(pos + 1); // digits + null terminator
     if (buffer == nullptr) return nullptr;
 
     // Reverse the digits and copy to final buffer
@@ -251,7 +251,7 @@ static char* str_u16(uint16_t n)
 
 static char* str_u8(uint8_t n)
 {
-    char* buffer = malloc(4); // 3 digits + null terminator
+    char* buffer = malloc_safe(4); // 3 digits + null terminator
     if (buffer == nullptr) return nullptr;
 
     buffer[3] = '\0';
@@ -264,7 +264,7 @@ static char* str_u8(uint8_t n)
 
 static char* str_u32_hex(uint32_t n)
 {
-    char* buffer = malloc(9); // 8 digits + null terminator
+    char* buffer = malloc_safe(9); // 8 digits + null terminator
     if (buffer == nullptr) return nullptr;
 
     buffer[8] = '\0';
@@ -278,7 +278,7 @@ static char* str_u32_hex(uint32_t n)
 
 static char* str_u16_hex(uint16_t n)
 {
-    char* buffer = malloc(5); // 4 digits + null terminator
+    char* buffer = malloc_safe(5); // 4 digits + null terminator
     if (buffer == nullptr) return nullptr;
 
     buffer[4] = '\0';
@@ -292,7 +292,7 @@ static char* str_u16_hex(uint16_t n)
 
 static char* str_u8_hex(uint8_t n)
 {
-    char* buffer = malloc(3); // 2 digits + null terminator
+    char* buffer = malloc_safe(3); // 2 digits + null terminator
     if (buffer == nullptr) return nullptr;
 
     buffer[2] = '\0';
@@ -312,7 +312,7 @@ static char* str_utf16_to_utf8(const uint16_t* utf16)
         len++;
 
     // Allocate enough space for worst case (4 bytes per UTF-16 code unit plus null terminator)
-    char* utf8 = malloc(len * 4 + 1);
+    char* utf8 = malloc_safe(len * 4 + 1);
     if (utf8 == nullptr) return nullptr;
 
     size_t utf8_pos = 0;

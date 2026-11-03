@@ -27,10 +27,10 @@ static int sock_take_error(struct socket* so)
 
 static struct socket* sock_alloc(const int type, struct protosw* pr)
 {
-    struct socket* so = malloc(sizeof(struct socket));
+    struct socket* so = malloc_safe(sizeof(struct socket));
     if (!so)
         return nullptr;
-    memset(so, 0, sizeof(struct socket));
+
     so->type = type;
     so->proto = pr;
     so->fd = -1;

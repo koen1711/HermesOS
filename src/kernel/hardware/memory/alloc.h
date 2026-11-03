@@ -11,6 +11,7 @@
 void memory_initialize(multiboot_info_t mb_info);
 
 void* malloc(uintptr_t size);
+void* malloc_safe(uintptr_t size);
 void free(void* ptr);
 
 void* calloc(uintptr_t num, uintptr_t size);

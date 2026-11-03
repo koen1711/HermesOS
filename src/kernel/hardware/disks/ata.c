@@ -453,7 +453,7 @@ int ata_flush_device(const uint32_t unique_id)
 }
 
 boot_type detect_boot_type(const ata_device* dev) {
-    uint8_t* sector = malloc(512);
+    uint8_t* sector = malloc_safe(512);
     if (!sector) return BOOT_UNKNOWN;
 
     if (ata_read_sector(dev, 17, (uint16_t*)sector) == 0) {
@@ -478,13 +478,13 @@ void ata_get_gpt(ata_device * dev, full_gpt* gpt)
 {
     if (gpt == nullptr) return;
 
-    gpt->boot_record = (master_boot_record*)malloc(sizeof(master_boot_record) + 8);
-    gpt->header = (gpt_header*)malloc(sizeof(gpt_header) + 8);
+    gpt->boot_record = (master_boot_record*)malloc_safe(sizeof(master_boot_record) + 8);
+    gpt->header = (gpt_header*)malloc_safe(sizeof(gpt_header) + 8);
 
     ata_read_until(dev, 0, sizeof(master_boot_record), (uint8_t*)gpt->boot_record);
     ata_read_until(dev, 1, sizeof(gpt_header), (uint8_t*)gpt->header);
 
-    uint16_t* sector_buffer = malloc(ATA_SECTOR_SIZE);
+    uint16_t* sector_buffer = malloc_safe(ATA_SECTOR_SIZE);
     if (sector_buffer == nullptr) panic("Failed to allocate memory for GPT sector buffer", __FILE__, __LINE__);
     const uint64_t entries_lba = gpt->header->lba_guid_partition_start;
     const uint32_t entry_size = gpt->header->partition_entry_size;

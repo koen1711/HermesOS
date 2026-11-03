@@ -417,10 +417,10 @@ int tty_install(struct proc_files* files, const int index)
         return -ENXIO;
     struct tty* t = &ttys[index];
     if (t->file == nullptr) {
-        struct file_s* f = malloc(sizeof(struct file_s));
+        struct file_s* f = malloc_safe(sizeof(struct file_s));
         if (f == nullptr)
             return -ENOMEM;
-        memset(f, 0, sizeof(*f));
+
         f->node = index == 0 ? &console_inode : &t->inode;
         f->flags = O_RDONLY | O_WRONLY;
         f->ref_count = 1;

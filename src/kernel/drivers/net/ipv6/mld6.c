@@ -141,12 +141,12 @@ int mld6_join(struct netif* nif, const struct in6_addr* group)
         spinlock_release_irqrestore(&mld6_lock, flags);
         return 0;
     }
-    g = malloc(sizeof(struct mld6_group));
+    g = malloc_safe(sizeof(struct mld6_group));
     if (!g) {
         spinlock_release_irqrestore(&mld6_lock, flags);
         return -ENOMEM;
     }
-    memset(g, 0, sizeof(struct mld6_group));
+
     g->nif = nif;
     g->addr = *group;
     g->refcount = 1;

@@ -103,10 +103,10 @@ int ipv4_addr_add(struct netif* nif, const struct in_addr addr, const uint8_t pr
     if (prefix_len > 32)
         return -EINVAL;
 
-    struct ipv4_ifaddr* ia = malloc(sizeof(struct ipv4_ifaddr));
+    struct ipv4_ifaddr* ia = malloc_safe(sizeof(struct ipv4_ifaddr));
     if (!ia)
         return -ENOMEM;
-    memset(ia, 0, sizeof(struct ipv4_ifaddr));
+
     ia->nif = nif;
     ia->addr = addr;
     ia->prefix_len = prefix_len;
@@ -334,13 +334,13 @@ struct netbuf* ipv4_reassemble(struct netbuf* nb)
             ipv4_reassemble_free(old);
         }
 
-        q = malloc(sizeof(struct ipv4_reassemble));
+        q = malloc_safe(sizeof(struct ipv4_reassemble));
         if (!q) {
             spinlock_release_irqrestore(&reassemble_lock, irq);
             netbuf_free_chain(nb);
             return nullptr;
         }
-        memset(q, 0, sizeof(struct ipv4_reassemble));
+
         q->src = ip.src;
         q->dst = ip.dst;
         q->id = ip.id;
@@ -386,6 +386,7 @@ struct netbuf* ipv4_reassemble(struct netbuf* nb)
     struct ipv4_frag* f = malloc(sizeof(struct ipv4_frag));
     if (!f)
         goto drop_frag;
+
     f->nb = nb;
     f->offset = (uint16_t)start;
     f->len = (uint16_t)len;

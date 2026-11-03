@@ -257,7 +257,7 @@ static ssize_t inotify_read(struct file_s* f, void* buf, const size_t len)
 {
     struct inotify* in = inotify_of(f);
     const size_t cap = len < INOTIFY_QUEUE_BYTES ? len : INOTIFY_QUEUE_BYTES;
-    uint8_t* tmp = malloc(cap ? cap : 1);
+    uint8_t* tmp = malloc_safe(cap ? cap : 1);
     if (tmp == nullptr)
         return -ENOMEM;
 
@@ -280,7 +280,7 @@ static ssize_t inotify_read(struct file_s* f, void* buf, const size_t len)
 
     size_t n = 0;
     while (n < in->used) {
-        const struct inotify_event_k* ev = (const struct inotify_event_k*)(in->events + n);
+        const auto ev = (const struct inotify_event_k*)(in->events + n);
         const size_t size = sizeof(*ev) + ev->len;
         if (n + size > cap)
             break;
@@ -343,14 +343,14 @@ long sys_inotify_init1(const int flags)
 {
     if (flags & ~(IN_CLOEXEC_K | IN_NONBLOCK_K))
         return -EINVAL;
-    struct inotify* in = malloc(sizeof(struct inotify));
+    struct inotify* in = malloc_safe(sizeof(struct inotify));
     uint8_t* events = malloc(INOTIFY_QUEUE_BYTES);
     if (!in || !events) {
         free(in);
         free(events);
         return -ENOMEM;
     }
-    memset(in, 0, sizeof(*in));
+
     dlist_init(&in->watches);
     in->next_wd = 1;
     in->events = events;
@@ -402,7 +402,7 @@ long sys_inotify_add_watch(const int fd, const char* upath, const uint32_t mask)
     if ((mask & IN_ONLYDIR) && type != INODE_DIR)
         return -ENOTDIR;
 
-    struct inotify_watch* w = malloc(sizeof(struct inotify_watch));
+    struct inotify_watch* w = malloc_safe(sizeof(struct inotify_watch));
     if (w == nullptr)
         return -ENOMEM;
 

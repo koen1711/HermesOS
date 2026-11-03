@@ -128,7 +128,7 @@ void arp_initialize()
 
 void arp_ifattach(struct netif* nif)
 {
-    struct arp_cache* cache = malloc(sizeof(struct arp_cache));
+    struct arp_cache* cache = malloc_safe(sizeof(struct arp_cache));
     if (!cache)
         return;
     dlist_init(&cache->entries);
@@ -237,7 +237,7 @@ int arp_resolve(struct netif* nif, const struct in_addr ip, struct netbuf* nb, u
 
     bool send_request = false;
     if (!e) {
-        e = malloc(sizeof(struct arp_entry));
+        e = malloc_safe(sizeof(struct arp_entry));
         if (!e) {
             spinlock_release_irqrestore(&arp_lock, flags);
             if (nb)
@@ -300,12 +300,12 @@ struct arp_entry* arp_cache_add(struct netif* nif, const struct in_addr ip, cons
     spinlock_acquire_irqsave(&arp_lock, &flags);
     struct arp_entry* e = arp_find(cache, ip);
     if (!e) {
-        e = malloc(sizeof(struct arp_entry));
+        e = malloc_safe(sizeof(struct arp_entry));
         if (!e) {
             spinlock_release_irqrestore(&arp_lock, flags);
             return nullptr;
         }
-        memset(e, 0, sizeof(struct arp_entry));
+
         e->ip = ip;
         dlist_insert_tail(&cache->entries, &e->link);
     }

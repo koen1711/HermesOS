@@ -247,10 +247,10 @@ static void ap_main()
 static bool start_ap(struct cpu* cpu)
 {
     void* stack = alloc_kernel_pages(KERNEL_STACK_PAGES);
-    tss_t* tss = malloc(sizeof(tss_t));
+    tss_t* tss = malloc_safe(sizeof(tss_t));
     if (!stack || !tss)
         return false;
-    memset(tss, 0, sizeof(*tss));
+
     cpu->tss = tss;
     if (!process_create_idle(cpu->index, (uint64_t)stack))
         return false;

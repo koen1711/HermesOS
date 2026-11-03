@@ -47,10 +47,10 @@ static void invalidate(const uint64_t va)
 
 static struct vm_area* area_new(const uint64_t start, const uint64_t end, const uint32_t prot, const uint32_t flags)
 {
-    struct vm_area* a = malloc(sizeof(struct vm_area));
+    struct vm_area* a = malloc_safe(sizeof(struct vm_area));
     if (!a)
         return nullptr;
-    memset(a, 0, sizeof(*a));
+
     a->start = start;
     a->end = end;
     a->prot = prot;
@@ -226,10 +226,10 @@ static bool cow_break(const struct vm_space* vm, const uint64_t va, uint64_t* pt
 
 struct vm_space* vm_create()
 {
-    struct vm_space* vm = malloc(sizeof(struct vm_space));
+    struct vm_space* vm = malloc_safe(sizeof(struct vm_space));
     if (!vm)
         return nullptr;
-    memset(vm, 0, sizeof(*vm));
+
     vm->page_map = setup_kvm();
     if (!vm->page_map) {
         free(vm);

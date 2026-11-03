@@ -692,12 +692,12 @@ int dhcp6_start(struct netif* nif, const bool stateful)
         return -EALREADY;
     }
     if (!client) {
-        client = malloc(sizeof(struct dhcp6_client));
+        client = malloc_safe(sizeof(struct dhcp6_client));
         if (!client) {
             spinlock_release_irqrestore(&dhcp6_lock, flags);
             return -ENOMEM;
         }
-        memset(client, 0, sizeof(struct dhcp6_client));
+
         client->nif = nif;
         client->socket = dhcp6_socket;
         dhcp6_make_duid(nif, client->duid, &client->duid_len);

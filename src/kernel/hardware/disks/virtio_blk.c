@@ -425,7 +425,7 @@ static bool vblk_setup_queue(struct vblk_device *d)
     d->desc = (struct vring_desc *)ring;
     d->avail = (volatile uint16_t *)(ring + (uint64_t)d->qsize * sizeof(struct vring_desc));
     d->used = ring + used_off;
-    d->owner = malloc(d->qsize * sizeof(int16_t));
+    d->owner = malloc_safe(d->qsize * sizeof(int16_t));
     if (!d->owner)
         return false;
     for (uint16_t i = 0; i < d->qsize; i++) {
@@ -446,8 +446,8 @@ static int read_disk(struct vblk_device *d, const uint64_t off, const uint32_t l
 
 static void vblk_mount_partitions(struct vblk_device *d)
 {
-    uint8_t *sector = malloc(VBLK_SECTOR);
-    gpt_header *header = malloc(sizeof(gpt_header) + 8);
+    uint8_t *sector = malloc_safe(VBLK_SECTOR);
+    gpt_header *header = malloc_safe(sizeof(gpt_header) + 8);
     if (!sector || !header || read_disk(d, VBLK_SECTOR, VBLK_SECTOR, sector) != 0
         || memcmp(sector, (void *)"EFI PART", 8) != 0) {
         terminal_printf("virtio-blk%d: no GPT partition table\n", d->index);
@@ -503,7 +503,7 @@ static void vblk_probe(const pci_address addr)
     if (!(bar0 & 1))
         return;
 
-    struct vblk_device *d = malloc(sizeof(struct vblk_device));
+    struct vblk_device *d = malloc_safe(sizeof(struct vblk_device));
     if (!d)
         return;
     d->index = vblk_count;

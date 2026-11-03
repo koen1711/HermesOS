@@ -80,11 +80,7 @@ static int socket_poll_locked(const struct file_s* f)
 
 int socket_file_poll(struct file_s* f)
 {
-    const bool locked = net_lock_enter();
-    const int events = socket_poll_locked(f);
-    if (locked)
-        net_lock_exit();
-    return events;
+    return socket_poll_locked(f);
 }
 
 uint64_t socket_file_poll_bit(const struct file_s* f)
@@ -128,28 +124,23 @@ static int socket_ioctl_locked(struct file_s* f, const unsigned long request, vo
 
 int socket_file_ioctl(struct file_s* f, const unsigned long request, void* arg)
 {
-    const bool locked = net_lock_enter();
-    const int ret = socket_ioctl_locked(f, request, arg);
-    if (locked)
-        net_lock_exit();
-    return ret;
+    return socket_ioctl_locked(f, request, arg);
 }
 
 int socket_file_alloc_fd(struct socket* so)
 {
-    inode_t* node = malloc(sizeof(inode_t));
-    struct file_s* f = malloc(sizeof(struct file_s));
+    inode_t* node = malloc_safe(sizeof(inode_t));
+    struct file_s* f = malloc_safe(sizeof(struct file_s));
     if (!node || !f) {
         free(node);
         free(f);
         return -ENOMEM;
     }
-    memset(node, 0, sizeof(*node));
+
     node->type = INODE_SOCKET;
     node->fops = &socket_fops;
     node->private_data = so;
 
-    memset(f, 0, sizeof(*f));
     f->node = node;
     f->flags = O_RDONLY | O_WRONLY;
     f->ref_count = 1;
