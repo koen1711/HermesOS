@@ -137,21 +137,24 @@ static int epoll_collect_locked(struct epoll* ep, struct epoll_event_k* out, con
 
         if (interest)
             *interest |= epoll_of(e->file) ? ~0ULL : socket_file_poll_bit(e->file);
+
         const uint32_t ready = entry_ready(e);
         file_unpin(pinned, deferred);
         uint32_t report = ready;
+
         if (e->events & EPOLLET) {
             const uint32_t fresh = ready & ~e->reported;
             if (consume)
                 e->reported = ready;
             report = fresh ? ready : 0;
         }
+
         if (!report)
             continue;
         if (out)
             out[count] = (struct epoll_event_k){ .events = report, .data = e->data };
         count++;
-        if (consume && (e->events & EPOLLONESHOT))
+        if (consume && e->events & EPOLLONESHOT)
             e->disabled = true;
     }
     return count;
@@ -160,7 +163,7 @@ static int epoll_collect_locked(struct epoll* ep, struct epoll_event_k* out, con
 static int epoll_collect(struct epoll* ep, struct epoll_event_k* out, const int max, const bool consume,
                          uint64_t* interest)
 {
-    bool kernel_locked = false, net_locked = false;
+    bool kernel_locked = false;
     struct file_s* deferred = nullptr;
 
     spinlock_acquire(&ep->lock);
@@ -168,12 +171,8 @@ static int epoll_collect(struct epoll* ep, struct epoll_event_k* out, const int 
         spinlock_release(&ep->lock);
         kernel_locked = kernel_lock_enter();
         spinlock_acquire(&ep->lock);
-    } else {
-        net_locked = net_lock_enter();
     }
     const int count = epoll_collect_locked(ep, out, max, consume, interest, &deferred);
-    if (net_locked)
-        net_lock_exit();
     spinlock_release(&ep->lock);
 
     while (deferred) {
