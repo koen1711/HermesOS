@@ -48,7 +48,7 @@ static uint64_t inet_sum(const uint8_t *buf, size_t len)
         sum = (sum & 0xffff) + (sum >> 16);
 
 #if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
-    sum = (sum & 0xff) << 8 | (sum >> 8);   /* back to network order */
+    sum = (sum & 0xff) << 8 | (sum >> 8);
 #endif
     return sum;
 }
