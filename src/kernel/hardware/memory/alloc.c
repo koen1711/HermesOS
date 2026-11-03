@@ -277,11 +277,8 @@ bool memcmp(void* v1, void* v2, const uintptr_t size) {
 
 void* memset(void* dest, const int value, const uintptr_t size) {
     void* d = dest;
-    const uint64_t pattern = 0x0101010101010101ULL * (uint8_t)value;
-    uintptr_t qwords = size / 8;
-    uintptr_t bytes = size % 8;
-    asm volatile("rep stosq" : "+D"(d), "+c"(qwords) : "a"(pattern) : "memory");
-    asm volatile("rep stosb" : "+D"(d), "+c"(bytes) : "a"(pattern) : "memory");
+    uintptr_t n = size;
+    asm volatile("rep stosb" : "+D"(d), "+c"(n) : "a"((uint8_t)value) : "memory");
     return dest;
 }
 
