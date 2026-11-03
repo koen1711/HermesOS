@@ -533,7 +533,7 @@ void ata_device_initialize(ata_device * dev)
     ata_select_device(dev);
     ata_io_wait(dev);
 
-    full_gpt* gpt = malloc(sizeof(full_gpt));
+    full_gpt* gpt = malloc_safe(sizeof(full_gpt));
 
     const boot_type boot_type = detect_boot_type(dev);
 
