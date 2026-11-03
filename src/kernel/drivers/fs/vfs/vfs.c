@@ -456,9 +456,66 @@ int vfs_readdir(const int fd, struct vfs_dirent* out)
 }
 
 
+static uint32_t inode_perm(const inode_t* node)
+{
+    if (node->has_attrs)
+        return node->mode;
+    switch (node->type) {
+    case INODE_SOCKET:
+        return 0777;
+    case INODE_PIPE:
+        return 0600;
+    case INODE_CHAR:
+        return 0666;
+    default:
+        return 0755;
+    }
+}
+
+int vfs_setattr(const struct file_s* f, const struct vfs_attr* attr)
+{
+    inode_t* node = f->node;
+    struct vfs_attr next = *attr;
+    next.valid &= ~VFS_ATTR_KILL_SUID;
+    if (!(attr->valid & VFS_ATTR_MODE))
+        next.mode = inode_perm(node);
+    if (!(attr->valid & VFS_ATTR_UID))
+        next.uid = node->uid;
+    if (!(attr->valid & VFS_ATTR_GID))
+        next.gid = node->gid;
+    if ((attr->valid & VFS_ATTR_KILL_SUID) && node->type != INODE_DIR) {
+        uint32_t mode = next.mode & ~04000u;
+        if (mode & 0010)
+            mode &= ~02000u;
+        if (mode != next.mode) {
+            next.mode = mode;
+            next.valid |= VFS_ATTR_MODE;
+        }
+    }
+    if (next.valid == 0)
+        return 0;
+
+    const inode_operations_t* ops = node->iops;
+    if (ops != nullptr && ops->setattr != nullptr) {
+        const int err = ops->setattr(node, &next);
+        if (err)
+            return err;
+    }
+    if (next.valid & (VFS_ATTR_MODE | VFS_ATTR_UID | VFS_ATTR_GID)) {
+        node->mode = next.mode;
+        node->uid = next.uid;
+        node->gid = next.gid;
+        node->has_attrs = true;
+    }
+    if (next.valid & VFS_ATTR_MTIME)
+        node->mtime = (uint64_t)next.mtime;
+    notify_file(f, IN_ATTRIB);
+    return 0;
+}
+
 int vfs_stat(const int fd, vfs_stat_t* st)
 {
-    struct file_s* f = get_file(fd);
+    const struct file_s* f = get_file(fd);
     if (f == nullptr || st == nullptr)
         return -1;
 
@@ -466,6 +523,9 @@ int vfs_stat(const int fd, vfs_stat_t* st)
     st->type = f->node->type;
     st->ino = f->node->id;
     st->mtime = f->node->mtime;
+    st->perm = inode_perm(f->node);
+    st->uid = f->node->uid;
+    st->gid = f->node->gid;
     return 0;
 }
 

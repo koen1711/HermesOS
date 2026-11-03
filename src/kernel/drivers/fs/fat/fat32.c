@@ -243,9 +243,9 @@ static uint64_t fat_now_secs()
     return ns / 1000000000ULL;
 }
 
-static uint16_t fat_date()
+static uint16_t fat_date_of(const uint64_t secs)
 {
-    const int64_t z = (int64_t)(fat_now_secs() / 86400) + 719468;
+    const int64_t z = (int64_t)(secs / 86400) + 719468;
     const int64_t era = (z >= 0 ? z : z - 146096) / 146097;
     const unsigned doe = (unsigned)(z - era * 146097);
     const unsigned yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
@@ -257,10 +257,20 @@ static uint16_t fat_date()
     return (uint16_t)(((year - 1980) << 9) | (month << 5) | day);
 }
 
+static uint16_t fat_time_of(const uint64_t secs)
+{
+    const uint64_t s = secs % 86400;
+    return (uint16_t)(((s / 3600) << 11) | (((s / 60) % 60) << 5) | ((s % 60) / 2));
+}
+
+static uint16_t fat_date()
+{
+    return fat_date_of(fat_now_secs());
+}
+
 static uint16_t fat_time()
 {
-    const uint64_t s = fat_now_secs() % 86400;
-    return (uint16_t)(((s / 3600) << 11) | (((s / 60) % 60) << 5) | ((s % 60) / 2));
+    return fat_time_of(fat_now_secs());
 }
 
 static uint64_t fat_to_unix(const uint16_t date, const uint16_t time)
@@ -278,6 +288,10 @@ static uint64_t fat_to_unix(const uint16_t date, const uint16_t time)
     const int64_t days = era * 146097 + (int64_t)doe - 719468;
     return (uint64_t)days * 86400 + (time >> 11) * 3600 + ((time >> 5) & 0x3F) * 60 + (time & 0x1F) * 2;
 }
+
+#define FAT_DATE_MIN ((0 << 9) | (1 << 5) | 1)
+#define FAT_DATE_MAX ((127 << 9) | (12 << 5) | 31)
+#define FAT_TIME_MAX ((23 << 11) | (59 << 5) | 29)
 
 static int dir_entry_io(fat32_sb_info *sbi, const uint32_t dir_first, const uint32_t pos,
                         fat32_directory_entry *de, const bool write)
@@ -1028,6 +1042,12 @@ static inode_t *fat32_make_inode(fat32_sb_info *sbi, const char *name, const fat
     inode->size         = fi->attr & FAT_ATTR_DIRECTORY ? 0 : fi->size;
     inode->mtime        = fat_to_unix(de->modification_date, de->modification_time);
     inode->private_data = fi;
+    if (de->creation_time_tenths == FAT_POSIX_ATTRS_MAGIC) {
+        inode->has_attrs = true;
+        inode->mode = de->creation_time & 07777;
+        inode->uid = de->creation_date;
+        inode->gid = de->access_date;
+    }
     strncpy(inode->path, name, MAX_FILE_PATH - 1);
 
     if (fi->attr & FAT_ATTR_DIRECTORY) {
@@ -1070,8 +1090,43 @@ static int dirent_update(fat32_inode_info *fi)
     }
     de.modification_date = fat_date();
     de.modification_time = fat_time();
-    de.access_date = de.modification_date;
+    if (de.creation_time_tenths != FAT_POSIX_ATTRS_MAGIC)
+        de.access_date = de.modification_date;
     fi->inode->mtime = fat_to_unix(de.modification_date, de.modification_time);
+    err = dir_entry_io(fi->sbi, fi->dir_cluster, fi->dirent_pos, &de, true);
+    fsinfo_sync(fi->sbi);
+    return err;
+}
+
+static int fat32_setattr(inode_t *inode, struct vfs_attr *attr)
+{
+    const fat32_inode_info *fi = inode->private_data;
+    const bool posix = attr->valid & (VFS_ATTR_MODE | VFS_ATTR_UID | VFS_ATTR_GID);
+    if (posix && (attr->uid > 0xFFFF || attr->gid > 0xFFFF))
+        return -EINVAL;
+    if (attr->valid & VFS_ATTR_MTIME) {
+        const int64_t min = (int64_t)fat_to_unix(FAT_DATE_MIN, 0);
+        const int64_t max = (int64_t)fat_to_unix(FAT_DATE_MAX, FAT_TIME_MAX);
+        const int64_t t = attr->mtime < min ? min : attr->mtime > max ? max : attr->mtime;
+        attr->mtime = (int64_t)fat_to_unix(fat_date_of((uint64_t)t), fat_time_of((uint64_t)t));
+    }
+    if (fi->is_root || fi->orphan)
+        return 0;
+
+    fat32_directory_entry de;
+    int err = dir_entry_io(fi->sbi, fi->dir_cluster, fi->dirent_pos, &de, false);
+    if (err)
+        return err;
+    if (posix) {
+        de.creation_time_tenths = FAT_POSIX_ATTRS_MAGIC;
+        de.creation_time = (uint16_t)(attr->mode & 07777);
+        de.creation_date = (uint16_t)attr->uid;
+        de.access_date = (uint16_t)attr->gid;
+    }
+    if (attr->valid & VFS_ATTR_MTIME) {
+        de.modification_date = fat_date_of((uint64_t)attr->mtime);
+        de.modification_time = fat_time_of((uint64_t)attr->mtime);
+    }
     err = dir_entry_io(fi->sbi, fi->dir_cluster, fi->dirent_pos, &de, true);
     fsinfo_sync(fi->sbi);
     return err;
@@ -1731,6 +1786,15 @@ static int locked_rename(inode_t *old_dir, const char *old_name, inode_t *new_di
     return r;
 }
 
+static int locked_setattr(inode_t *inode, struct vfs_attr *attr)
+{
+    fat32_sb_info *sbi = inode_sbi(inode);
+    fs_lock(sbi);
+    const int r = fat32_setattr(inode, attr);
+    fs_unlock(sbi);
+    return r;
+}
+
 static file_operations_t fat32_dir_fops = {
     .open    = fat32_file_open,
     .readdir = locked_readdir,
@@ -1753,10 +1817,12 @@ static inode_operations_t fat32_dir_iops = {
     .create  = locked_create,
     .unlink  = locked_unlink,
     .rename  = locked_rename,
+    .setattr = locked_setattr,
 };
 
 static inode_operations_t fat32_file_iops = {
     .release = locked_release,
+    .setattr = locked_setattr,
 };
 
 static inode_t *fat32_mount(void *blob)

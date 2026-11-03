@@ -182,16 +182,20 @@ static long file_syscall(const interrupt_context* c)
         case SYSCALL_FTRUNCATE:
             return sys_ftruncate((int)c->rdi, (int64_t)c->rsi);
         case SYSCALL_CHMOD:
+            return sys_fchmodat(AT_FDCWD, (const char*)c->rdi, (uint32_t)c->rsi);
         case SYSCALL_CHOWN:
         case SYSCALL_LCHOWN:
-            return sys_path_exists(AT_FDCWD, (const char*)c->rdi);
+            return sys_fchownat(AT_FDCWD, (const char*)c->rdi, (uint32_t)c->rsi, (uint32_t)c->rdx, 0);
         case SYSCALL_FCHMODAT:
+            return sys_fchmodat((int)c->rdi, (const char*)c->rsi, (uint32_t)c->rdx);
         case SYSCALL_FCHOWNAT:
+            return sys_fchownat((int)c->rdi, (const char*)c->rsi, (uint32_t)c->rdx, (uint32_t)c->r10, (int)c->r8);
         case SYSCALL_UTIMENSAT:
-            return sys_path_exists((int)c->rdi, (const char*)c->rsi);
+            return sys_utimensat((int)c->rdi, (const char*)c->rsi, (const struct timespec_k*)c->rdx, (int)c->r10);
         case SYSCALL_FCHMOD:
+            return sys_fchmod((int)c->rdi, (uint32_t)c->rsi);
         case SYSCALL_FCHOWN:
-            return fd_get((int)c->rdi) ? 0 : -EBADF;
+            return sys_fchown((int)c->rdi, (uint32_t)c->rsi, (uint32_t)c->rdx);
         case SYSCALL_UMASK:
             return sys_umask((uint32_t)c->rdi);
         case SYSCALL_FSYNC:

@@ -20,6 +20,9 @@ typedef struct vfs_stat_s {
     size_t type;
     uint64_t ino;
     uint64_t mtime;
+    uint32_t perm;
+    uint32_t uid;
+    uint32_t gid;
 } vfs_stat_t;
 
 typedef struct registered_driver_s {
@@ -54,6 +57,7 @@ int64_t vfs_seek(int fd, int64_t offset, enum seek_origin origin);
 int vfs_readdir(int fd, struct vfs_dirent *out);
 int vfs_stat(int fd, vfs_stat_t *st);
 int vfs_statfs(const struct file_s* f, struct vfs_statfs* out);
+int vfs_setattr(const struct file_s* f, const struct vfs_attr* attr);
 int vfs_normalize_path(const char *base, const char *path, char *out);
 const char* vfs_strip_root(const char* root, const char* path);
 int vfs_resolve_root(const char* root, const char* base, const char* path, char* out);

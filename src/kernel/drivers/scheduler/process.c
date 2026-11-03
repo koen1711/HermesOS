@@ -677,7 +677,7 @@ int process_exec(process_t *proc, const char *path, char *const argv[], char *co
     if (fd<0) {
         return fd;
     }
-    if (vfs_stat(fd, &stat)<0 || stat.type != INODE_FILE) {
+    if (vfs_stat(fd, &stat)<0 || stat.type != INODE_FILE || !(stat.perm & 0111)) {
         vfs_close(fd);
         return -EACCES;
     }

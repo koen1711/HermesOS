@@ -16,6 +16,9 @@
 #define AT_SYMLINK_NOFOLLOW 0x100
 #define AT_REMOVEDIR 0x200
 #define AT_EMPTY_PATH 0x1000
+#define X_OK 1
+#define UTIME_NOW ((1L << 30) - 1)
+#define UTIME_OMIT ((1L << 30) - 2)
 #define FD_CLOEXEC 1
 #define IOV_MAX 1024
 #define RENAME_NOREPLACE 1
@@ -403,6 +406,8 @@ static long stat_out(const struct file_s* f, void* ust)
     st.st_dev = 1;
     st.st_ino = vs.ino ? vs.ino : f->id + 1;
     st.st_nlink = vs.type == INODE_DIR ? 2 : 1;
+    st.st_uid = vs.uid;
+    st.st_gid = vs.gid;
     st.st_size = (int64_t)vs.size;
     st.st_blksize = PAGE_SIZE;
     st.st_blocks = (int64_t)((vs.size + 511) / 512);
@@ -412,20 +417,20 @@ static long stat_out(const struct file_s* f, void* ust)
 
     switch (vs.type) {
     case INODE_DIR:
-        st.st_mode = S_IFDIR | 0755;
+        st.st_mode = S_IFDIR | vs.perm;
         break;
     case INODE_SOCKET:
-        st.st_mode = S_IFSOCK | 0777;
+        st.st_mode = S_IFSOCK | vs.perm;
         break;
     case INODE_PIPE:
-        st.st_mode = S_IFIFO | 0600;
+        st.st_mode = S_IFIFO | vs.perm;
         break;
     case INODE_CHAR:
-        st.st_mode = S_IFCHR | 0666;
+        st.st_mode = S_IFCHR | vs.perm;
         st.st_rdev = vs.ino;
         break;
     default:
-        st.st_mode = S_IFREG | 0755;
+        st.st_mode = S_IFREG | vs.perm;
         break;
     }
     return copy_to_user(ust, &st, sizeof(st));
@@ -740,7 +745,7 @@ long sys_ioctl(const int fd, const unsigned long request, void* arg)
     return -ENOTTY;
 }
 
-static long path_lookup(const int dirfd, const char* upath, char* path, size_t* type)
+static long path_lookup(const int dirfd, const char* upath, char* path, vfs_stat_t* st)
 {
     const long err = resolve_at(dirfd, upath, path, false);
     if (err)
@@ -748,15 +753,15 @@ static long path_lookup(const int dirfd, const char* upath, char* path, size_t* 
     const int alias = fd_alias(path);
     if (alias >= 0) {
         const struct file_s* f = fd_get(alias);
-        if (f && type)
-            *type = f->node->type;
+        if (f && st)
+            vfs_stat((int)f->id, st);
         return f ? 0 : -ENOENT;
     }
     const int id = vfs_open(path, 0);
     if (id < 0)
         return id;
-    if (type)
-        *type = vfs_get_file(id)->node->type;
+    if (st)
+        vfs_stat(id, st);
     vfs_close(id);
     return 0;
 }
@@ -765,11 +770,11 @@ long sys_faccessat(const int dirfd, const char* upath, const int mode, const int
 {
     (void)flags;
     char path[VFS_PATH_MAX];
-    size_t type;
-    const long err = path_lookup(dirfd, upath, path, &type);
-    (void)mode;
-    (void)type;
-    return err;
+    vfs_stat_t st;
+    const long err = path_lookup(dirfd, upath, path, &st);
+    if (err)
+        return err;
+    return (mode & X_OK) && st.type != INODE_DIR && !(st.perm & 0111) ? -EACCES : 0;
 }
 
 long sys_readlinkat(const int dirfd, const char* upath, char* buf, const size_t size)
@@ -842,12 +847,111 @@ long sys_truncate(const char* upath, const int64_t length)
     return r;
 }
 
-long sys_path_exists(const int dirfd, const char* upath)
+static long setattr_fd(const int fd, const struct vfs_attr* attr)
 {
-    if (upath == nullptr)
-        return fd_get(dirfd) ? 0 : -EBADF;
+    const struct file_s* f = fd_get(fd);
+    return f ? vfs_setattr(f, attr) : -EBADF;
+}
+
+static long setattr_at(const int dirfd, const char* upath, const bool allow_empty, const struct vfs_attr* attr)
+{
     char path[VFS_PATH_MAX];
-    return path_lookup(dirfd, upath, path, nullptr);
+    const long err = resolve_at(dirfd, upath, path, allow_empty);
+    if (err)
+        return err;
+    if (path[0] == '\0') {
+        if (dirfd != AT_FDCWD)
+            return setattr_fd(dirfd, attr);
+        strncpy(path, files()->cwd, sizeof(path) - 1);
+    }
+    const int alias = fd_alias(path);
+    if (alias >= 0)
+        return fd_get(alias) ? setattr_fd(alias, attr) : -ENOENT;
+
+    const int id = vfs_open(path, 0);
+    if (id < 0)
+        return id;
+    const long r = vfs_setattr(vfs_get_file(id), attr);
+    vfs_close(id);
+    return r;
+}
+
+static struct vfs_attr chmod_attr(const uint32_t mode)
+{
+    return (struct vfs_attr){ .valid = VFS_ATTR_MODE, .mode = mode & 07777 };
+}
+
+static struct vfs_attr chown_attr(const uint32_t uid, const uint32_t gid)
+{
+    struct vfs_attr attr = { .valid = VFS_ATTR_KILL_SUID, .uid = uid, .gid = gid };
+    if (uid != (uint32_t)-1)
+        attr.valid |= VFS_ATTR_UID;
+    if (gid != (uint32_t)-1)
+        attr.valid |= VFS_ATTR_GID;
+    return attr;
+}
+
+long sys_fchmodat(const int dirfd, const char* upath, const uint32_t mode)
+{
+    const struct vfs_attr attr = chmod_attr(mode);
+    return setattr_at(dirfd, upath, false, &attr);
+}
+
+long sys_fchmod(const int fd, const uint32_t mode)
+{
+    const struct vfs_attr attr = chmod_attr(mode);
+    return setattr_fd(fd, &attr);
+}
+
+long sys_fchownat(const int dirfd, const char* upath, const uint32_t uid, const uint32_t gid, const int flags)
+{
+    if (flags & ~(AT_SYMLINK_NOFOLLOW | AT_EMPTY_PATH))
+        return -EINVAL;
+    const struct vfs_attr attr = chown_attr(uid, gid);
+    return setattr_at(dirfd, upath, flags & AT_EMPTY_PATH, &attr);
+}
+
+long sys_fchown(const int fd, const uint32_t uid, const uint32_t gid)
+{
+    const struct vfs_attr attr = chown_attr(uid, gid);
+    return setattr_fd(fd, &attr);
+}
+
+static bool utime_valid(const struct timespec_k* t)
+{
+    return t->tv_nsec == UTIME_NOW || t->tv_nsec == UTIME_OMIT || (t->tv_nsec >= 0 && t->tv_nsec < 1000000000);
+}
+
+long sys_utimensat(const int dirfd, const char* upath, const struct timespec_k* utimes, const int flags)
+{
+    if (flags & ~(AT_SYMLINK_NOFOLLOW | AT_EMPTY_PATH))
+        return -EINVAL;
+    struct timespec_k times[2] = { { .tv_nsec = UTIME_NOW }, { .tv_nsec = UTIME_NOW } };
+    if (utimes != nullptr) {
+        if (copy_from_user(times, utimes, sizeof(times)))
+            return -EFAULT;
+        if (!utime_valid(&times[0]) || !utime_valid(&times[1]))
+            return -EINVAL;
+        if (times[0].tv_nsec == UTIME_OMIT && times[1].tv_nsec == UTIME_OMIT)
+            return 0;
+    }
+
+    struct vfs_attr attr = {0};
+    if (times[1].tv_nsec != UTIME_OMIT) {
+        attr.valid = VFS_ATTR_MTIME;
+        attr.mtime = times[1].tv_sec;
+        if (times[1].tv_nsec == UTIME_NOW) {
+            uint64_t ns = 0;
+            clock_get_ns(CLOCK_REALTIME_K, &ns);
+            attr.mtime = (int64_t)(ns / 1000000000ULL);
+        }
+    }
+    if (upath == nullptr) {
+        if (dirfd == AT_FDCWD)
+            return -EFAULT;
+        return flags & AT_SYMLINK_NOFOLLOW ? -EINVAL : setattr_fd(dirfd, &attr);
+    }
+    return setattr_at(dirfd, upath, flags & AT_EMPTY_PATH, &attr);
 }
 
 long sys_umask(const uint32_t mask)

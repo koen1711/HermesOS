@@ -19,6 +19,12 @@
 #define XATTR_CREATE 0x1
 #define XATTR_REPLACE 0x2
 
+#define VFS_ATTR_MODE 0x1
+#define VFS_ATTR_UID 0x2
+#define VFS_ATTR_GID 0x4
+#define VFS_ATTR_MTIME 0x8
+#define VFS_ATTR_KILL_SUID 0x10
+
 struct inode_s;
 struct file_s;
 struct mounted_file_system_s;
@@ -48,6 +54,14 @@ struct vfs_statfs {
     uint64_t name_max;
 };
 
+struct vfs_attr {
+    uint32_t valid;
+    uint32_t mode;
+    uint32_t uid;
+    uint32_t gid;
+    int64_t mtime;
+};
+
 typedef struct file_system_driver_ts {
     struct inode_s* (*mount)(void* blob);
     void (*unmount)(struct inode_s* root);
@@ -66,6 +80,7 @@ typedef struct inode_operations_s {
     int (*setxattr)(struct inode_s* node, const char* name, const void* value, size_t size, int flags);
     ssize_t (*listxattr)(struct inode_s* node, char* list, size_t size);
     int (*removexattr)(struct inode_s* node, const char* name);
+    int (*setattr)(struct inode_s* node, struct vfs_attr* attr);
 } inode_operations_t;
 
 typedef struct file_operations_s {
@@ -88,6 +103,10 @@ typedef struct inode_s {
     size_t size;
     size_t data_offset;
     uint64_t mtime;
+    bool has_attrs;
+    uint32_t mode;
+    uint32_t uid;
+    uint32_t gid;
     char path[MAX_FILE_PATH];
     file_operations_t* fops;
     inode_operations_t* iops;

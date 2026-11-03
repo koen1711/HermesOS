@@ -95,6 +95,8 @@ typedef struct {
 
 #define FAT_DIR_INDEXES 8
 
+#define FAT_POSIX_ATTRS_MAGIC 0xFD
+
 struct dir_index;
 
 typedef struct fat32_sb_info {
