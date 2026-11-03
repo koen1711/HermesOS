@@ -275,10 +275,9 @@ bool memcmp(void* v1, void* v2, const uintptr_t size) {
     return false;
 }
 
-void* memset(void* dest, const int value, const uintptr_t size) {
+void* memset(void* dest, const int value, uintptr_t size) {
     void* d = dest;
-    uintptr_t n = size;
-    asm volatile("rep stosb" : "+D"(d), "+c"(n) : "a"((uint8_t)value) : "memory");
+    asm volatile("rep stosb" : "+D"(d), "+c"(size) : "a"((uint8_t)value) : "memory");
     return dest;
 }
 
