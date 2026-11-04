@@ -81,7 +81,9 @@ volatile uint64_t poll_wake_woken;
 static void reap_detached();
 static void switch_process(process_t *prev, process_t *next);
 
-static process_t *remove_waiting_process(struct dlist *list, int wait_id);
+static void waiting_insert(process_t *proc);
+static process_t *waiting_first(int wait_id);
+static process_t *remove_waiting_process(int wait_id);
 
 static void init_idle_process();
 static void init_shell_process();
@@ -129,7 +131,7 @@ void process_sleep(const int wait_id) {
     proc->state = PROC_SLOT_SLEEPING;
     proc->wait_id = wait_id;
 
-    dlist_insert_tail(&scheduler.waiting, &proc->link);
+    waiting_insert(proc);
 
     sched_switch(flags);
 }
@@ -156,7 +158,7 @@ int process_wakeup_n(const int wait_id, const int count) {
     spinlock_acquire_irqsave(&sched_lock, &flags);
     int woken = 0;
     while (count < 0 || woken < count) {
-        process_t *proc = remove_waiting_process(&scheduler.waiting, wait_id);
+        process_t *proc = remove_waiting_process(wait_id);
         if (proc == nullptr) {
             break;
         }
@@ -176,7 +178,7 @@ void process_wake(process_t *proc) {
     spinlock_acquire_irqsave(&sched_lock, &flags);
     const bool woke = proc->state == PROC_SLOT_SLEEPING;
     if (woke) {
-        dlist_remove(&scheduler.waiting, &proc->link);
+        rb_remove(&scheduler.waiting, &proc->wait_node);
         proc->state = PROC_SLOT_READY;
         dlist_insert_tail(&scheduler.ready, &proc->link);
     }
@@ -200,7 +202,7 @@ static int sleep_interruptible(const int wait_id, const uint64_t *seq) {
     } else {
         proc->state = PROC_SLOT_SLEEPING;
         proc->wait_id = wait_id;
-        dlist_insert_tail(&scheduler.waiting, &proc->link);
+        waiting_insert(proc);
         sched_switch(flags);
     }
     proc->interruptible = false;
@@ -221,16 +223,16 @@ void process_wakeup_poll(const uint64_t interest) {
     uint64_t flags;
     spinlock_acquire_irqsave(&sched_lock, &flags);
     int woken = 0;
-    for (struct dlist_node *node = dlist_first(&scheduler.waiting); node;) {
-        struct dlist_node *next = dlist_next(node);
-        process_t *proc = dlist_entry(node, process_t, link);
-        if (proc->wait_id == WAIT_CHANNEL_POLL && (proc->poll_interest & interest)) {
-            dlist_remove(&scheduler.waiting, node);
+    process_t *proc = waiting_first(WAIT_CHANNEL_POLL);
+    while (proc != nullptr && proc->wait_id == WAIT_CHANNEL_POLL) {
+        const struct rb_node *next = rb_next(&proc->wait_node);
+        if (proc->poll_interest & interest) {
+            rb_remove(&scheduler.waiting, &proc->wait_node);
             proc->state = PROC_SLOT_READY;
             dlist_insert_tail(&scheduler.ready, &proc->link);
             woken++;
         }
-        node = next;
+        proc = next ? rb_entry(next, process_t, wait_node) : nullptr;
     }
     spinlock_release_irqrestore(&sched_lock, flags);
     __atomic_add_fetch(&poll_wake_woken, woken, __ATOMIC_RELAXED);
@@ -275,7 +277,7 @@ void process_interrupt(process_t *proc) {
     spinlock_acquire_irqsave(&sched_lock, &flags);
     const bool woke = proc->state == PROC_SLOT_SLEEPING && proc->interruptible;
     if (woke) {
-        dlist_remove(&scheduler.waiting, &proc->link);
+        rb_remove(&scheduler.waiting, &proc->wait_node);
         proc->state = PROC_SLOT_READY;
         dlist_insert_tail(&scheduler.ready, &proc->link);
     }
@@ -844,15 +846,40 @@ static void switch_process(process_t *prev, process_t *next) {
     context_switch(&prev->context, next->context);
 }
 
-static process_t *remove_waiting_process(struct dlist *list, const int wait_id) {
-    for (struct dlist_node *node = dlist_first(list); node; node = dlist_next(node)) {
-        process_t *proc = dlist_entry(node, process_t, link);
-        if (proc->wait_id == wait_id) {
-            dlist_remove(list, node);
-            return proc;
+static void waiting_insert(process_t *proc) {
+    struct rb_node *parent = nullptr;
+    struct rb_node **link = &scheduler.waiting.root;
+    while (*link) {
+        parent = *link;
+        const process_t *other = rb_entry(parent, process_t, wait_node);
+        link = &parent->child[other->wait_id <= proc->wait_id ? RB_RIGHT : RB_LEFT];
+    }
+    rb_insert(&scheduler.waiting, parent, link, &proc->wait_node);
+}
+
+static process_t *waiting_first(const int wait_id) {
+    process_t *found = nullptr;
+    struct rb_node *node = scheduler.waiting.root;
+    while (node) {
+        const auto proc = rb_entry(node, process_t, wait_node);
+        if (proc->wait_id < wait_id) {
+            node = node->child[RB_RIGHT];
+        } else {
+            if (proc->wait_id == wait_id) {
+                found = proc;
+            }
+            node = node->child[RB_LEFT];
         }
     }
-    return nullptr;
+    return found;
+}
+
+static process_t *remove_waiting_process(const int wait_id) {
+    process_t *proc = waiting_first(wait_id);
+    if (proc != nullptr) {
+        rb_remove(&scheduler.waiting, &proc->wait_node);
+    }
+    return proc;
 }
 
 static void init_idle_process() {

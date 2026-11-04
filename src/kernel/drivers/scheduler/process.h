@@ -6,6 +6,7 @@
 #include <hardware/memory/vm.h>
 #include <hardware/interrupts/interrupts.h>
 #include <utils/queue/queue.h>
+#include <utils/rbtree/rbtree.h>
 #include <utils/sync/spinlock.h>
 #include <drivers/scheduler/signal.h>
 #include <drivers/timer/callout.h>
@@ -49,6 +50,7 @@ struct proc_files {
 
 typedef struct {
     struct dlist_node link;
+    struct rb_node wait_node;
     int pid;
     int tgid;
     int ppid;
@@ -92,7 +94,7 @@ typedef struct {
     process_t *current;
     process_t *idle;
     struct dlist ready;
-    struct dlist waiting;
+    struct rb_tree waiting;
     struct dlist killed;
 } scheduler_t;
 
