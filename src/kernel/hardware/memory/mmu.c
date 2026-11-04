@@ -216,12 +216,15 @@ void free_vm(const uint64_t pml4_addr) {
 
 uint64_t* mmu_find_pte(const uint64_t pml4_addr, const uint64_t virtual_addr) {
     uint64_t* table = phys_to_virt(pml4_addr);
+
+#pragma GCC unroll 3
     for (int shift = 39; shift > 12; shift -= 9) {
-        const uint64_t entry = table[(virtual_addr >> shift) & 0x1FF];
-        if (!(entry & MMU_PRESENT) || (entry & MMU_PDE_TWO_MB)) return nullptr;
+        const uint64_t entry = table[virtual_addr >> shift & 0x1FF];
+        if (__builtin_expect((entry & (MMU_PRESENT | MMU_PDE_TWO_MB)) != MMU_PRESENT, 0))
+            return nullptr;
         table = table_at(entry);
     }
-    return &table[(virtual_addr >> 12) & 0x1FF];
+    return &table[virtual_addr >> 12 & 0x1FF];
 }
 
 
