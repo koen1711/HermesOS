@@ -7,7 +7,7 @@
 #define TSC_PIT_CH2_PORT   0x42
 #define TSC_CALIBRATE_MS   10
 
-static uint64_t tsc_per_us;
+static uint64_t tsc_us_scale;
 
 uint64_t tsc_read()
 {
@@ -31,12 +31,12 @@ void tsc_initialize()
     while (!(port_read_u8(TSC_PIT_GATE_PORT) & 0x20)) {}
     const uint64_t t1 = tsc_read();
     const uint64_t per_us = (t1 - t0) / (TSC_CALIBRATE_MS * 1000);
-    tsc_per_us = per_us ? per_us : 1000;
+    tsc_us_scale = ~0ULL / (per_us ? per_us : 1000);
 }
 
 uint64_t tsc_micros()
 {
-    if (!tsc_per_us)
+    if (!tsc_us_scale)
         tsc_initialize();
-    return tsc_read() / tsc_per_us;
+    return (uint64_t)(((unsigned __int128)tsc_read() * tsc_us_scale) >> 64);
 }

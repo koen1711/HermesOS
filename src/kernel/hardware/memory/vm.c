@@ -834,8 +834,21 @@ bool vm_fault(struct vm_space* vm, const uint64_t addr, const bool write)
     return ok;
 }
 
+static bool populate_fast(const struct vm_space* vm, const uint64_t addr, const uint64_t end, const bool write)
+{
+    const uint64_t need = MMU_PRESENT | MMU_USER | (write ? MMU_WRITABLE : 0);
+    for (uint64_t va = addr & PAGE_MASK; va < end; va += PAGE_SIZE) {
+        const uint64_t* pte = mmu_find_pte(vm->page_map, va);
+        if (!pte || (__atomic_load_n(pte, __ATOMIC_RELAXED) & need) != need)
+            return false;
+    }
+    return true;
+}
+
 bool vm_populate(struct vm_space* vm, const uint64_t addr, const size_t len, const bool write)
 {
+    if (user_range(addr, addr + len) && populate_fast(vm, addr, addr + len, write))
+        return true;
     spinlock_acquire(&vm->lock);
     const bool ok = populate_locked(vm, addr, len, write);
     spinlock_release(&vm->lock);
