@@ -172,6 +172,11 @@ check_cpuid:
     shrl $TWO_MEGABYTES_SHIFT, %esi
     addl $1, %esi
 
+    /* The page directory only holds 512 entries, never write past it */
+    movl $512, %eax
+    cmp %eax, %esi
+    cmova %eax, %esi
+
 page_directory_table_loop:
     /* EAX = 2MB * ECX */
     movl $TWO_MEGABYTES, %eax
