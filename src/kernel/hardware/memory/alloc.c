@@ -17,6 +17,7 @@
 #define BIN_MAX (BIN_STEP * BIN_COUNT)
 #define CACHE_MAX 32
 #define CACHE_BATCH 16
+#define BIN_SLAB_PAGES 16
 #define MEMCPY_REP_THRESHOLD 512
 
 extern void* _kernel_virtual_end;
@@ -106,7 +107,10 @@ uint64_t get_amount_of_free_memory() {
     return total_free;
 }
 
-static memory_block_t* first_fit_take_locked(const uintptr_t aligned_size) {
+static void* heap_take(const uintptr_t aligned_size) {
+    uint64_t flags;
+    spinlock_acquire_irqsave(&heap_lock, &flags);
+
     memory_block_t* current = first_free_block;
     memory_block_t* previous = nullptr;
 
@@ -129,22 +133,16 @@ static memory_block_t* first_fit_take_locked(const uintptr_t aligned_size) {
                 first_free_block = next;
 
             current->next = BLOCK_USED;
-            return current;
+            spinlock_release_irqrestore(&heap_lock, flags);
+            return (uint8_t*)current + sizeof(memory_block_t);
         }
 
         previous = current;
         current = current->next;
     }
 
-    return nullptr;
-}
-
-static void* heap_take(const uintptr_t aligned_size) {
-    uint64_t flags;
-    spinlock_acquire_irqsave(&heap_lock, &flags);
-    memory_block_t* block = first_fit_take_locked(aligned_size);
     spinlock_release_irqrestore(&heap_lock, flags);
-    return block ? (uint8_t*)block + sizeof(memory_block_t) : nullptr;
+    return nullptr;
 }
 
 static void* large_alloc(const uintptr_t aligned_size) {
@@ -156,43 +154,45 @@ static void* large_alloc(const uintptr_t aligned_size) {
     return (uint8_t*)block + sizeof(memory_block_t);
 }
 
-static uintptr_t bin_run_size(const uintptr_t object_size) {
-    return CACHE_BATCH * (object_size + sizeof(memory_block_t)) - sizeof(memory_block_t);
-}
-
 static memory_block_t* bin_refill_locked(const uintptr_t bin, struct cpu_bin* cache) {
     memory_block_t* head = bins[bin];
-    if (head) {
-        memory_block_t* tail = head;
-        uint32_t taken = 1;
-        while (taken < CACHE_BATCH && tail->next) {
-            tail = tail->next;
-            taken++;
-        }
-        bins[bin] = tail->next;
-        tail->next = nullptr;
-        cache->head = head->next;
-        cache->count = taken - 1;
-        return head;
+    if (!head) return nullptr;
+
+    memory_block_t* tail = head;
+    uint32_t taken = 1;
+    while (taken < CACHE_BATCH && tail->next) {
+        tail = tail->next;
+        taken++;
+    }
+    bins[bin] = tail->next;
+    tail->next = nullptr;
+    cache->head = head->next;
+    cache->count = taken - 1;
+    return head;
+}
+
+static bool bin_add_slab(const uintptr_t bin) {
+    const uint64_t object_size = (bin + 1) * BIN_STEP;
+    const uint64_t stride = object_size + sizeof(memory_block_t);
+    uint8_t* slab = alloc_kernel_pages(BIN_SLAB_PAGES);
+    if (!slab) return false;
+
+    memory_block_t* head = nullptr;
+    memory_block_t* tail = nullptr;
+    for (uint64_t at = (BIN_SLAB_PAGES * PAGE_SIZE / stride) * stride; at >= stride; at -= stride) {
+        const auto object = (memory_block_t*)(slab + at - stride);
+        object->size = object_size;
+        object->next = head;
+        head = object;
+        if (!tail) tail = object;
     }
 
-    const uintptr_t object_size = (bin + 1) * BIN_STEP;
-    const uintptr_t run_size = bin_run_size(object_size);
-    memory_block_t* run = first_fit_take_locked(run_size);
-    if (!run) return nullptr;
-
-    const uint64_t spare = run->size - run_size;
-    const uintptr_t stride = object_size + sizeof(memory_block_t);
-    memory_block_t* next = nullptr;
-    for (int i = CACHE_BATCH - 1; i >= 0; i--) {
-        const auto object = (memory_block_t*)((uint8_t*)run + i * stride);
-        object->size = i == CACHE_BATCH - 1 ? object_size + spare : object_size;
-        object->next = next;
-        next = object;
-    }
-    cache->head = run->next;
-    cache->count = CACHE_BATCH - 1;
-    return run;
+    uint64_t flags;
+    spinlock_acquire_irqsave(&heap_lock, &flags);
+    tail->next = bins[bin];
+    bins[bin] = head;
+    spinlock_release_irqrestore(&heap_lock, flags);
+    return true;
 }
 
 static void* bin_alloc(const uintptr_t size) {
@@ -215,7 +215,7 @@ static void* bin_alloc(const uintptr_t size) {
             return (uint8_t*)object + sizeof(memory_block_t);
         }
         irq_restore(flags);
-        if (!heap_grow(bin_run_size(size))) return nullptr;
+        if (!bin_add_slab(bin)) return nullptr;
     }
 }
 
@@ -240,7 +240,7 @@ static void bin_free(memory_block_t* object) {
 }
 
 void* malloc(const uintptr_t size) {
-    if (size == 0 || size > (1ULL << 40)) return nullptr;
+    if (size == 0 || size > 1ULL << 40) return nullptr;
 
     const uintptr_t aligned_size = (size + BIN_STEP - 1) & ~(uintptr_t)(BIN_STEP - 1);
 
