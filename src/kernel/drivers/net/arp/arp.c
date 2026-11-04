@@ -13,7 +13,7 @@
 #define ARP_RETRY_MS       1000
 
 struct arp_cache {
-    struct dlist entries;
+    struct rb_tree entries;
 };
 
 static spinlock_t arp_lock;
@@ -99,14 +99,41 @@ static bool arp_is_ours(const struct netif* nif, const struct in_addr ip)
     return ipv4_addr_is_on(nif, ip);
 }
 
+static struct arp_entry* arp_of(const struct rb_node* node)
+{
+    return node ? rb_entry(node, struct arp_entry, tree_node) : nullptr;
+}
+
+static struct arp_entry* arp_next(const struct arp_entry* a)
+{
+    return arp_of(rb_next(&a->tree_node));
+}
+
 static struct arp_entry* arp_find(const struct arp_cache* cache, const struct in_addr ip)
 {
-    for (struct dlist_node* n = dlist_first(&cache->entries); n; n = dlist_next(n)) {
-        const auto e = dlist_entry(n, struct arp_entry, link);
-        if (e->ip.s_addr == ip.s_addr)
+    const struct rb_node* n = cache->entries.root;
+    while (n) {
+        struct arp_entry* e = arp_of(n);
+        if (ip.s_addr < e->ip.s_addr) {
+            n = n->child[RB_LEFT];
+        } else if (ip.s_addr > e->ip.s_addr) {
+            n = n->child[RB_RIGHT];
+        } else {
             return e;
+        }
     }
     return nullptr;
+}
+
+static void arp_insert(struct arp_cache* cache, struct arp_entry* e)
+{
+    struct rb_node* parent = nullptr;
+    struct rb_node** link = &cache->entries.root;
+    while (*link) {
+        parent = *link;
+        link = &parent->child[e->ip.s_addr >= arp_of(parent)->ip.s_addr];
+    }
+    rb_insert(&cache->entries, parent, link, &e->tree_node);
 }
 
 static void arp_entry_update(struct arp_entry* e, const uint8_t* hw, const enum arp_state state)
@@ -131,7 +158,7 @@ void arp_ifattach(struct netif* nif)
     struct arp_cache* cache = malloc_safe(sizeof(struct arp_cache));
     if (!cache)
         return;
-    dlist_init(&cache->entries);
+    rb_init(&cache->entries);
     nif->arp_cache = cache;
 }
 
@@ -142,9 +169,9 @@ void arp_ifdetach(struct netif* nif)
         return;
     uint64_t flags;
     spinlock_acquire_irqsave(&arp_lock, &flags);
-    while (!dlist_empty(&cache->entries)) {
-        const auto e = dlist_entry(dlist_first(&cache->entries), struct arp_entry, link);
-        dlist_remove(&cache->entries, &e->link);
+    struct arp_entry* e;
+    while ((e = arp_of(rb_first(&cache->entries)))) {
+        rb_remove(&cache->entries, &e->tree_node);
         arp_free_pending(e);
         free(e);
     }
@@ -190,6 +217,10 @@ void arp_input(struct netbuf* nb)
         uint64_t flags;
         spinlock_acquire_irqsave(&arp_lock, &flags);
         const struct arp_cache* cache = arp_cache_of(nif);
+        if (!cache) {
+            spinlock_release_irqrestore(&arp_lock, flags);
+            return;
+        }
         struct arp_entry* e = arp_find(cache, ah.spa);
 
         if (e && e->state != ARP_STATIC) {
@@ -219,15 +250,15 @@ int arp_resolve(struct netif* nif, const struct in_addr ip, struct netbuf* nb, u
         return 0;
     }
 
+    uint64_t flags;
+    spinlock_acquire_irqsave(&arp_lock, &flags);
     struct arp_cache* cache = arp_cache_of(nif);
     if (!cache) {
+        spinlock_release_irqrestore(&arp_lock, flags);
         if (nb)
             netbuf_free_chain(nb);
         return -ENETDOWN;
     }
-
-    uint64_t flags;
-    spinlock_acquire_irqsave(&arp_lock, &flags);
     struct arp_entry* e = arp_find(cache, ip);
     if (e && e->state != ARP_INCOMPLETE) {
         memcpy(out_hw, e->hw, ETH_ADDR_LEN);
@@ -244,12 +275,12 @@ int arp_resolve(struct netif* nif, const struct in_addr ip, struct netbuf* nb, u
                 netbuf_free_chain(nb);
             return -ENOMEM;
         }
-        memset(e, 0, sizeof(struct arp_entry));
+
         e->ip = ip;
         e->state = ARP_INCOMPLETE;
         e->tries = 1;
         e->expires = ticks_get() + ticks_from_ms(ARP_RETRY_MS);
-        dlist_insert_tail(&cache->entries, &e->link);
+        arp_insert(cache, e);
         send_request = true;
     }
 
@@ -292,12 +323,13 @@ int arp_probe(struct netif* nif, const struct in_addr ip)
 
 struct arp_entry* arp_cache_add(struct netif* nif, const struct in_addr ip, const uint8_t* hw, const enum arp_state state)
 {
-    struct arp_cache* cache = arp_cache_of(nif);
-    if (!cache)
-        return nullptr;
-
     uint64_t flags;
     spinlock_acquire_irqsave(&arp_lock, &flags);
+    struct arp_cache* cache = arp_cache_of(nif);
+    if (!cache) {
+        spinlock_release_irqrestore(&arp_lock, flags);
+        return nullptr;
+    }
     struct arp_entry* e = arp_find(cache, ip);
     if (!e) {
         e = malloc_safe(sizeof(struct arp_entry));
@@ -307,7 +339,7 @@ struct arp_entry* arp_cache_add(struct netif* nif, const struct in_addr ip, cons
         }
 
         e->ip = ip;
-        dlist_insert_tail(&cache->entries, &e->link);
+        arp_insert(cache, e);
     }
     arp_entry_update(e, hw, state);
     struct netbuf* pending = state != ARP_INCOMPLETE ? arp_take_pending(e) : nullptr;
@@ -321,26 +353,22 @@ struct arp_entry* arp_cache_add(struct netif* nif, const struct in_addr ip, cons
 
 struct arp_entry* arp_cache_lookup(struct netif* nif, const struct in_addr ip)
 {
-    struct arp_cache* cache = arp_cache_of(nif);
-    if (!cache)
-        return nullptr;
     uint64_t flags;
     spinlock_acquire_irqsave(&arp_lock, &flags);
-    struct arp_entry* e = arp_find(cache, ip);
+    struct arp_cache* cache = arp_cache_of(nif);
+    struct arp_entry* e = cache ? arp_find(cache, ip) : nullptr;
     spinlock_release_irqrestore(&arp_lock, flags);
     return e;
 }
 
 void arp_cache_remove(struct netif* nif, const struct in_addr ip)
 {
-    struct arp_cache* cache = arp_cache_of(nif);
-    if (!cache)
-        return;
     uint64_t flags;
     spinlock_acquire_irqsave(&arp_lock, &flags);
-    struct arp_entry* e = arp_find(cache, ip);
+    struct arp_cache* cache = arp_cache_of(nif);
+    struct arp_entry* e = cache ? arp_find(cache, ip) : nullptr;
     if (e) {
-        dlist_remove(&cache->entries, &e->link);
+        rb_remove(&cache->entries, &e->tree_node);
         arp_free_pending(e);
         free(e);
     }
@@ -349,21 +377,22 @@ void arp_cache_remove(struct netif* nif, const struct in_addr ip)
 
 void arp_cache_flush(const struct netif* nif)
 {
-    struct arp_cache* cache = arp_cache_of(nif);
-    if (!cache)
-        return;
     uint64_t flags;
     spinlock_acquire_irqsave(&arp_lock, &flags);
-    struct dlist_node* n = dlist_first(&cache->entries);
-    while (n) {
-        struct dlist_node* next = dlist_next(n);
-        struct arp_entry* e = dlist_entry(n, struct arp_entry, link);
+    struct arp_cache* cache = arp_cache_of(nif);
+    if (!cache) {
+        spinlock_release_irqrestore(&arp_lock, flags);
+        return;
+    }
+    struct arp_entry* e = arp_of(rb_first(&cache->entries));
+    while (e) {
+        struct arp_entry* next = arp_next(e);
         if (e->state != ARP_STATIC) {
-            dlist_remove(&cache->entries, n);
+            rb_remove(&cache->entries, &e->tree_node);
             arp_free_pending(e);
             free(e);
         }
-        n = next;
+        e = next;
     }
     spinlock_release_irqrestore(&arp_lock, flags);
 }
@@ -374,22 +403,22 @@ void arp_timer(void* arg)
     const uint64_t now = ticks_get();
 
     for (struct netif* nif = netif_first(); nif; nif = netif_next(nif)) {
-        struct arp_cache* cache = arp_cache_of(nif);
-        if (!cache)
-            continue;
-
         struct in_addr retry[8];
         int nretry = 0;
 
         uint64_t flags;
         spinlock_acquire_irqsave(&arp_lock, &flags);
-        struct dlist_node* n = dlist_first(&cache->entries);
-        while (n) {
-            struct dlist_node* next = dlist_next(n);
-            struct arp_entry* e = dlist_entry(n, struct arp_entry, link);
+        struct arp_cache* cache = arp_cache_of(nif);
+        if (!cache) {
+            spinlock_release_irqrestore(&arp_lock, flags);
+            continue;
+        }
+        struct arp_entry* e = arp_of(rb_first(&cache->entries));
+        while (e) {
+            struct arp_entry* next = arp_next(e);
             if (e->state == ARP_INCOMPLETE && e->expires <= now) {
                 if (e->tries >= ARP_MAX_TRIES) {
-                    dlist_remove(&cache->entries, n);
+                    rb_remove(&cache->entries, &e->tree_node);
                     arp_free_pending(e);
                     free(e);
                 } else if (nretry < 8) {
@@ -400,7 +429,7 @@ void arp_timer(void* arg)
             } else if (e->state == ARP_REACHABLE && e->expires <= now) {
                 e->state = ARP_STALE;
             }
-            n = next;
+            e = next;
         }
         spinlock_release_irqrestore(&arp_lock, flags);
 

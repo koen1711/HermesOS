@@ -2,9 +2,9 @@
 #define NET_ARP_ARP_H
 
 #include <os/stdint.h>
-#include <utils/queue/queue.h>
 #include <drivers/net/ethernet/ethernet.h>
 #include <drivers/net/ipv4/ipv4.h>
+#include <utils/rbtree/rbtree.h>
 
 #define ARP_HTYPE_ETHERNET 1
 enum arp_op
@@ -40,7 +40,7 @@ struct netif;
 struct netbuf;
 
 struct arp_entry {
-    struct dlist_node link;
+    struct rb_node tree_node;
     struct in_addr ip;
     uint8_t hw[ETH_ADDR_LEN];
     enum arp_state state;
