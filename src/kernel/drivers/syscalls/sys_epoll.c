@@ -219,13 +219,15 @@ static file_operations_t epoll_fops = {
 
 long anon_install(file_operations_t* fops, void* data, const bool cloexec, const int status_flags)
 {
-    inode_t* node = malloc_safe(sizeof(inode_t));
-    struct file_s* f = malloc_safe(sizeof(struct file_s));
+    inode_t* node = malloc(sizeof(inode_t));
+    struct file_s* f = malloc(sizeof(struct file_s));
     if (!node || !f) {
         free(node);
         free(f);
         return -ENOMEM;
     }
+    memset(node, 0, offsetof(inode_t, path) + 1);
+    memset(f, 0, offsetof(struct file_s, filename) + 1);
 
     node->type = INODE_ANON;
     node->fops = fops;
@@ -250,7 +252,7 @@ long sys_epoll_create1(const int flags)
 {
     if (flags & ~EPOLL_CLOEXEC)
         return -EINVAL;
-    struct epoll* ep = malloc_safe(sizeof(struct epoll));
+    struct epoll* ep = malloc(sizeof(struct epoll));
     if (!ep)
         return -ENOMEM;
     dlist_init(&ep->entries);
@@ -473,7 +475,7 @@ long sys_eventfd2(const unsigned int initval, const int flags)
 {
     if (flags & ~(EFD_SEMAPHORE | EFD_NONBLOCK | EFD_CLOEXEC))
         return -EINVAL;
-    struct eventfd* e = malloc_safe(sizeof(struct eventfd));
+    struct eventfd* e = malloc(sizeof(struct eventfd));
     if (!e)
         return -ENOMEM;
 

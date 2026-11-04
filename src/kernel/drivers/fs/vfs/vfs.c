@@ -210,12 +210,13 @@ int vfs_open(const char* path, const int flags)
         return -EACCES;
     }
 
-    struct file_s* f = malloc_safe(sizeof(struct file_s));
+    struct file_s* f = malloc(sizeof(struct file_s));
     if (f == nullptr)
     {
         release_node(mount, current);
         return -ENOMEM;
     }
+    memset(f, 0, offsetof(struct file_s, filename));
 
     f->node = current;
     f->flags = flags;
@@ -224,6 +225,7 @@ int vfs_open(const char* path, const int flags)
     f->ref_count = 1;
 
     strncpy(f->filename, path, sizeof(f->filename) - 1);
+    f->filename[sizeof(f->filename) - 1] = '\0';
 
     if (current->fops->open(current, f) < 0)
     {

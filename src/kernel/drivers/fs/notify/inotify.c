@@ -252,12 +252,11 @@ static struct inotify* inotify_of(const struct file_s* f)
     return f->node->private_data;
 }
 
-// The caller's buffer may fault, so events are copied out through a kernel buffer
 static ssize_t inotify_read(struct file_s* f, void* buf, const size_t len)
 {
     struct inotify* in = inotify_of(f);
     const size_t cap = len < INOTIFY_QUEUE_BYTES ? len : INOTIFY_QUEUE_BYTES;
-    uint8_t* tmp = malloc_safe(cap ? cap : 1);
+    uint8_t* tmp = malloc(cap ? cap : 1);
     if (tmp == nullptr)
         return -ENOMEM;
 
@@ -402,7 +401,7 @@ long sys_inotify_add_watch(const int fd, const char* upath, const uint32_t mask)
     if ((mask & IN_ONLYDIR) && type != INODE_DIR)
         return -ENOTDIR;
 
-    struct inotify_watch* w = malloc_safe(sizeof(struct inotify_watch));
+    struct inotify_watch* w = malloc(sizeof(struct inotify_watch));
     if (w == nullptr)
         return -ENOMEM;
 

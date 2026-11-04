@@ -103,7 +103,7 @@ int ipv4_addr_add(struct netif* nif, const struct in_addr addr, const uint8_t pr
     if (prefix_len > 32)
         return -EINVAL;
 
-    struct ipv4_ifaddr* ia = malloc_safe(sizeof(struct ipv4_ifaddr));
+    struct ipv4_ifaddr* ia = malloc(sizeof(struct ipv4_ifaddr));
     if (!ia)
         return -ENOMEM;
 

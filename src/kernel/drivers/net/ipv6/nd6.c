@@ -909,9 +909,8 @@ void nd6_ra_input(struct netbuf* nb, const size_t offset)
     struct nd6_router* r = nd6_router_find(info, &ip.src);
     if (lifetime) {
         if (!r) {
-            r = malloc_safe(sizeof(struct nd6_router));
+            r = malloc(sizeof(struct nd6_router));
             if (r) {
-                memset(r, 0, sizeof(struct nd6_router));
                 r->addr = ip.src;
                 dlist_insert_tail(&info->routers, &r->link);
             }

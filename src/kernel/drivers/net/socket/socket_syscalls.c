@@ -240,7 +240,7 @@ static ssize_t sendmsg_iov(struct socket* so, const struct iovec_s* iov, const s
     if (sock_is_atomic(so)) {
         if (total > so->snd.hiwat)
             return -EMSGSIZE;
-        uint8_t* tmp = malloc_safe(total ? total : 1);
+        uint8_t* tmp = malloc(total ? total : 1);
         if (!tmp)
             return -ENOBUFS;
         size_t off = 0;
@@ -296,7 +296,7 @@ static ssize_t recvmsg_iov(struct socket* so, const struct iovec_s* iov, const s
 
     if (sock_is_atomic(so)) {
         const size_t cap = total < so->rcv.hiwat ? total : so->rcv.hiwat;
-        uint8_t* tmp = malloc_safe(cap ? cap : 1);
+        uint8_t* tmp = malloc(cap ? cap : 1);
         if (!tmp)
             return -ENOBUFS;
         const ssize_t n = sock_recv(so, tmp, cap, flags, from, from_len);

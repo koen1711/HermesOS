@@ -129,13 +129,15 @@ int socket_file_ioctl(struct file_s* f, const unsigned long request, void* arg)
 
 int socket_file_alloc_fd(struct socket* so)
 {
-    inode_t* node = malloc_safe(sizeof(inode_t));
-    struct file_s* f = malloc_safe(sizeof(struct file_s));
+    inode_t* node = malloc(sizeof(inode_t));
+    struct file_s* f = malloc(sizeof(struct file_s));
     if (!node || !f) {
         free(node);
         free(f);
         return -ENOMEM;
     }
+    memset(node, 0, offsetof(inode_t, path) + 1);
+    memset(f, 0, offsetof(struct file_s, filename) + 1);
 
     node->type = INODE_SOCKET;
     node->fops = &socket_fops;

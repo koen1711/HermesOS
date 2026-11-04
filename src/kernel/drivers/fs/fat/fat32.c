@@ -373,7 +373,7 @@ static int iter_init(struct dir_iter *it, fat32_sb_info *sbi, const uint32_t dir
 {
     memset(it, 0, sizeof(*it));
     it->sbi = sbi;
-    it->buf = malloc_safe(cluster_byte_size(sbi));
+    it->buf = malloc(cluster_byte_size(sbi));
     if (!it->buf)
         return -ENOMEM;
     it->cluster = dir_first;
@@ -640,7 +640,7 @@ static int read_entry_at(fat32_sb_info *sbi, const uint32_t dir_first, const uin
 
 static int scan_entry(fat32_sb_info *sbi, const uint32_t dir_first, const char *name, struct dir_found *f)
 {
-    struct dir_found *cur = malloc_safe(sizeof(struct dir_found));
+    struct dir_found *cur = malloc(sizeof(struct dir_found));
     struct dir_index *idx = dindex_new(dir_first, 256);
     struct dir_iter it;
     int err = cur ? iter_init(&it, sbi, dir_first, 0) : -ENOMEM;
@@ -722,7 +722,7 @@ static bool short_name_taken(fat32_sb_info *sbi, const uint32_t dir_first, const
     struct dir_iter it;
     if (iter_init(&it, sbi, dir_first, 0) < 0)
         return true;
-    struct dir_found *f = malloc_safe(sizeof(struct dir_found));
+    struct dir_found *f = malloc(sizeof(struct dir_found));
     bool taken = f == nullptr;
     while (!taken && iter_next(&it, f) > 0)
         taken = memcmp(f->de.filename, raw, 11) == 0;
@@ -1017,15 +1017,14 @@ static uint32_t dir_first_cluster(const fat32_inode_info *dir)
 static inode_t *fat32_make_inode(fat32_sb_info *sbi, const char *name, const fat32_directory_entry *de,
                                  const uint32_t dir_cluster, const uint32_t pos, const uint32_t lfn_pos)
 {
-    inode_t *inode = malloc_safe(sizeof(inode_t));
+    inode_t *inode = malloc(sizeof(inode_t));
     fat32_inode_info *fi = malloc_safe(sizeof(fat32_inode_info));
     if (!inode || !fi) {
         free(inode);
         free(fi);
         return nullptr;
     }
-    memset(inode, 0, sizeof(*inode));
-    memset(fi, 0, sizeof(*fi));
+    memset(inode, 0, offsetof(inode_t, path));
 
     fi->sbi           = sbi;
     fi->inode         = inode;
@@ -1049,6 +1048,7 @@ static inode_t *fat32_make_inode(fat32_sb_info *sbi, const char *name, const fat
         inode->gid = de->access_date;
     }
     strncpy(inode->path, name, MAX_FILE_PATH - 1);
+    inode->path[MAX_FILE_PATH - 1] = '\0';
 
     if (fi->attr & FAT_ATTR_DIRECTORY) {
         inode->type = INODE_DIR;
@@ -1138,7 +1138,7 @@ static inode_t *fat32_lookup(const inode_t *dir, const char *target)
     fat32_sb_info *sbi = di->sbi;
     const uint32_t dir_first = dir_first_cluster(di);
 
-    struct dir_found *f = malloc_safe(sizeof(struct dir_found));
+    struct dir_found *f = malloc(sizeof(struct dir_found));
     if (!f)
         return nullptr;
     inode_t *inode = nullptr;
@@ -1286,7 +1286,6 @@ static ssize_t write_at(fat32_inode_info *fi, const uint64_t pos, const void *sr
         zero = malloc_safe(zero_len);
         if (!zero)
             return -ENOMEM;
-        memset(zero, 0, zero_len);
     }
 
     const uint32_t run_max = src ? WRITE_RUN_MAX : zero_len;
@@ -1406,7 +1405,7 @@ static int fat32_readdir(file_t *file, struct vfs_dirent *out)
     int r = iter_init(&it, fi->sbi, dir_first_cluster(fi), (uint32_t)file->file_position);
     if (r)
         return r;
-    struct dir_found *f = malloc_safe(sizeof(struct dir_found));
+    struct dir_found *f = malloc(sizeof(struct dir_found));
     if (!f) {
         iter_done(&it);
         return -ENOMEM;
@@ -1431,7 +1430,7 @@ static bool dir_empty(fat32_sb_info *sbi, const uint32_t dir_first)
     struct dir_iter it;
     if (iter_init(&it, sbi, dir_first, 0) < 0)
         return false;
-    struct dir_found *f = malloc_safe(sizeof(struct dir_found));
+    struct dir_found *f = malloc(sizeof(struct dir_found));
     bool empty = f != nullptr;
     while (empty && iter_next(&it, f) > 0) {
         if (strcmp(f->name, ".") != nullptr && strcmp(f->name, "..") != nullptr)
@@ -1489,7 +1488,7 @@ static int fat32_create(inode_t *dir, const char *name, const bool directory)
     if (!valid_name(name))
         return -EINVAL;
 
-    struct dir_found *f = malloc_safe(sizeof(struct dir_found));
+    struct dir_found *f = malloc(sizeof(struct dir_found));
     if (!f)
         return -ENOMEM;
     int err = find_entry(sbi, dir_first, name, f);
@@ -1552,7 +1551,7 @@ static int fat32_unlink(inode_t *dir, const char *name, const bool directory)
     fat32_sb_info *sbi = di->sbi;
     const uint32_t dir_first = dir_first_cluster(di);
 
-    struct dir_found *f = malloc_safe(sizeof(struct dir_found));
+    struct dir_found *f = malloc(sizeof(struct dir_found));
     if (!f)
         return -ENOMEM;
     int err = find_entry(sbi, dir_first, name, f);
@@ -1582,8 +1581,8 @@ static int fat32_rename(inode_t *old_dir, const char *old_name, inode_t *new_dir
     if (!valid_name(new_name))
         return -EINVAL;
 
-    struct dir_found *src = malloc_safe(sizeof(struct dir_found));
-    struct dir_found *dst = malloc_safe(sizeof(struct dir_found));
+    struct dir_found *src = malloc(sizeof(struct dir_found));
+    struct dir_found *dst = malloc(sizeof(struct dir_found));
     int err = src && dst ? find_entry(sbi, old_first, old_name, src) : -ENOMEM;
     if (err)
         goto out;
@@ -1850,7 +1849,6 @@ static inode_t *fat32_mount(void *blob)
 
     fat32_sb_info *sbi = malloc_safe(sizeof(fat32_sb_info));
     if (!sbi) return nullptr;
-    memset(sbi, 0, sizeof(*sbi));
 
     sbi->bdev                = bdev;
     sbi->bs                  = bs;
@@ -1879,8 +1877,6 @@ static inode_t *fat32_mount(void *blob)
         free(sbi);
         return nullptr;
     }
-    memset(root, 0, sizeof(*root));
-    memset(fi, 0, sizeof(*fi));
     fi->sbi = sbi;
     fi->inode = root;
     fi->refs = 1;
@@ -1971,7 +1967,7 @@ struct block_device *fat32_create_bdev(const uint32_t unique_id,
                                        const struct block_device_ops *ops,
                                        void *private)
 {
-    struct block_device *bdev = malloc_safe(sizeof(struct block_device));
+    struct block_device *bdev = malloc(sizeof(struct block_device));
     if (!bdev)
         return nullptr;
     bdev->unique_id   = unique_id;

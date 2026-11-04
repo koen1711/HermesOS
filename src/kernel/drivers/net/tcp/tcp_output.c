@@ -282,7 +282,7 @@ static void tcp_checksum_and_send(const struct inpcb* inp, struct netbuf* nb,
 static struct netbuf* tcp_build_segment(const struct tcpcb* tp, const struct tcp_txplan* tx,
                                         const uint8_t* opt, const size_t optlen, const uint32_t win)
 {
-    struct netbuf* nb = netbuf_alloc_cluster_uninit(true);
+    struct netbuf* nb = netbuf_alloc_cluster(true);
     if (!nb)
         return nullptr;
 

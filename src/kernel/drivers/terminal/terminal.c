@@ -160,7 +160,7 @@ void terminal_printf(const char* format, ...)
     if (required_length < 0)
         return;
 
-    char* buf = (size_t)required_length < sizeof(small) ? small : malloc_safe(required_length + 1);
+    char* buf = (size_t)required_length < sizeof(small) ? small : malloc(required_length + 1);
     if (buf == nullptr)
         return;
 

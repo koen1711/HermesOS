@@ -105,7 +105,7 @@ static int shm_create(struct inode_s* dir, const char* name, const bool director
         return -EEXIST;
     if (strlen(name) >= MAX_FILE_PATH)
         return -ENAMETOOLONG;
-    struct shm_entry* e = malloc_safe(sizeof(struct shm_entry));
+    struct shm_entry* e = malloc(sizeof(struct shm_entry));
     inode_t* node = mem_inode_create();
     if (!e || !node) {
         free(e);
@@ -115,6 +115,7 @@ static int shm_create(struct inode_s* dir, const char* name, const bool director
     }
 
     strncpy(e->name, name, sizeof(e->name) - 1);
+    e->name[sizeof(e->name) - 1] = '\0';
     e->node = node;
     e->next = shm_files;
     shm_files = e;

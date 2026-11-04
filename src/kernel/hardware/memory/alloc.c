@@ -19,6 +19,7 @@
 #define CACHE_BATCH 16
 #define BIN_SLAB_PAGES 16
 #define MEMCPY_REP_THRESHOLD 512
+#define MEMSET_REP_THRESHOLD 512
 
 extern void* _kernel_virtual_end;
 
@@ -289,6 +290,10 @@ static inline void rep_movsb(void* dest, const void* src, uintptr_t size) {
     asm volatile("rep movsb" : "+D"(dest), "+S"(src), "+c"(size) : : "memory");
 }
 
+static inline void rep_stosb(void* dest, const uint8_t value, uintptr_t size) {
+    asm volatile("rep stosb" : "+D"(dest), "+c"(size) : "a"(value) : "memory");
+}
+
 typedef uint64_t __attribute__((aligned(1), may_alias)) unaligned_u64;
 typedef uint32_t __attribute__((aligned(1), may_alias)) unaligned_u32;
 typedef uint16_t __attribute__((aligned(1), may_alias)) unaligned_u16;
@@ -330,18 +335,44 @@ void* (memcpy)(void* dest, const void* src, const uintptr_t size) {
     return dest;
 }
 
-bool memcmp(void* v1, void* v2, const uintptr_t size) {
+__attribute__((optimize("no-tree-loop-distribute-patterns")))
+int (memcmp)(const void* v1, const void* v2, const uintptr_t size) {
+    const uint8_t* a = v1;
+    const uint8_t* b = v2;
     for (uintptr_t i = 0; i < size; i++) {
-        if (((uint8_t*)v1)[i] != ((uint8_t*)v2)[i]) {
-            return true;
+        if (a[i] != b[i]) {
+            return a[i] < b[i] ? -1 : 1;
         }
     }
-    return false;
+    return 0;
 }
 
-void* memset(void* dest, const int value, uintptr_t size) {
-    void* d = dest;
-    asm volatile("rep stosb" : "+D"(d), "+c"(size) : "a"((uint8_t)value) : "memory");
+__attribute__((optimize("no-tree-loop-distribute-patterns")))
+void* (memset)(void* dest, const int value, const uintptr_t size) {
+    uint8_t* d = dest;
+    const uint64_t pattern = (uint8_t)value * 0x0101010101010101ULL;
+
+    if (size > MEMSET_REP_THRESHOLD) {
+        rep_stosb(dest, (uint8_t)value, size);
+    } else if (size > 16) {
+        uint8_t* const last = d + size - 8;
+        while (d < last) {
+            *(unaligned_u64*)d = pattern;
+            d += 8;
+        }
+        *(unaligned_u64*)last = pattern;
+    } else if (size >= 8) {
+        *(unaligned_u64*)d = pattern;
+        *(unaligned_u64*)(d + size - 8) = pattern;
+    } else if (size >= 4) {
+        *(unaligned_u32*)d = (uint32_t)pattern;
+        *(unaligned_u32*)(d + size - 4) = (uint32_t)pattern;
+    } else if (size >= 2) {
+        *(unaligned_u16*)d = (uint16_t)pattern;
+        *(unaligned_u16*)(d + size - 2) = (uint16_t)pattern;
+    } else if (size) {
+        *d = (uint8_t)pattern;
+    }
     return dest;
 }
 
@@ -350,7 +381,8 @@ void* calloc(const uintptr_t num, const uintptr_t size) {
     return malloc_safe(num * size);
 }
 
-void* memmove(void* dest, const void* src, const uintptr_t size) {
+__attribute__((optimize("no-tree-loop-distribute-patterns")))
+void* (memmove)(void* dest, const void* src, const uintptr_t size) {
     if (dest <= src || (const uint8_t*)src + size <= (uint8_t*)dest) {
         rep_movsb(dest, src, size);
     } else if (size) {
@@ -374,7 +406,7 @@ void strncpy(char* dest, const char* src, const size_t n) {
 
 void* realloc(void* ptr, const uintptr_t size) {
     if (ptr == nullptr) {
-        return malloc_safe(size);
+        return malloc(size);
     }
     if (size == 0) {
         free(ptr);
@@ -385,7 +417,7 @@ void* realloc(void* ptr, const uintptr_t size) {
     const uint64_t old_size = block->size;
     if (size <= old_size) return ptr;
 
-    void* new_ptr = malloc_safe(size);
+    void* new_ptr = malloc(size);
     if (new_ptr) {
         memcpy(new_ptr, ptr, old_size);
         free(ptr);

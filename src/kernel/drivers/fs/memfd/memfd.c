@@ -317,12 +317,13 @@ static file_operations_t memfd_fops = {
 inode_t* mem_inode_create()
 {
     struct memfd* m = malloc_safe(sizeof(struct memfd));
-    inode_t* node = malloc_safe(sizeof(inode_t));
+    inode_t* node = malloc(sizeof(inode_t));
     if (!m || !node) {
         free(m);
         free(node);
         return nullptr;
     }
+    memset(node, 0, offsetof(inode_t, path) + 1);
 
     node->id = next_ino++;
     node->type = INODE_FILE;
@@ -343,7 +344,7 @@ void mem_inode_unlink(inode_t* node)
 int vfs_memfd_create(const char* name)
 {
     inode_t* node = mem_inode_create();
-    struct file_s* f = malloc_safe(sizeof(struct file_s));
+    struct file_s* f = malloc(sizeof(struct file_s));
     if (!node || !f) {
         if (node)
             mem_inode_free(node);
@@ -353,12 +354,13 @@ int vfs_memfd_create(const char* name)
     struct memfd* m = node->private_data;
     m->opens = 1;
     m->unlinked = true;
-    memset(f, 0, sizeof(*f));
+    memset(f, 0, offsetof(struct file_s, filename));
     f->node = node;
     f->flags = O_RDONLY | O_WRONLY;
     f->ref_count = 1;
     strncpy(f->filename, MEMFD_PREFIX, sizeof(f->filename) - 1);
     strncpy(f->filename + sizeof(MEMFD_PREFIX) - 1, name, sizeof(f->filename) - sizeof(MEMFD_PREFIX));
+    f->filename[sizeof(f->filename) - 1] = '\0';
     if (vfs_install(f) < 0) {
         mem_inode_free(node);
         free(f);

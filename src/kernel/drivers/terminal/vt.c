@@ -95,8 +95,8 @@ static void vt_reset(vt_t* vt)
 int vt_init(vt_t* vt, const size_t cols, const size_t rows)
 {
     memset(vt, 0, sizeof(*vt));
-    vt->cells = malloc_safe(cols * rows * sizeof(vt_cell));
-    vt->dirty = malloc_safe(rows);
+    vt->cells = malloc(cols * rows * sizeof(vt_cell));
+    vt->dirty = malloc(rows);
     if (vt->cells == nullptr || vt->dirty == nullptr) {
         free(vt->cells);
         free(vt->dirty);
@@ -112,8 +112,8 @@ int vt_resize(vt_t* vt, const size_t cols, const size_t rows)
 {
     if (cols == vt->cols && rows == vt->rows)
         return 0;
-    vt_cell* cells = malloc_safe(cols * rows * sizeof(vt_cell));
-    uint8_t* dirty = malloc_safe(rows);
+    vt_cell* cells = malloc(cols * rows * sizeof(vt_cell));
+    uint8_t* dirty = malloc(rows);
     if (cells == nullptr || dirty == nullptr) {
         free(cells);
         free(dirty);

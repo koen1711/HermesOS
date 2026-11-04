@@ -48,7 +48,6 @@ void netbuf_initialize();
 
 struct netbuf* netbuf_alloc(bool pkthdr);
 struct netbuf* netbuf_alloc_cluster(bool pkthdr);
-struct netbuf* netbuf_alloc_cluster_uninit(bool pkthdr);
 
 struct netbuf* netbuf_alloc_packet(size_t len);
 void netbuf_free(struct netbuf* nb);

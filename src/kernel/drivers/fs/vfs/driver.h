@@ -107,15 +107,14 @@ typedef struct inode_s {
     uint32_t mode;
     uint32_t uid;
     uint32_t gid;
-    char path[MAX_FILE_PATH];
     file_operations_t* fops;
     inode_operations_t* iops;
     void* private_data;
+    char path[MAX_FILE_PATH];
 } inode_t;
 
 typedef struct file_s {
     size_t id;
-    char filename[MAX_PATH_LENGTH];
     inode_t* node;
     size_t file_position;
     int flags;
@@ -123,6 +122,7 @@ typedef struct file_s {
     struct mounted_file_system_s* mount;
     int ref_count;
     struct file_s* deferred_next;
+    char filename[MAX_PATH_LENGTH];
 } file_t;
 
 #endif //OS_DRIVER_H

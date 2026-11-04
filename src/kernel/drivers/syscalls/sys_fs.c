@@ -1010,7 +1010,7 @@ long sys_sendfile(const int out_fd, const int in_fd, int64_t* uoffset, const siz
     if (uoffset)
         in->file_position = (size_t)offset;
 
-    uint8_t* buf = malloc_safe(PAGE_SIZE);
+    uint8_t* buf = malloc(PAGE_SIZE);
     if (buf == nullptr)
         return -ENOMEM;
     size_t done = 0;
@@ -1152,7 +1152,7 @@ long sys_fallocate(const int fd, const int mode, const int64_t offset, const int
 static long copy_range(struct file_s* in, int64_t* in_pos, struct file_s* out, int64_t* out_pos, const size_t len,
                        const bool once)
 {
-    uint8_t* buf = malloc_safe(COPY_CHUNK);
+    uint8_t* buf = malloc(COPY_CHUNK);
     if (buf == nullptr)
         return -ENOMEM;
     size_t done = 0;

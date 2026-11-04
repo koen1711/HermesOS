@@ -453,7 +453,7 @@ int ata_flush_device(const uint32_t unique_id)
 }
 
 boot_type detect_boot_type(const ata_device* dev) {
-    uint8_t* sector = malloc_safe(512);
+    uint8_t* sector = malloc(512);
     if (!sector) return BOOT_UNKNOWN;
 
     if (ata_read_sector(dev, 17, (uint16_t*)sector) == 0) {

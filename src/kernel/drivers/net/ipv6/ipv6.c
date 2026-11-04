@@ -45,13 +45,13 @@ struct ipv6_reassemble {
     struct ipv6_frag* frags;
     uint16_t n_frags;
     uint32_t total_len;
-    uint8_t unfrag[IPV6_MAX_UNFRAG];
     uint16_t unfrag_len;
     uint16_t prev_nh;
     uint8_t next_header;
     struct netif* rcvif;
     uint32_t flags;
     uint64_t expires;
+    uint8_t unfrag[IPV6_MAX_UNFRAG];
 };
 
 static struct dlist reassemble_queues;
@@ -211,7 +211,7 @@ int ipv6_addr_add(struct netif* nif, const struct in6_addr* addr, const uint8_t 
     if (prefix_len > 128 || ipv6_addr_is_multicast(addr) || ipv6_addr_is_unspecified(addr))
         return -EINVAL;
 
-    struct ipv6_ifaddr* ifa = malloc_safe(sizeof(struct ipv6_ifaddr));
+    struct ipv6_ifaddr* ifa = malloc(sizeof(struct ipv6_ifaddr));
     if (!ifa)
         return -ENOMEM;
 
@@ -709,12 +709,12 @@ struct netbuf* ipv6_reassemble(struct netbuf* nb, const size_t frag_offset)
             dlist_remove(&reassemble_queues, &old->link);
             ipv6_reassemble_free(old);
         }
-        q = malloc_safe(sizeof(struct ipv6_reassemble));
+        q = malloc(sizeof(struct ipv6_reassemble));
         if (!q) {
             spinlock_release_irqrestore(&reassemble_lock, irq);
             goto drop;
         }
-        memset(q, 0, sizeof(struct ipv6_reassemble));
+        memset(q, 0, offsetof(struct ipv6_reassemble, unfrag));
         q->src = ip.src;
         q->dst = ip.dst;
         q->id = fh.id;
@@ -736,7 +736,7 @@ struct netbuf* ipv6_reassemble(struct netbuf* nb, const size_t frag_offset)
     }
     if (q->total_len && offset + len > q->total_len)
         bad = true;
-    struct ipv6_frag* frag = bad ? nullptr : malloc_safe(sizeof(struct ipv6_frag));
+    struct ipv6_frag* frag = bad ? nullptr : malloc(sizeof(struct ipv6_frag));
     if (!frag) {
         dlist_remove(&reassemble_queues, &q->link);
         ipv6_reassemble_free(q);

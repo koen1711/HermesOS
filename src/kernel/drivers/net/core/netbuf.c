@@ -19,8 +19,11 @@ static struct netbuf* netbuf_setup(struct netbuf* nb, const size_t size, const b
 
 static struct netbuf* netbuf_alloc_sized(const size_t size, const bool pkthdr)
 {
-    struct netbuf* nb = malloc_safe(sizeof(struct netbuf) + size);
-    return nb ? netbuf_setup(nb, size, pkthdr) : nullptr;
+    struct netbuf* nb = malloc(sizeof(struct netbuf) + size);
+    if (!nb)
+        return nullptr;
+    memset(nb, 0, sizeof(struct netbuf));
+    return netbuf_setup(nb, size, pkthdr);
 }
 
 struct netbuf* netbuf_alloc(bool pkthdr)
@@ -31,15 +34,6 @@ struct netbuf* netbuf_alloc(bool pkthdr)
 struct netbuf* netbuf_alloc_cluster(bool pkthdr)
 {
     return netbuf_alloc_sized(NETBUF_CLUSTER_SIZE, pkthdr);
-}
-
-struct netbuf* netbuf_alloc_cluster_uninit(const bool pkthdr)
-{
-    struct netbuf* nb = malloc(sizeof(struct netbuf) + NETBUF_CLUSTER_SIZE);
-    if (!nb)
-        return nullptr;
-    memset(nb, 0, sizeof(struct netbuf));
-    return netbuf_setup(nb, NETBUF_CLUSTER_SIZE, pkthdr);
 }
 
 struct netbuf* netbuf_alloc_packet(const size_t len)
