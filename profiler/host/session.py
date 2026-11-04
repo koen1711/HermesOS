@@ -219,7 +219,7 @@ def check_kernel(vm, session: dict) -> None:
                 f"is): rebuild the image with run-profiler.sh using DISK_MODE=continue or fresh")
 
 
-def start(vm, rate_hz: int = DEFAULT_RATE_HZ, timeout_s: float = 5) -> None:
+def start(vm, rate_hz: int = DEFAULT_RATE_HZ, timeout_s: float = 10) -> None:
     session = load_session()
     if not _guest_running(vm, session):
         raise ProfilerError(f"QEMU is not running: {RUN_SCRIPT_HINT}")
