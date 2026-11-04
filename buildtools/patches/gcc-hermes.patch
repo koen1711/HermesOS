@@ -55,11 +55,12 @@ diff --color -ruN a/gcc/config/hermes.h b/gcc/config/hermes.h
 diff --color -ruN a/gcc/config.gcc b/gcc/config.gcc
 --- a/gcc/config.gcc	2026-10-28 21:50:54.451406826 +0100
 +++ b/gcc/config.gcc	2026-10-28 21:50:54.453406870 +0100
-@@ -932,6 +932,13 @@
+@@ -932,6 +932,14 @@
    rust_target_objs="${rust_target_objs} freebsd-rust.o"
    target_has_targetrustm=yes
    ;;
 +*-*-hermes*)
++  extra_options="${extra_options} gnu-user.opt"
 +  tmake_file="t-slibgcc"
 +  gas=yes
 +  gnu_ld=yes
