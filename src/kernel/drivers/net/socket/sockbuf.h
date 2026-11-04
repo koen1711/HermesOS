@@ -41,7 +41,7 @@ void sockbuf_drop(struct sockbuf* sb, size_t len);
 void sockbuf_drop_record(struct sockbuf* sb);
 size_t sockbuf_space(const struct sockbuf* sb);
 
-void sockbuf_copy(const struct sockbuf* sb, size_t offset, size_t len, void* out);
+size_t sockbuf_copy(const struct sockbuf* sb, size_t offset, size_t len, void* out);
 
 int sockbuf_wait(struct sockbuf* sb);
 int sockbuf_timedwait(struct sockbuf* sb, uint64_t timeout);

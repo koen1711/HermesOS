@@ -371,7 +371,9 @@ bool e1000_tx_init(struct e1000_device* dev)
     e1000_write_command(dev, REG_TXDESCTAIL, 0);
     dev->tx_cur = 0;
     dev->tx_tail = 0;
-    dev->tx_ready = 0;
+    dev->tx_pending = nullptr;
+    dev->tx_pending_count = 0;
+    dev->tx_busy = false;
     dev->tx_clean = 0;
 
     if (dev->pci.device_id == E1000_I217 || dev->pci.device_id == E1000_82577LM) {
@@ -493,48 +495,24 @@ int e1000_netif_init(struct netif* nif)
     return 0;
 }
 
-void e1000_tx_flush(struct netif* nif)
+static void e1000_tx_ring_doorbell(struct e1000_device* dev)
 {
-    const auto dev = (struct e1000_device*)nif->softc;
-    __atomic_store_n(&dev->tx_bell_pending, true, __ATOMIC_SEQ_CST);
-    while (__atomic_load_n(&dev->tx_bell_pending, __ATOMIC_SEQ_CST)
-           && !__atomic_exchange_n(&dev->tx_bell_busy, true, __ATOMIC_ACQUIRE)) {
-        __atomic_store_n(&dev->tx_bell_pending, false, __ATOMIC_SEQ_CST);
-        const uint16_t ready = __atomic_load_n(&dev->tx_ready, __ATOMIC_ACQUIRE);
-        if (__atomic_load_n(&dev->tx_tail, __ATOMIC_RELAXED) != ready) {
-            __atomic_store_n(&dev->tx_tail, ready, __ATOMIC_RELAXED);
-            e1000_write_command(dev, REG_TXDESCTAIL, ready);
-        }
-        __atomic_store_n(&dev->tx_bell_busy, false, __ATOMIC_SEQ_CST);
+    if (dev->tx_tail != dev->tx_cur) {
+        dev->tx_tail = dev->tx_cur;
+        e1000_write_command(dev, REG_TXDESCTAIL, dev->tx_cur);
     }
 }
 
-static void e1000_tx_flush_wait(struct netif* nif)
-{
-    const auto dev = (struct e1000_device*)nif->softc;
-    e1000_tx_flush(nif);
-    while (__atomic_load_n(&dev->tx_bell_busy, __ATOMIC_ACQUIRE)) {
-        smp_spin_poll();
-        asm volatile("pause");
-    }
-}
-
-int e1000_transmit(struct netif* nif, struct netbuf* nb)
+static void e1000_tx_enqueue(struct netif* nif, struct netbuf* nb)
 {
     const auto dev = (struct e1000_device*)nif->softc;
 
     size_t length = 0;
     for (const struct netbuf* b = nb; b; b = b->next)
         length += b->len;
-    if (length == 0 || length > E1000_MAX_FRAME) {
-        netbuf_free_chain(nb);
-        nif->stats.tx_errors++;
-        return -EMSGSIZE;
-    }
 
-    e1000_reclaim_tx(dev);
     if (e1000_tx_free(dev) < E1000_TX_BATCH) {
-        e1000_tx_flush_wait(nif);
+        e1000_tx_ring_doorbell(dev);
         e1000_reclaim_tx(dev);
     }
     const uint16_t avail = e1000_tx_free(dev);
@@ -563,7 +541,7 @@ int e1000_transmit(struct netif* nif, struct netbuf* nb)
             nif->stats.tx_dropped++;
         else
             nif->stats.tx_errors++;
-        return err;
+        return;
     }
 
     uint16_t last = dev->tx_cur;
@@ -589,12 +567,82 @@ int e1000_transmit(struct netif* nif, struct netbuf* nb)
 
     nif->stats.tx_packets++;
     nif->stats.tx_bytes += length;
-    __atomic_store_n(&dev->tx_ready, dev->tx_cur, __ATOMIC_RELEASE);
-    const uint16_t tail = __atomic_load_n(&dev->tx_tail, __ATOMIC_RELAXED);
-    const uint16_t unsent = (dev->tx_cur + E1000_NUM_TX_DESC - tail) % E1000_NUM_TX_DESC;
+
+    const uint16_t unsent = (dev->tx_cur + E1000_NUM_TX_DESC - dev->tx_tail) % E1000_NUM_TX_DESC;
     if (unsent >= E1000_TX_BATCH)
-        e1000_tx_flush_wait(nif);
-    else if (!netif_tx_defer(nif))
+        e1000_tx_ring_doorbell(dev);
+}
+
+// A single owner drains; a CPU that loses tx_busy leaves its frames for the owner's recheck.
+void e1000_tx_flush(struct netif* nif)
+{
+    const auto dev = (struct e1000_device*)nif->softc;
+    for (;;) {
+        if (!__atomic_load_n(&dev->tx_pending, __ATOMIC_SEQ_CST))
+            return;
+        const uint64_t flags = irq_save();
+        if (__atomic_exchange_n(&dev->tx_busy, true, __ATOMIC_ACQUIRE)) {
+            irq_restore(flags);
+            return;
+        }
+
+        struct netbuf* nb = __atomic_exchange_n(&dev->tx_pending, nullptr, __ATOMIC_ACQUIRE);
+        struct netbuf* ordered = nullptr;
+        uint32_t count = 0;
+        while (nb) {
+            struct netbuf* next = nb->next_pkt;
+            nb->next_pkt = ordered;
+            ordered = nb;
+            nb = next;
+            count++;
+        }
+        __atomic_sub_fetch(&dev->tx_pending_count, count, __ATOMIC_RELAXED);
+
+        e1000_reclaim_tx(dev);
+        while (ordered) {
+            struct netbuf* next = ordered->next_pkt;
+            ordered->next_pkt = nullptr;
+            e1000_tx_enqueue(nif, ordered);
+            ordered = next;
+        }
+        e1000_tx_ring_doorbell(dev);
+
+        __atomic_store_n(&dev->tx_busy, false, __ATOMIC_SEQ_CST);
+        irq_restore(flags);
+    }
+}
+
+static void e1000_tx_try_reclaim(struct netif* nif)
+{
+    const auto dev = (struct e1000_device*)nif->softc;
+    const uint64_t flags = irq_save();
+    if (!__atomic_exchange_n(&dev->tx_busy, true, __ATOMIC_ACQUIRE)) {
+        e1000_reclaim_tx(dev);
+        __atomic_store_n(&dev->tx_busy, false, __ATOMIC_SEQ_CST);
+    }
+    irq_restore(flags);
+    e1000_tx_flush(nif);
+}
+
+int e1000_transmit(struct netif* nif, struct netbuf* nb)
+{
+    const auto dev = (struct e1000_device*)nif->softc;
+
+    size_t length = 0;
+    for (const struct netbuf* b = nb; b; b = b->next)
+        length += b->len;
+    if (length == 0 || length > E1000_MAX_FRAME) {
+        netbuf_free_chain(nb);
+        nif->stats.tx_errors++;
+        return -EMSGSIZE;
+    }
+
+    const uint32_t pending = __atomic_add_fetch(&dev->tx_pending_count, 1, __ATOMIC_RELAXED);
+    nb->next_pkt = __atomic_load_n(&dev->tx_pending, __ATOMIC_RELAXED);
+    while (!__atomic_compare_exchange_n(&dev->tx_pending, &nb->next_pkt, nb, true,
+                                        __ATOMIC_SEQ_CST, __ATOMIC_RELAXED))
+        ;
+    if (pending >= E1000_TX_BATCH || !netif_tx_defer(nif))
         e1000_tx_flush(nif);
     return 0;
 }
@@ -637,12 +685,12 @@ int e1000_ioctl(struct netif* nif, const uint32_t cmd, void* arg)
 void e1000_qflush(struct netif* nif)
 {
     netqueue_drain(&nif->send_queue);
-    e1000_reclaim_tx(nif->softc);
+    e1000_tx_try_reclaim(nif);
 }
 
 void e1000_poll(struct netif* nif)
 {
     struct e1000_device* dev = nif->softc;
     e1000_handle_receive(dev);
-    e1000_reclaim_tx(dev);
+    e1000_tx_try_reclaim(nif);
 }

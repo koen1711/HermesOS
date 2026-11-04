@@ -170,7 +170,7 @@ size_t sockbuf_space(const struct sockbuf* sb)
     return sb->cc < sb->hiwat ? sb->hiwat - sb->cc : 0;
 }
 
-void sockbuf_copy(const struct sockbuf* sb, size_t offset, size_t len, void* out)
+size_t sockbuf_copy(const struct sockbuf* sb, size_t offset, size_t len, void* out)
 {
     uint8_t* dst = out;
     for (const struct netbuf* rec = sb->head; rec && len; rec = rec->next_pkt) {
@@ -188,6 +188,7 @@ void sockbuf_copy(const struct sockbuf* sb, size_t offset, size_t len, void* out
             offset = 0;
         }
     }
+    return dst - (uint8_t*)out;
 }
 
 static int sockbuf_wait_id(const struct sockbuf* sb)

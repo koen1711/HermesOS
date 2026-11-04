@@ -36,10 +36,10 @@ struct e1000_device {
     uint16_t rx_cur;
     uint16_t tx_cur;
     uint16_t tx_tail;
-    uint16_t tx_ready;
     uint16_t tx_clean;
-    bool tx_bell_busy;
-    bool tx_bell_pending;
+    struct netbuf* tx_pending;
+    uint32_t tx_pending_count;
+    bool tx_busy;
     spinlock_t rx_lock;
     bool irq_registered;
 };

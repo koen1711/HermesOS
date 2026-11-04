@@ -282,7 +282,7 @@ static void tcp_checksum_and_send(const struct inpcb* inp, struct netbuf* nb,
 static struct netbuf* tcp_build_segment(const struct tcpcb* tp, const struct tcp_txplan* tx,
                                         const uint8_t* opt, const size_t optlen, const uint32_t win)
 {
-    struct netbuf* nb = netbuf_alloc_cluster(true);
+    struct netbuf* nb = netbuf_alloc_cluster_uninit(true);
     if (!nb)
         return nullptr;
 
@@ -292,8 +292,11 @@ static struct netbuf* tcp_build_segment(const struct tcpcb* tp, const struct tcp
     tcp_fill_header(th, inp->lport, inp->fport, tx->seq, tp->rcv_nxt, tx->flags,
                     tcp_window_field(tp, win, tx->flags), hlen);
     memcpy(th + 1, opt, optlen);
-    if (tx->len)
-        sockbuf_copy(&inp->socket->snd, tx->off, tx->len, nb->data + hlen);
+    if (tx->len) {
+        const size_t copied = sockbuf_copy(&inp->socket->snd, tx->off, tx->len, nb->data + hlen);
+        if (copied < tx->len)
+            memset(nb->data + hlen + copied, 0, tx->len - copied);
+    }
     nb->len = nb->pkt_len = hlen + tx->len;
     return nb;
 }

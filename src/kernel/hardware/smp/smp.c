@@ -32,7 +32,7 @@ static int ncpus = 1;
 struct owner_lock {
     volatile uint32_t locked;
     volatile int owner;
-};
+} __attribute__((aligned(64)));
 
 static struct owner_lock kernel_lock = { .owner = -1 };
 static struct owner_lock net_lock = { .owner = -1 };
