@@ -212,8 +212,8 @@ static void tcp_plan_fin(const struct tcpcb* tp, const uint32_t sb_cc, struct tc
 
 static bool tcp_nagle_allows(const struct tcpcb* tp, const uint32_t sb_cc, const struct tcp_txplan* tx)
 {
-    const bool idle = tp->snd_max == tp->snd_una;
-    return (idle || (tp->t_flags & TF_NODELAY)) && tx->off + tx->len >= sb_cc;
+    (void)tp;
+    return tx->off + tx->len >= sb_cc;
 }
 
 static bool tcp_window_update_due(const struct tcpcb* tp)
