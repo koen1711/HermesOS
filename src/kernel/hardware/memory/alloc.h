@@ -16,7 +16,8 @@ void free(void* ptr);
 
 void* calloc(uintptr_t num, uintptr_t size);
 
-void memcpy(void* dest, const void* src, uintptr_t size);
+void* memcpy(void* dest, const void* src, uintptr_t size);
+#define memcpy(dest, src, size) __builtin_memcpy((dest), (src), (size))
 bool memcmp(void* v1, void* v2, uintptr_t size);
 void* memset(void* dest, int value, uintptr_t size);
 void* memmove(void* dest, const void* src, uintptr_t size);

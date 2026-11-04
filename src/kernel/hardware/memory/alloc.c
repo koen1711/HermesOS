@@ -15,6 +15,7 @@
 #define CLASS_COUNT 7
 #define CLASS_MAX_SIZE (1 << (CLASS_MIN_SHIFT + CLASS_COUNT - 1))
 #define CLASS_SLAB_PAGES 16
+#define MEMCPY_REP_THRESHOLD 512
 
 extern void* _kernel_virtual_end;
 
@@ -262,8 +263,49 @@ void free(void* ptr) {
     spinlock_release_irqrestore(&heap_lock, flags);
 }
 
-void memcpy(void* dest, const void* src, uintptr_t size) {
+static inline void rep_movsb(void* dest, const void* src, uintptr_t size) {
     asm volatile("rep movsb" : "+D"(dest), "+S"(src), "+c"(size) : : "memory");
+}
+
+typedef uint64_t __attribute__((aligned(1), may_alias)) unaligned_u64;
+typedef uint32_t __attribute__((aligned(1), may_alias)) unaligned_u32;
+typedef uint16_t __attribute__((aligned(1), may_alias)) unaligned_u16;
+
+__attribute__((optimize("no-tree-loop-distribute-patterns")))
+void* (memcpy)(void* dest, const void* src, const uintptr_t size) {
+    uint8_t* d = dest;
+    const uint8_t* s = src;
+
+    if (size > MEMCPY_REP_THRESHOLD) {
+        rep_movsb(dest, src, size);
+    } else if (size > 16) {
+        const uint64_t tail = *(const unaligned_u64*)(s + size - 8);
+        uint8_t* const last = d + size - 8;
+        while (d < last) {
+            *(unaligned_u64*)d = *(const unaligned_u64*)s;
+            d += 8;
+            s += 8;
+        }
+        *(unaligned_u64*)last = tail;
+    } else if (size >= 8) {
+        const uint64_t head = *(const unaligned_u64*)s;
+        const uint64_t tail = *(const unaligned_u64*)(s + size - 8);
+        *(unaligned_u64*)d = head;
+        *(unaligned_u64*)(d + size - 8) = tail;
+    } else if (size >= 4) {
+        const uint32_t head = *(const unaligned_u32*)s;
+        const uint32_t tail = *(const unaligned_u32*)(s + size - 4);
+        *(unaligned_u32*)d = head;
+        *(unaligned_u32*)(d + size - 4) = tail;
+    } else if (size >= 2) {
+        const uint16_t head = *(const unaligned_u16*)s;
+        const uint16_t tail = *(const unaligned_u16*)(s + size - 2);
+        *(unaligned_u16*)d = head;
+        *(unaligned_u16*)(d + size - 2) = tail;
+    } else if (size) {
+        *d = *s;
+    }
+    return dest;
 }
 
 bool memcmp(void* v1, void* v2, const uintptr_t size) {
@@ -288,7 +330,7 @@ void* calloc(const uintptr_t num, const uintptr_t size) {
 
 void* memmove(void* dest, const void* src, const uintptr_t size) {
     if (dest <= src || (const uint8_t*)src + size <= (uint8_t*)dest) {
-        memcpy(dest, src, size);
+        rep_movsb(dest, src, size);
     } else if (size) {
         void* d = (uint8_t*)dest + size - 1;
         const void* s = (const uint8_t*)src + size - 1;

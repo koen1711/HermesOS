@@ -10,54 +10,6 @@ static uint16_t inet_fold(uint64_t sum)
     return sum;
 }
 
-static uint64_t inet_sum(const uint8_t *buf, size_t len)
-{
-    uint64_t s0 = 0, s1 = 0;
-    uint32_t w0, w1;
-
-    while (len >= 8) {
-        memcpy(&w0, buf, 4);
-        memcpy(&w1, buf + 4, 4);
-        s0 += w0;
-        s1 += w1;
-        buf += 8;
-        len -= 8;
-    }
-    if (len >= 4) {
-        memcpy(&w0, buf, 4);
-        s0 += w0;
-        buf += 4;
-        len -= 4;
-    }
-    if (len >= 2) {
-        uint16_t h;
-        memcpy(&h, buf, 2);
-        s0 += h;
-        buf += 2;
-        len -= 2;
-    }
-    if (len) {
-        uint16_t h = 0;
-        memcpy(&h, buf, 1);
-        s0 += h;
-    }
-
-    uint64_t sum = s0 + s1;
-
-    while (sum >> 16)
-        sum = (sum & 0xffff) + (sum >> 16);
-
-#if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
-    sum = (sum & 0xff) << 8 | (sum >> 8);
-#endif
-    return sum;
-}
-
-uint16_t inet_checksum(const void* data, const size_t len)
-{
-    return ~inet_fold(inet_sum(data, len)) & 0xFFFF;
-}
-
 static uint64_t inet_sum_raw(const uint8_t *buf, size_t len)
 {
     uint64_t s0 = 0, s1 = 0;
@@ -95,6 +47,16 @@ static inline uint16_t csum_fold(uint64_t s)
     s = ((s & 0xFF) << 8) | (s >> 8);
 #endif
     return (uint16_t)s;
+}
+
+static uint64_t inet_sum(const uint8_t *buf, size_t len)
+{
+    return csum_fold(inet_sum_raw(buf, len));
+}
+
+uint16_t inet_checksum(const void* data, const size_t len)
+{
+    return ~inet_fold(inet_sum(data, len)) & 0xFFFF;
 }
 
 uint16_t inet_checksum_netbuf(const struct netbuf *nb, size_t offset, size_t len)

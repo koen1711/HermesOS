@@ -177,7 +177,7 @@ bool are_interrupts_enabled()
     asm volatile ( "pushfq\n\t"
                    "popq %0"
                    : "=g"(flags) );
-    return flags & (1 << 9);
+    return flags & 1 << 9;
 }
 
 
