@@ -202,7 +202,8 @@ void e1000_write_command(const struct e1000_device* dev, const uint16_t address,
     if (dev->bar_type == 0) {
         *(volatile uint32_t*)(dev->mem_base + address) = value;
     } else {
-        port_write_u64(dev->io_base, (uint64_t)address | (uint64_t)value << 32);
+        port_write_u32(dev->io_base, address);
+        port_write_u32(dev->io_base + 4, value);
     }
 }
 

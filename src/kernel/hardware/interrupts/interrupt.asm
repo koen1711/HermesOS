@@ -3,6 +3,7 @@
 .global trap_return
 
 .extern trap_handler
+.extern syscall_dispatch
 
 .macro TRAP_NOERR name, vector
 .global \name
@@ -168,9 +169,22 @@ syscall_entry:
     pushq %r14
     pushq %r15
 
-    cld
+    xorl %eax, %eax
+    xorl %ebx, %ebx
+    xorl %ecx, %ecx
+    xorl %edx, %edx
+    xorl %esi, %esi
+    xorl %ebp, %ebp
+    xorl %r8d, %r8d
+    xorl %r9d, %r9d
+    xorl %r10d, %r10d
+    xorl %r11d, %r11d
+    xorl %r12d, %r12d
+    xorl %r13d, %r13d
+    xorl %r14d, %r14d
+    xorl %r15d, %r15d
     movq %rsp, %rdi
-    call trap_handler
+    call syscall_dispatch
 
     movq 136(%rsp), %rcx    # rip
     cmpq 96(%rsp), %rcx     # rcx
@@ -178,6 +192,8 @@ syscall_entry:
     movq 152(%rsp), %r11    # rflags
     cmpq 32(%rsp), %r11     # r11
     jne trap_return
+    testl $0x10100, %r11d   # RF | TF
+    jnz trap_return
     cmpq $0x23, 144(%rsp)   # cs
     jne trap_return
     cmpq $0x1b, 168(%rsp)   # ss

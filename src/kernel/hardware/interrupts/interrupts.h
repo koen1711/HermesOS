@@ -40,6 +40,7 @@ void idt_initialize();
 void idt_set_entry(uint8_t index, uintptr_t handler);
 
 void trap_handler(interrupt_context* context);
+void syscall_dispatch(interrupt_context* context);
 
 extern void trap_return();
 

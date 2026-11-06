@@ -133,6 +133,12 @@ static void deliver_syscall_signals(interrupt_context* context)
         kernel_lock_exit();
 }
 
+void syscall_dispatch(interrupt_context* context)
+{
+    handle_syscall(context);
+    deliver_syscall_signals(context);
+}
+
 void trap_handler(interrupt_context* context)
 {
     const uint64_t vector = context->interrupt_number;
@@ -150,11 +156,9 @@ void trap_handler(interrupt_context* context)
         if (vector < EXCEPTION_COUNT)
             handle_exception(context);
         else if (vector == SYSCALL_VECTOR)
-            handle_syscall(context);
+            syscall_dispatch(context);
         else if (vector >= IRQ_OFFSET && vector < IRQ_OFFSET + IRQ_MAX_LINES)
             handle_pic_interrupt(context);
-        if (vector == SYSCALL_VECTOR)
-            deliver_syscall_signals(context);
     }
 
     const bool tick = vector == LAPIC_TIMER_VECTOR || vector == IRQ_OFFSET + PIT_IRQ;
