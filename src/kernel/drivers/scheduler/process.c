@@ -74,6 +74,7 @@ static void process_free(process_t *proc);
 static void set_tss(const process_t *proc);
 static void schedule();
 static void sched_switch(uint64_t flags);
+static void kick_clear();
 static volatile uint64_t poll_wake_seq;
 volatile uint64_t poll_wake_calls;
 volatile uint64_t poll_wake_woken;
@@ -109,6 +110,7 @@ scheduler_t *scheduler_get() {
 void process_yield() {
     uint64_t flags;
     spinlock_acquire_irqsave(&sched_lock, &flags);
+    kick_clear();
     if (dlist_empty(&scheduler.ready)) {
         spinlock_release_irqrestore(&sched_lock, flags);
         return;
@@ -136,17 +138,44 @@ void process_sleep(const int wait_id) {
     sched_switch(flags);
 }
 
-static void kick_idle_cpu() {
+static bool kick_pending[MAX_CPUS];
+static int kick_cursor;
+
+static void kick_clear() {
+    __atomic_store_n(&kick_pending[cpu_this()->index], false, __ATOMIC_SEQ_CST);
+}
+
+static void kick_idle_cpus(int count) {
     const int self = cpu_this()->index;
-    if (per_cpu[self].current == per_cpu[self].idle) {
+
+    if (per_cpu[self].current == per_cpu[self].idle && irq_in_interrupt()) {
+        count--;
+    }
+    const int n = cpu_count();
+    if (count <= 0 || n <= 1) {
         return;
     }
-    for (int i = 0; i < cpu_count(); i++) {
-        if (i != self && per_cpu[i].current != nullptr && per_cpu[i].current == per_cpu[i].idle) {
-            smp_kick(i);
-            return;
+    const int start = __atomic_fetch_add(&kick_cursor, 1, __ATOMIC_RELAXED);
+    for (int k = 0; k < n && count > 0; k++) {
+        const int i = (int)(((unsigned)start + (unsigned)k) % (unsigned)n);
+        if (i == self) {
+            continue;
         }
+        const process_t *cur = __atomic_load_n(&per_cpu[i].current, __ATOMIC_SEQ_CST);
+        if (cur == nullptr || cur != per_cpu[i].idle) {
+            continue;
+        }
+        if (__atomic_exchange_n(&kick_pending[i], true, __ATOMIC_SEQ_CST)) {
+            count--;
+            continue;
+        }
+        smp_kick(i);
+        count--;
     }
+}
+
+static void kick_idle_cpu() {
+    kick_idle_cpus(1);
 }
 
 void process_wakeup(const int wait_id) {
@@ -167,8 +196,8 @@ int process_wakeup_n(const int wait_id, const int count) {
         woken++;
     }
     spinlock_release_irqrestore(&sched_lock, flags);
-    if (woken && irq_in_interrupt()) {
-        kick_idle_cpu();
+    if (woken) {
+        kick_idle_cpus(woken);
     }
     return woken;
 }
@@ -183,7 +212,7 @@ void process_wake(process_t *proc) {
         dlist_insert_tail(&scheduler.ready, &proc->link);
     }
     spinlock_release_irqrestore(&sched_lock, flags);
-    if (woke && irq_in_interrupt()) {
+    if (woke) {
         kick_idle_cpu();
     }
 }
@@ -236,8 +265,8 @@ void process_wakeup_poll(const uint64_t interest) {
     }
     spinlock_release_irqrestore(&sched_lock, flags);
     __atomic_add_fetch(&poll_wake_woken, woken, __ATOMIC_RELAXED);
-    if (woken && irq_in_interrupt()) {
-        kick_idle_cpu();
+    if (woken) {
+        kick_idle_cpus(woken);
     }
 }
 
@@ -282,7 +311,7 @@ void process_interrupt(process_t *proc) {
         dlist_insert_tail(&scheduler.ready, &proc->link);
     }
     spinlock_release_irqrestore(&sched_lock, flags);
-    if (woke && irq_in_interrupt()) {
+    if (woke) {
         kick_idle_cpu();
     }
 }
@@ -804,6 +833,7 @@ static void schedule() {
     process_t *prev = cpu->current;
     process_t *next;
 
+    kick_clear();
     if (dlist_empty(&scheduler.ready)) {
         next = cpu->idle;
     }
@@ -814,7 +844,7 @@ static void schedule() {
     }
 
     next->state = PROC_SLOT_RUNNING;
-    cpu->current = next;
+    __atomic_store_n(&cpu->current, next, __ATOMIC_SEQ_CST);
 
     if (prev != next) {
         switch_process(prev, next);
