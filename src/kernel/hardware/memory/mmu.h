@@ -24,21 +24,29 @@
 
 void mmu_initialize(void);
 void mmu_cpu_initialize(void);
-int  map_page(uint64_t virtual_addr, uint64_t physical_addr, uint64_t flags);
+int map_page(uint64_t virtual_addr, uint64_t physical_addr, uint64_t flags);
 void unmap_page(uint64_t virtual_addr);
 void* vmalloc(size_t size);
-void  vfree(void* ptr, size_t size);
-void  free_vm(uint64_t pml4_addr);
+void vfree(void* ptr, size_t size);
+void free_vm(uint64_t pml4_addr);
 
 
-int      map_page_in(uint64_t pml4_addr, uint64_t virtual_addr, uint64_t physical_addr, uint64_t flags);
+int map_page_in(uint64_t pml4_addr, uint64_t virtual_addr, uint64_t physical_addr, uint64_t flags);
 uint64_t setup_kvm(void);
 uint64_t mmu_kernel_page_map(void);
 uint64_t vmm_alloc_mmio_region(size_t size);
-void     vmm_free_mmio_region(uint64_t virt, size_t size);
+void vmm_free_mmio_region(uint64_t virt, size_t size);
 uint64_t* mmu_find_pte(uint64_t pml4_addr, uint64_t virtual_addr);
-void     switch_vm(uint64_t pml4_addr);
-uint64_t read_cr3(void);
+
+static void switch_vm(uint64_t pml4_addr) {
+    asm volatile("mov %0, %%cr3" : : "r"(pml4_addr) : "memory");
+}
+
+static uint64_t read_cr3(void) {
+    uint64_t value;
+    asm volatile("mov %%cr3, %0" : "=r"(value));
+    return value & ~0xFFFULL;
+}
 
 extern uint64_t direct_map_offset;
 

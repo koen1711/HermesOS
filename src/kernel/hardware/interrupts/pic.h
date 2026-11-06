@@ -8,7 +8,7 @@
 #define PIC_SLAVE_COMMAND 0xA0
 #define PIC_SLAVE_DATA 0xA1
 
-void pic_write(uint16_t port, uint8_t data);
+static inline void pic_write(uint16_t port, uint8_t data);
 uint8_t pic_read(uint16_t port);
 
 void pic_remap(uint8_t master_offset, uint8_t slave_offset);

@@ -200,10 +200,9 @@ void e1000_detach(struct e1000_device* dev)
 void e1000_write_command(const struct e1000_device* dev, const uint16_t address, const uint32_t value)
 {
     if (dev->bar_type == 0) {
-        *(volatile uint32_t*)(uintptr_t)(dev->mem_base + address) = value;
+        *(volatile uint32_t*)(dev->mem_base + address) = value;
     } else {
-        port_write_u32(dev->io_base, address);
-        port_write_u32(dev->io_base + 4, value);
+        port_write_u64(dev->io_base, (uint64_t)address | (uint64_t)value << 32);
     }
 }
 

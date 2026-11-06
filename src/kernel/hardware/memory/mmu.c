@@ -16,6 +16,11 @@
 uint64_t direct_map_offset = 0;
 static uint64_t kernel_pml4;
 
+static void invalidate(const uint64_t va)
+{
+    asm volatile("invlpg (%0)" : : "r"(va) : "memory");
+}
+
 static uint64_t* table_at(const uint64_t entry) {
     return phys_to_virt(entry & PTE_ADDR);
 }
@@ -54,17 +59,17 @@ static uint64_t* split_two_mb_page(uint64_t* pd, const uint16_t pd_idx) {
 
 static uint64_t* get_or_create_pt(uint64_t* pd, const uint16_t pd_idx, const uint64_t flags) {
     const uint64_t entry = pd[pd_idx];
-    if ((entry & MMU_PRESENT) && (entry & MMU_PDE_TWO_MB)) {
+    if (entry & MMU_PRESENT && entry & MMU_PDE_TWO_MB) {
         return split_two_mb_page(pd, pd_idx);
     }
     return get_or_create_table(pd, pd_idx, flags);
 }
 
-int map_page_in(uint64_t pml4_addr, uint64_t virtual_addr, uint64_t physical_addr, uint64_t flags) {
-    uint16_t pml4_idx = (virtual_addr >> 39) & 0x1FF;
-    uint16_t pdpt_idx = (virtual_addr >> 30) & 0x1FF;
-    uint16_t pd_idx   = (virtual_addr >> 21) & 0x1FF;
-    uint16_t pt_idx   = (virtual_addr >> 12) & 0x1FF;
+int map_page_in(const uint64_t pml4_addr, const uint64_t virtual_addr, const uint64_t physical_addr, const uint64_t flags) {
+    const uint16_t pml4_idx = virtual_addr >> 39 & 0x1FF;
+    const uint16_t pdpt_idx = virtual_addr >> 30 & 0x1FF;
+    const uint16_t pd_idx = virtual_addr >> 21 & 0x1FF;
+    const uint16_t pt_idx = virtual_addr >> 12 & 0x1FF;
 
     uint64_t* pdpt = get_or_create_table(phys_to_virt(pml4_addr), pml4_idx, flags);
     if (!pdpt) return -1;
@@ -77,7 +82,7 @@ int map_page_in(uint64_t pml4_addr, uint64_t virtual_addr, uint64_t physical_add
 
     pt[pt_idx] = physical_addr | flags;
 
-    asm volatile("invlpg (%0)" : : "r"(virtual_addr) : "memory");
+    invalidate(virtual_addr);
     return 0;
 }
 
@@ -85,13 +90,13 @@ int map_page(const uint64_t virtual_addr, const uint64_t physical_addr, const ui
     return map_page_in(kernel_pml4, virtual_addr, physical_addr, flags);
 }
 
-void unmap_page(uint64_t virtual_addr) {
+void unmap_page(const uint64_t virtual_addr) {
     uint64_t* pte = mmu_find_pte(kernel_pml4, virtual_addr);
     if (!pte) return;
 
     *pte = 0;
 
-    asm volatile("invlpg (%0)" : : "r"(virtual_addr) : "memory");
+    invalidate(virtual_addr);
 }
 
 static void setup_kernel_mapping(uint64_t* pml4) {
@@ -145,7 +150,7 @@ static void setup_direct_mapping(uint64_t* pml4) {
             uint64_t* pdpt = get_or_create_table(pml4, (virt >> 39) & 0x1FF, 0);
             uint64_t* pd = pdpt ? get_or_create_table(pdpt, (virt >> 30) & 0x1FF, 0) : nullptr;
             if (!pd) panic("Failed to build the direct map", __FILE__, __LINE__);
-            pd[(virt >> 21) & 0x1FF] = phys | MMU_PRESENT | MMU_WRITABLE | MMU_PDE_TWO_MB;
+            pd[virt >> 21 & 0x1FF] = phys | MMU_PRESENT | MMU_WRITABLE | MMU_PDE_TWO_MB;
         }
     }
 }
@@ -173,7 +178,7 @@ void mmu_initialize(void) {
 
 void* vmalloc(size_t size) {
     if (size == 0) return nullptr;
-    size = (size + 0xFFF) & ~0xFFF;
+    size = size + 0xFFF & ~0xFFF;
     return alloc_kernel_pages(size / 0x1000);
 }
 
@@ -242,7 +247,7 @@ static void mmio_mark(const size_t first, const size_t count, const bool used) {
     }
 }
 
-uint64_t vmm_alloc_mmio_region(size_t size) {
+uint64_t vmm_alloc_mmio_region(const size_t size) {
     const size_t count = ((size + 0xFFF) & ~0xFFFULL) / PAGE_SIZE;
     if (count == 0 || count > MMIO_PAGES) return 0;
 
@@ -304,12 +309,4 @@ uint64_t setup_kvm(void) {
     return pml4_addr;
 }
 
-void switch_vm(uint64_t pml4_addr) {
-    asm volatile("mov %0, %%cr3" : : "r"(pml4_addr) : "memory");
-}
 
-uint64_t read_cr3(void) {
-    uint64_t value;
-    asm volatile("mov %%cr3, %0" : "=r"(value));
-    return value & ~0xFFFULL;
-}

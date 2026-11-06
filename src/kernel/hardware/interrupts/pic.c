@@ -33,16 +33,9 @@ void handle_pic_interrupt(const interrupt_context* context)
     }
 }
 
-void pic_write(uint16_t port, uint8_t data)
+static inline void pic_write(uint16_t port, uint8_t data)
 {
-    asm volatile(
-        "outb %0, %1\n"
-        "1: jmp 1f\n"
-        "1: jmp 1f\n"
-        "1:"
-        :
-        : "a" (data), "Nd"(port)
-    );
+    asm volatile("outb %0, %1" : : "a"(data), "Nd"(port));
 }
 
 uint8_t pic_read(uint16_t port)

@@ -210,7 +210,7 @@ void free_kernel_page(void* page) {
     free_physical_page((void*)virt_to_phys(page));
 }
 
-void free_kernel_pages(void* first, const size_t count) {
+void free_kernel_pages(const void* first, const size_t count) {
     free_physical_pages((void*)virt_to_phys(first), count);
 }
 
