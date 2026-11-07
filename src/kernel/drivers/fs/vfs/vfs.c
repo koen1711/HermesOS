@@ -3,10 +3,12 @@
 #include "utils/str/str.h"
 #include <drivers/fs/notify/inotify.h>
 #include <hardware/smp/smp.h>
+#include <utils/sync/spinlock.h>
 #include <os/errno.h>
 
 
 static struct file_s* fd_table[MAX_OPEN_FILES];
+static spinlock_t fd_table_lock = { .name = "fd_table" };
 static struct registered_driver_s driver_table[MAX_DRIVERS];
 static struct mounted_file_system_s mount_table[MAX_MOUNTED_FILESYSTEMS];
 
@@ -147,16 +149,29 @@ struct file_s* vfs_get_file(const int fd)
 
 int vfs_install(struct file_s* f)
 {
+    uint64_t flags;
+    spinlock_acquire_irqsave(&fd_table_lock, &flags);
     for (int i = 0; i < MAX_OPEN_FILES; i++)
     {
         if (fd_table[i] == nullptr)
         {
             f->id = i;
             fd_table[i] = f;
+            spinlock_release_irqrestore(&fd_table_lock, flags);
             return i;
         }
     }
+    spinlock_release_irqrestore(&fd_table_lock, flags);
     return -1;
+}
+
+void vfs_uninstall(struct file_s* f)
+{
+    uint64_t flags;
+    spinlock_acquire_irqsave(&fd_table_lock, &flags);
+    if (fd_table[f->id] == f)
+        fd_table[f->id] = nullptr;
+    spinlock_release_irqrestore(&fd_table_lock, flags);
 }
 
 
@@ -233,16 +248,11 @@ int vfs_open(const char* path, const int flags)
         free(f);
         return -EACCES;
     }
-    for (int i = 0; i < MAX_OPEN_FILES; i++)
+    if (vfs_install(f) >= 0)
     {
-        if (fd_table[i] == nullptr)
-        {
-            f->id = i;
-            fd_table[i] = f;
-            mount->open_count++;
-            notify_file(f, IN_OPEN);
-            return i;
-        }
+        mount->open_count++;
+        notify_file(f, IN_OPEN);
+        return (int)f->id;
     }
 
     if (current->fops->close) current->fops->close(f);
@@ -652,7 +662,10 @@ void vfs_file_release(struct file_s* f)
         f->mount->open_count--;
     }
     free(f);
+    uint64_t flags;
+    spinlock_acquire_irqsave(&fd_table_lock, &flags);
     fd_table[id] = nullptr;
+    spinlock_release_irqrestore(&fd_table_lock, flags);
     if (locked)
         kernel_lock_exit();
 }

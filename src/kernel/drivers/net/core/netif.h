@@ -79,8 +79,6 @@ struct netif {
     void* softc;
 
     netif_output_t output;
-    struct netif* tx_next;
-    bool tx_deferred;
     netif_input_t input;
 
     struct dlist ipv4_addrs;
@@ -106,10 +104,10 @@ void netif_detach(struct netif* nif);
 
 void netif_input(struct netif* nif, struct netbuf* nb);
 int netif_output(struct netif* nif, struct netbuf* nb);
+void netif_tx_batch_begin();
+void netif_tx_batch_end();
 bool netif_tx_defer(struct netif* nif);
 void netif_tx_flush();
-size_t netif_tx_take(struct netif** bells);
-void netif_tx_ring(struct netif** bells, size_t n);
 
 struct netif* netif_find_by_name(const char* name);
 struct netif* netif_find_by_index(uint32_t index);

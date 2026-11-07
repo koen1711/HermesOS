@@ -46,21 +46,23 @@ struct msghdr_s {
     int msg_flags;
 };
 
+struct socket;
+
 long sys_socket(int domain, int type, int protocol);
 long sys_bind(int fd, const struct sockaddr* addr, socklen_t len);
 long sys_listen(int fd, int backlog);
 long sys_connect(int fd, const struct sockaddr* addr, socklen_t len);
-long sys_accept(int fd, struct sockaddr* addr, socklen_t* len);
-long sys_accept4(int fd, struct sockaddr* addr, socklen_t* len, int flags);
+long sys_accept(struct socket* so, struct sockaddr* addr, socklen_t* len);
+long sys_accept4(struct socket* so, struct sockaddr* addr, socklen_t* len, int flags);
 long sys_socketpair(int domain, int type, int protocol, int* sv);
-long sys_sendto(int fd, const void* buf, size_t len, int flags, const struct sockaddr* dst, socklen_t dst_len);
-long sys_recvfrom(int fd, void* buf, size_t len, int flags, struct sockaddr* src, socklen_t* src_len);
-long sys_sendmsg(int fd, const struct msghdr_s* msg, int flags);
-long sys_recvmsg(int fd, struct msghdr_s* msg, int flags);
-long sys_shutdown(int fd, int how);
-long sys_getsockname(int fd, struct sockaddr* addr, socklen_t* len);
-long sys_getpeername(int fd, struct sockaddr* addr, socklen_t* len);
-long sys_setsockopt(int fd, int level, int optname, const void* optval, socklen_t optlen);
-long sys_getsockopt(int fd, int level, int optname, void* optval, socklen_t* optlen);
+long sys_sendto(struct socket* so, const void* buf, size_t len, int flags, const struct sockaddr* dst, socklen_t dst_len);
+long sys_recvfrom(struct socket* so, void* buf, size_t len, int flags, struct sockaddr* src, socklen_t* src_len);
+long sys_sendmsg(struct socket* so, const struct msghdr_s* msg, int flags);
+long sys_recvmsg(struct socket* so, struct msghdr_s* msg, int flags);
+long sys_shutdown(struct socket* so, int how);
+long sys_getsockname(struct socket* so, struct sockaddr* addr, socklen_t* len);
+long sys_getpeername(struct socket* so, struct sockaddr* addr, socklen_t* len);
+long sys_setsockopt(struct socket* so, int level, int optname, const void* optval, socklen_t optlen);
+long sys_getsockopt(struct socket* so, int level, int optname, void* optval, socklen_t* optlen);
 
 #endif //NET_SOCKET_SOCKET_SYSCALLS_H

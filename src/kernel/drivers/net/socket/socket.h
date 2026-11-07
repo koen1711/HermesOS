@@ -70,7 +70,23 @@ enum msg_flags
 struct protosw;
 struct netbuf;
 
+struct sock_lock {
+    volatile uint32_t locked;
+    volatile int owner;
+    uint32_t depth;
+};
+
+#define SOCK_LOCK_NEST 8
+
+struct sock_lock_saved {
+    struct socket* so[SOCK_LOCK_NEST];
+    uint32_t depth[SOCK_LOCK_NEST];
+    int n;
+};
+
 struct socket {
+    struct sock_lock lock;
+
     int type;
     int16_t state;
     uint32_t options;
@@ -130,7 +146,14 @@ void sock_cant_recv_more(struct socket* so);
 
 struct socket* sock_new_conn(struct socket* head);
 
+void sock_hold(struct socket* so);
 void sock_release(struct socket* so);
+void sock_lock(struct socket* so);
+void sock_unlock(struct socket* so);
+bool sock_lock_held(const struct socket* so);
+bool sock_lock_any_held();
+void sock_lock_save(struct sock_lock_saved* saved);
+void sock_lock_restore(const struct sock_lock_saved* saved);
 void sock_wakeup(struct socket* so);
 uint64_t sock_poll_bit(const struct socket* so);
 void sock_set_upcall(struct socket* so, void (*upcall)(struct socket* so, void* arg), void* arg);

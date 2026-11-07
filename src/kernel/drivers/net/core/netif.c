@@ -20,7 +20,12 @@
 static struct dlist netif_list;
 static spinlock_t netif_list_lock;
 static uint32_t netif_next_index = 1;
-static struct netif* tx_deferred;
+
+static struct {
+    struct netif* nifs[NETIF_TX_BELLS];
+    uint32_t n;
+    uint32_t depth;
+} __attribute__((aligned(64))) tx_batch[MAX_CPUS];
 
 void netif_initialize()
 {
@@ -169,47 +174,40 @@ int netif_output(struct netif* nif, struct netbuf* nb)
     return nif->ops->transmit(nif, nb);
 }
 
+void netif_tx_batch_begin()
+{
+    tx_batch[cpu_this()->index].depth++;
+}
+
+void netif_tx_batch_end()
+{
+    const auto b = &tx_batch[cpu_this()->index];
+    if (b->depth && --b->depth == 0)
+        netif_tx_flush();
+}
+
 bool netif_tx_defer(struct netif* nif)
 {
-    if (!net_lock_held())
+    const auto b = &tx_batch[cpu_this()->index];
+    if (!b->depth)
         return false;
-    if (!nif->tx_deferred) {
-        nif->tx_deferred = true;
-        nif->tx_next = tx_deferred;
-        tx_deferred = nif;
-    }
+    for (uint32_t i = 0; i < b->n; i++)
+        if (b->nifs[i] == nif)
+            return true;
+    if (b->n == NETIF_TX_BELLS)
+        return false;
+    netif_ref(nif);
+    b->nifs[b->n++] = nif;
     return true;
 }
 
 void netif_tx_flush()
 {
-    while (tx_deferred) {
-        struct netif* nif = tx_deferred;
-        tx_deferred = nif->tx_next;
-        nif->tx_deferred = false;
+    const auto b = &tx_batch[cpu_this()->index];
+    while (b->n) {
+        struct netif* nif = b->nifs[--b->n];
         nif->ops->tx_flush(nif);
-    }
-}
-
-size_t netif_tx_take(struct netif** bells)
-{
-    size_t n = 0;
-    while (tx_deferred && n < NETIF_TX_BELLS) {
-        struct netif* nif = tx_deferred;
-        tx_deferred = nif->tx_next;
-        nif->tx_deferred = false;
-        netif_ref(nif);
-        bells[n++] = nif;
-    }
-    netif_tx_flush();
-    return n;
-}
-
-void netif_tx_ring(struct netif** bells, const size_t n)
-{
-    for (size_t i = 0; i < n; i++) {
-        bells[i]->ops->tx_flush(bells[i]);
-        netif_rele(bells[i]);
+        netif_rele(nif);
     }
 }
 

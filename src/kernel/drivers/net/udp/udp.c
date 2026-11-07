@@ -84,10 +84,10 @@ static void udp_sender_sockaddr(const struct inpcb* inp, const struct in6_addr* 
     inpcb_get_peername(&peer, (struct sockaddr*)out, len);
 }
 
-static void udp_deliver(const struct inpcb* inp, struct netbuf* nb, const struct in6_addr* src, const uint16_t sport)
+static void udp_deliver_locked(const struct inpcb* inp, struct socket* so, struct netbuf* nb,
+                               const struct in6_addr* src, const uint16_t sport)
 {
-    struct socket* so = inp->socket;
-    if (!so || (so->state & SS_CANTRCVMORE)) {
+    if (so->state & SS_CANTRCVMORE) {
         netbuf_free_chain(nb);
         return;
     }
@@ -99,6 +99,20 @@ static void udp_deliver(const struct inpcb* inp, struct netbuf* nb, const struct
         return;
     }
     sock_wakeup(so);
+}
+
+static void udp_deliver(const struct inpcb* inp, struct netbuf* nb, const struct in6_addr* src, const uint16_t sport)
+{
+    struct socket* so = inp->socket;
+    if (!so) {
+        netbuf_free_chain(nb);
+        return;
+    }
+    sock_hold(so);
+    sock_lock(so);
+    udp_deliver_locked(inp, so, nb, src, sport);
+    sock_unlock(so);
+    sock_release(so);
 }
 
 static bool udp_pcb_matches(const struct inpcb* inp, const struct in6_addr* src, const uint16_t sport,

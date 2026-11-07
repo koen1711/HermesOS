@@ -65,6 +65,7 @@ struct file_s* vfs_get_file(int fd);
 void vfs_file_release(struct file_s* f);
 void vfs_file_put(struct file_s* f);
 int vfs_install(struct file_s* f);
+void vfs_uninstall(struct file_s* f);
 int vfs_memfd_create(const char* name);
 int vfs_fallocate(int fd, int mode, int64_t offset, int64_t len);
 ssize_t vfs_getxattr(const struct file_s* f, const char* name, void* value, size_t size);

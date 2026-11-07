@@ -684,7 +684,7 @@ static int ipv4_output_via(struct netbuf* nb, struct in_addr src, const struct i
         ip->ver_ihl = (IPV4_VERSION << 4) | (uint8_t)(header_len / 4);
         ip->tos = opts ? opts->tos : 0;
         ip->total_len = htons((uint16_t)(nb->pkt_len + header_len));
-        ip->id = htons(next_id++);
+        ip->id = htons(__atomic_fetch_add(&next_id, 1, __ATOMIC_RELAXED));
         ip->frag_off = 0;
         ip->ttl = opts && opts->ttl ? opts->ttl : IPV4_DEFAULT_TTL;
         ip->protocol = protocol;

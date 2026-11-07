@@ -4,13 +4,123 @@
 #include <drivers/net/core/netbuf.h>
 #include <drivers/timer/callout.h>
 #include <drivers/scheduler/process.h>
+#include <drivers/terminal/terminal.h>
 #include <hardware/memory/alloc.h>
+#include <hardware/smp/smp.h>
+#include <utils/sync/spinlock.h>
 #include <os/errno.h>
 
 #define SOCKET_MAX_BUFFER (4 * 1024 * 1024)
 
+static spinlock_t accept_lock = { .name = "so_accept" };
+
+static struct {
+    struct socket* held[SOCK_LOCK_NEST];
+    int n;
+} __attribute__((aligned(64))) held_by_cpu[MAX_CPUS];
+
 void socket_initialize()
 {
+}
+
+static void sock_lock_spin(struct sock_lock* l)
+{
+    while (__atomic_exchange_n(&l->locked, 1, __ATOMIC_ACQUIRE)) {
+        while (__atomic_load_n(&l->locked, __ATOMIC_RELAXED)) {
+            smp_spin_poll();
+            asm volatile("pause");
+        }
+    }
+}
+
+static void sock_lock_halt(const char* what, const struct socket* so)
+{
+    terminal_printf("\nsocket lock: %s (so=0x%lx)\n", what, (uint64_t)so);
+    while (1)
+        asm volatile("cli; hlt");
+}
+
+static void held_push(const int cpu, struct socket* so)
+{
+    if (held_by_cpu[cpu].n >= SOCK_LOCK_NEST)
+        sock_lock_halt("nesting too deep", so);
+    held_by_cpu[cpu].held[held_by_cpu[cpu].n++] = so;
+}
+
+static void held_remove(const int cpu, const struct socket* so)
+{
+    const int n = held_by_cpu[cpu].n;
+    for (int i = n - 1; i >= 0; i--) {
+        if (held_by_cpu[cpu].held[i] == so) {
+            for (int j = i; j < n - 1; j++)
+                held_by_cpu[cpu].held[j] = held_by_cpu[cpu].held[j + 1];
+            held_by_cpu[cpu].n = n - 1;
+            return;
+        }
+    }
+    sock_lock_halt("unlock of a lock this CPU does not hold", so);
+}
+
+void sock_lock(struct socket* so)
+{
+    const int cpu = cpu_this()->index;
+    if (so->lock.owner == cpu) {
+        so->lock.depth++;
+        return;
+    }
+    sock_lock_spin(&so->lock);
+    so->lock.owner = cpu;
+    so->lock.depth = 1;
+    held_push(cpu, so);
+}
+
+void sock_unlock(struct socket* so)
+{
+    const int cpu = cpu_this()->index;
+    if (so->lock.owner != cpu || so->lock.depth == 0)
+        sock_lock_halt("unlock of a lock this CPU does not hold", so);
+    if (--so->lock.depth)
+        return;
+    held_remove(cpu, so);
+    so->lock.owner = -1;
+    __atomic_store_n(&so->lock.locked, 0, __ATOMIC_RELEASE);
+}
+
+bool sock_lock_held(const struct socket* so)
+{
+    return so->lock.owner == cpu_this()->index;
+}
+
+bool sock_lock_any_held()
+{
+    return held_by_cpu[cpu_this()->index].n != 0;
+}
+
+void sock_lock_save(struct sock_lock_saved* saved)
+{
+    const int cpu = cpu_this()->index;
+    saved->n = held_by_cpu[cpu].n;
+    for (int i = 0; i < saved->n; i++) {
+        struct socket* so = held_by_cpu[cpu].held[i];
+        saved->so[i] = so;
+        saved->depth[i] = so->lock.depth;
+        so->lock.depth = 0;
+        so->lock.owner = -1;
+        __atomic_store_n(&so->lock.locked, 0, __ATOMIC_RELEASE);
+    }
+    held_by_cpu[cpu].n = 0;
+}
+
+void sock_lock_restore(const struct sock_lock_saved* saved)
+{
+    const int cpu = cpu_this()->index;
+    for (int i = 0; i < saved->n; i++) {
+        struct socket* so = saved->so[i];
+        sock_lock_spin(&so->lock);
+        so->lock.owner = cpu;
+        so->lock.depth = saved->depth[i];
+        held_push(cpu, so);
+    }
 }
 
 static bool sock_nonblocking(const struct socket* so, const int flags)
@@ -31,6 +141,7 @@ static struct socket* sock_alloc(const int type, struct protosw* pr)
     if (!so)
         return nullptr;
 
+    so->lock.owner = -1;
     so->type = type;
     so->proto = pr;
     so->fd = -1;
@@ -73,7 +184,7 @@ int sock_create(const int domain, const int type, const int protocol, struct soc
     return 0;
 }
 
-int sock_bind(struct socket* so, const struct sockaddr* addr, const socklen_t len)
+static int sock_bind_locked(struct socket* so, const struct sockaddr* addr, const socklen_t len)
 {
     if (!addr)
         return -EINVAL;
@@ -82,7 +193,7 @@ int sock_bind(struct socket* so, const struct sockaddr* addr, const socklen_t le
     return so->proto->pr_bind(so, addr, len);
 }
 
-int sock_listen(struct socket* so, int backlog)
+static int sock_listen_locked(struct socket* so, int backlog)
 {
     if (!so->proto->pr_listen)
         return -EOPNOTSUPP;
@@ -122,7 +233,7 @@ static int sock_wait(struct sockbuf* sb, const uint64_t timeo, const uint64_t st
             return werr_;                                          \
     }
 
-int sock_connect(struct socket* so, const struct sockaddr* addr, const socklen_t len)
+static int sock_connect_locked(struct socket* so, const struct sockaddr* addr, const socklen_t len)
 {
     if (!addr)
         return -EINVAL;
@@ -160,25 +271,30 @@ int sock_connect(struct socket* so, const struct sockaddr* addr, const socklen_t
     return (so->state & SS_ISCONNECTED) ? 0 : -ECONNREFUSED;
 }
 
-int sock_accept(struct socket* so, struct socket** out, struct sockaddr* addr, socklen_t* len)
+static int sock_accept_locked(struct socket* so, struct socket** out, struct sockaddr* addr, socklen_t* len)
 {
     *out = nullptr;
     if (!(so->options & SO_ACCEPTCONN))
         return -EINVAL;
     SOCK_WAIT_UNTIL(so, &so->rcv, 0, so->rcv_timeo, !dlist_empty(&so->complete));
 
+    uint64_t flags;
+    spinlock_acquire_irqsave(&accept_lock, &flags);
     struct socket* conn = dlist_entry(dlist_first(&so->complete), struct socket, listen_link);
     dlist_remove(&so->complete, &conn->listen_link);
     conn->listen_head = nullptr;
+    spinlock_release_irqrestore(&accept_lock, flags);
 
-    if (so->proto->pr_accept) {
-        const int err = so->proto->pr_accept(conn, addr, len);
-        if (err) {
-            sock_close(conn);
-            return err;
-        }
-    } else if (addr && len && so->proto->pr_peeraddr) {
+    sock_lock(conn);
+    int err = 0;
+    if (so->proto->pr_accept)
+        err = so->proto->pr_accept(conn, addr, len);
+    else if (addr && len && so->proto->pr_peeraddr)
         so->proto->pr_peeraddr(conn, addr, len);
+    sock_unlock(conn);
+    if (err) {
+        sock_close(conn);
+        return err;
     }
     *out = conn;
     return 0;
@@ -196,8 +312,8 @@ static struct netbuf* sock_make_netbuf(const void* buf, const size_t len)
     return nb;
 }
 
-ssize_t sock_send(struct socket* so, const void* buf, const size_t len, const int flags,
-                  const struct sockaddr* dst, const socklen_t dst_len)
+static ssize_t sock_send_locked(struct socket* so, const void* buf, const size_t len, const int flags,
+                                const struct sockaddr* dst, const socklen_t dst_len)
 {
     if (so->state & SS_CANTSENDMORE)
         return -EPIPE;
@@ -257,12 +373,12 @@ struct netbuf* sock_send_prebuild(const struct socket* so, const void* buf, cons
     return sock_make_netbuf(buf, len);
 }
 
-ssize_t sock_send_prebuilt(struct socket* so, struct netbuf* nb, const void* buf, const size_t len)
+static ssize_t sock_send_prebuilt_locked(struct socket* so, struct netbuf* nb, const void* buf, const size_t len)
 {
     if ((so->state & SS_CANTSENDMORE) || so->error || !(so->state & SS_ISCONNECTED)
         || !so->proto->pr_send || sockbuf_space(&so->snd) < len) {
         netbuf_free_chain(nb);
-        return sock_send(so, buf, len, 0, nullptr, 0);
+        return sock_send_locked(so, buf, len, 0, nullptr, 0);
     }
     const int err = so->proto->pr_send(so, nb, nullptr, 0, 0);
     return err < 0 ? err : (ssize_t)len;
@@ -273,8 +389,8 @@ static const struct netbuf* sock_record_addr(const struct netbuf* rec)
     return rec && rec->flags & NETBUF_SOCKADDR ? rec : nullptr;
 }
 
-ssize_t sock_recv(struct socket* so, void* buf, const size_t len, const int flags,
-                  struct sockaddr* from, socklen_t* from_len)
+static ssize_t sock_recv_locked(struct socket* so, void* buf, const size_t len, const int flags,
+                                struct sockaddr* from, socklen_t* from_len)
 {
     const uint64_t start = ticks_get();
     while (!so->rcv.head) {
@@ -335,7 +451,7 @@ ssize_t sock_recv(struct socket* so, void* buf, const size_t len, const int flag
     return (ssize_t)n;
 }
 
-int sock_shutdown(struct socket* so, const int how)
+static int sock_shutdown_locked(struct socket* so, const int how)
 {
     if (how != SHUT_RD && how != SHUT_WR && how != SHUT_RDWR)
         return -EINVAL;
@@ -350,17 +466,29 @@ int sock_shutdown(struct socket* so, const int how)
     return 0;
 }
 
-int sock_close(struct socket* so)
+static int sock_close_locked(struct socket* so)
 {
-    while (!dlist_empty(&so->incomplete) || !dlist_empty(&so->complete)) {
+    for (;;) {
+        uint64_t flags;
+        spinlock_acquire_irqsave(&accept_lock, &flags);
+        if (dlist_empty(&so->incomplete) && dlist_empty(&so->complete)) {
+            spinlock_release_irqrestore(&accept_lock, flags);
+            break;
+        }
         struct dlist* q = dlist_empty(&so->incomplete) ? &so->complete : &so->incomplete;
         const auto conn = dlist_entry(dlist_first(q), struct socket, listen_link);
         dlist_remove(q, &conn->listen_link);
         conn->listen_head = nullptr;
-        if (conn->proto->pr_abort)
+        spinlock_release_irqrestore(&accept_lock, flags);
+        if (conn->proto->pr_abort) {
+            sock_hold(conn);
+            sock_lock(conn);
             conn->proto->pr_abort(conn);
-        else
+            sock_unlock(conn);
+            sock_release(conn);
+        } else {
             sock_close(conn);
+        }
     }
 
     if (so->state & SS_ISCONNECTED && (so->proto->flags & PR_CONNREQUIRED) && so->proto->pr_disconnect)
@@ -385,7 +513,7 @@ static int sock_timeval_to_ticks(const struct sock_timeval* tv, uint64_t* out)
     return 0;
 }
 
-int sock_setopt(struct socket* so, const int level, const int optname, const void* optval, const socklen_t optlen)
+static int sock_setopt_locked(struct socket* so, const int level, const int optname, const void* optval, const socklen_t optlen)
 {
     if (level != SOL_SOCKET) {
         if (!so->proto->pr_ctloutput)
@@ -430,7 +558,7 @@ int sock_setopt(struct socket* so, const int level, const int optname, const voi
     return 0;
 }
 
-int sock_getopt(struct socket* so, const int level, const int optname, void* optval, socklen_t* optlen)
+static int sock_getopt_locked(struct socket* so, const int level, const int optname, void* optval, socklen_t* optlen)
 {
     if (level != SOL_SOCKET) {
         if (!so->proto->pr_ctloutput)
@@ -470,7 +598,7 @@ int sock_getopt(struct socket* so, const int level, const int optname, void* opt
     return 0;
 }
 
-int sock_getsockname(struct socket* so, struct sockaddr* addr, socklen_t* len)
+static int sock_getsockname_locked(struct socket* so, struct sockaddr* addr, socklen_t* len)
 {
     if (!addr || !len)
         return -EINVAL;
@@ -479,7 +607,7 @@ int sock_getsockname(struct socket* so, struct sockaddr* addr, socklen_t* len)
     return so->proto->pr_sockaddr(so, addr, len);
 }
 
-int sock_getpeername(struct socket* so, struct sockaddr* addr, socklen_t* len)
+static int sock_getpeername_locked(struct socket* so, struct sockaddr* addr, socklen_t* len)
 {
     if (!addr || !len)
         return -EINVAL;
@@ -502,12 +630,21 @@ void sock_is_connected(struct socket* so)
     so->state &= ~(SS_ISCONNECTING | SS_ISDISCONNECTING);
     so->state |= SS_ISCONNECTED;
 
-    struct socket* head = so->listen_head;
-    if (head && !was_connected) {
-        dlist_remove(&head->incomplete, &so->listen_link);
-        dlist_insert_tail(&head->complete, &so->listen_link);
-        so->embryonic = false;
-        sock_wakeup(head);
+    if (!was_connected) {
+        uint64_t flags;
+        spinlock_acquire_irqsave(&accept_lock, &flags);
+        struct socket* head = so->listen_head;
+        if (head) {
+            dlist_remove(&head->incomplete, &so->listen_link);
+            dlist_insert_tail(&head->complete, &so->listen_link);
+            so->embryonic = false;
+            sock_hold(head);
+        }
+        spinlock_release_irqrestore(&accept_lock, flags);
+        if (head) {
+            sock_wakeup(head);
+            sock_release(head);
+        }
     }
     sock_wakeup(so);
 }
@@ -523,19 +660,24 @@ void sock_is_disconnected(struct socket* so)
 {
     so->state &= ~(SS_ISCONNECTING | SS_ISCONNECTED | SS_ISDISCONNECTING);
     so->state |= SS_CANTRCVMORE | SS_CANTSENDMORE;
-    so->snd.flags |= SB_CANTMORE;
-    so->rcv.flags |= SB_CANTMORE;
+    __atomic_or_fetch(&so->snd.flags, SB_CANTMORE, __ATOMIC_RELAXED);
+    __atomic_or_fetch(&so->rcv.flags, SB_CANTMORE, __ATOMIC_RELAXED);
     sock_wakeup(so);
 }
 
 bool sock_drop_embryo(struct socket* so)
 {
+    uint64_t flags;
+    spinlock_acquire_irqsave(&accept_lock, &flags);
     struct socket* head = so->listen_head;
-    if (!head || !so->embryonic)
+    if (!head || !so->embryonic) {
+        spinlock_release_irqrestore(&accept_lock, flags);
         return false;
+    }
     dlist_remove(&head->incomplete, &so->listen_link);
     so->listen_head = nullptr;
     so->embryonic = false;
+    spinlock_release_irqrestore(&accept_lock, flags);
     sock_release(so);
     return true;
 }
@@ -543,20 +685,24 @@ bool sock_drop_embryo(struct socket* so)
 void sock_cant_send_more(struct socket* so)
 {
     so->state |= SS_CANTSENDMORE;
-    so->snd.flags |= SB_CANTMORE;
+    __atomic_or_fetch(&so->snd.flags, SB_CANTMORE, __ATOMIC_RELAXED);
     sock_wakeup(so);
 }
 
 void sock_cant_recv_more(struct socket* so)
 {
     so->state |= SS_CANTRCVMORE;
-    so->rcv.flags |= SB_CANTMORE;
+    __atomic_or_fetch(&so->rcv.flags, SB_CANTMORE, __ATOMIC_RELAXED);
     sock_wakeup(so);
 }
 
 struct socket* sock_new_conn(struct socket* head)
 {
-    if (head->incomplete.count + head->complete.count >= (size_t)head->backlog)
+    uint64_t flags;
+    spinlock_acquire_irqsave(&accept_lock, &flags);
+    const bool full = head->incomplete.count + head->complete.count >= (size_t)head->backlog;
+    spinlock_release_irqrestore(&accept_lock, flags);
+    if (full)
         return nullptr;
 
     struct socket* so = sock_alloc(head->type, head->proto);
@@ -569,13 +715,20 @@ struct socket* sock_new_conn(struct socket* head)
 
     so->listen_head = head;
     so->embryonic = true;
+    spinlock_acquire_irqsave(&accept_lock, &flags);
     dlist_insert_tail(&head->incomplete, &so->listen_link);
+    spinlock_release_irqrestore(&accept_lock, flags);
     return so;
+}
+
+void sock_hold(struct socket* so)
+{
+    __atomic_add_fetch(&so->refcount, 1, __ATOMIC_RELAXED);
 }
 
 void sock_release(struct socket* so)
 {
-    if (so->refcount && --so->refcount)
+    if (__atomic_load_n(&so->refcount, __ATOMIC_ACQUIRE) && __atomic_sub_fetch(&so->refcount, 1, __ATOMIC_ACQ_REL))
         return;
     sock_free(so);
 }
@@ -598,4 +751,82 @@ void sock_set_upcall(struct socket* so, void (*upcall)(struct socket* so, void* 
 {
     so->upcall = upcall;
     so->upcall_arg = arg;
+}
+
+#define SOCK_LOCKED(so, call)            \
+    ({                                   \
+        sock_lock(so);                   \
+        const auto ret_ = (call);        \
+        sock_unlock(so);                 \
+        ret_;                            \
+    })
+
+int sock_bind(struct socket* so, const struct sockaddr* addr, const socklen_t len)
+{
+    return SOCK_LOCKED(so, sock_bind_locked(so, addr, len));
+}
+
+int sock_listen(struct socket* so, const int backlog)
+{
+    return SOCK_LOCKED(so, sock_listen_locked(so, backlog));
+}
+
+int sock_connect(struct socket* so, const struct sockaddr* addr, const socklen_t len)
+{
+    return SOCK_LOCKED(so, sock_connect_locked(so, addr, len));
+}
+
+int sock_accept(struct socket* so, struct socket** out, struct sockaddr* addr, socklen_t* len)
+{
+    return SOCK_LOCKED(so, sock_accept_locked(so, out, addr, len));
+}
+
+ssize_t sock_send(struct socket* so, const void* buf, const size_t len, const int flags,
+                  const struct sockaddr* dst, const socklen_t dst_len)
+{
+    return SOCK_LOCKED(so, sock_send_locked(so, buf, len, flags, dst, dst_len));
+}
+
+ssize_t sock_send_prebuilt(struct socket* so, struct netbuf* nb, const void* buf, const size_t len)
+{
+    return SOCK_LOCKED(so, sock_send_prebuilt_locked(so, nb, buf, len));
+}
+
+ssize_t sock_recv(struct socket* so, void* buf, const size_t len, const int flags,
+                  struct sockaddr* from, socklen_t* from_len)
+{
+    return SOCK_LOCKED(so, sock_recv_locked(so, buf, len, flags, from, from_len));
+}
+
+int sock_shutdown(struct socket* so, const int how)
+{
+    return SOCK_LOCKED(so, sock_shutdown_locked(so, how));
+}
+
+int sock_close(struct socket* so)
+{
+    sock_hold(so);
+    const int err = SOCK_LOCKED(so, sock_close_locked(so));
+    sock_release(so);
+    return err;
+}
+
+int sock_setopt(struct socket* so, const int level, const int optname, const void* optval, const socklen_t optlen)
+{
+    return SOCK_LOCKED(so, sock_setopt_locked(so, level, optname, optval, optlen));
+}
+
+int sock_getopt(struct socket* so, const int level, const int optname, void* optval, socklen_t* optlen)
+{
+    return SOCK_LOCKED(so, sock_getopt_locked(so, level, optname, optval, optlen));
+}
+
+int sock_getsockname(struct socket* so, struct sockaddr* addr, socklen_t* len)
+{
+    return SOCK_LOCKED(so, sock_getsockname_locked(so, addr, len));
+}
+
+int sock_getpeername(struct socket* so, struct sockaddr* addr, socklen_t* len)
+{
+    return SOCK_LOCKED(so, sock_getpeername_locked(so, addr, len));
 }

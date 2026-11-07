@@ -76,7 +76,7 @@ int tcp_attach_pcb(struct socket* so)
         return -ENOMEM;
     }
     so->pcb = inp;
-    so->refcount++;
+    sock_hold(so);
     return 0;
 }
 
@@ -224,15 +224,11 @@ void tcp_packet_addrs(const struct netbuf* nb, struct in6_addr* src, struct in6_
     }
 }
 
-void tcp_ctlinput(const struct inpcb* inp, const int error, const uint32_t mtu)
+static void tcp_ctlinput_locked(const struct inpcb* inp, const int error, const uint32_t mtu)
 {
-    uint64_t flags;
-    tcp_lock(&flags);
     struct tcpcb* tp = inp->ppcb;
-    if (!tp) {
-        tcp_unlock(flags);
+    if (!tp)
         return;
-    }
 
     if (mtu) {
         const uint32_t hdr = (inpcb_is_v4_mapped(&inp->faddr) ? IPV4_HEADER_LEN : IPV6_HEADER_LEN) + TCP_HEADER_LEN;
@@ -246,7 +242,23 @@ void tcp_ctlinput(const struct inpcb* inp, const int error, const uint32_t mtu)
     } else {
         tp->t_softerror = error;
     }
+}
+
+void tcp_ctlinput(const struct inpcb* inp, const int error, const uint32_t mtu)
+{
+    struct socket* so = inp->socket;
+    if (so) {
+        sock_hold(so);
+        sock_lock(so);
+    }
+    uint64_t flags;
+    tcp_lock(&flags);
+    tcp_ctlinput_locked(inp, error, mtu);
     tcp_unlock(flags);
+    if (so) {
+        sock_unlock(so);
+        sock_release(so);
+    }
 }
 
 uint16_t tcp_local_mss(const struct tcpcb* tp)

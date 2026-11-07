@@ -52,7 +52,9 @@ int socket_file_close(struct file_s* f)
     inode_t* node = f->node;
     struct socket* so = node->private_data;
     const bool locked = net_lock_enter();
+    sock_lock(so);
     so->fd = -1;
+    sock_unlock(so);
     sock_close(so);
     if (locked)
         net_lock_exit();
@@ -92,6 +94,7 @@ void socket_file_set_nonblock(struct file_s* f, const bool on)
 {
     struct socket* so = socket_of(f);
     const bool locked = net_lock_enter();
+    sock_lock(so);
     if (on) {
         so->state |= SS_NBIO;
         f->status_flags |= O_NONBLOCK_K;
@@ -99,6 +102,7 @@ void socket_file_set_nonblock(struct file_s* f, const bool on)
         so->state &= ~SS_NBIO;
         f->status_flags &= ~O_NONBLOCK_K;
     }
+    sock_unlock(so);
     if (locked)
         net_lock_exit();
 }
@@ -127,7 +131,7 @@ int socket_file_ioctl(struct file_s* f, const unsigned long request, void* arg)
     return socket_ioctl_locked(f, request, arg);
 }
 
-int socket_file_alloc_fd(struct socket* so)
+int socket_file_alloc_fd(struct socket* so, const bool nonblock, const bool cloexec)
 {
     inode_t* node = malloc(sizeof(inode_t));
     struct file_s* f = malloc(sizeof(struct file_s));
@@ -146,17 +150,21 @@ int socket_file_alloc_fd(struct socket* so)
     f->node = node;
     f->flags = O_RDONLY | O_WRONLY;
     f->ref_count = 1;
+    if (nonblock) {
+        so->state |= SS_NBIO;
+        f->status_flags |= O_NONBLOCK_K;
+    }
 
     if (vfs_install(f) < 0) {
         free(node);
         free(f);
         return -ENFILE;
     }
-    const int fd = fd_install(f);
+    const int fd = cloexec ? fd_install_from(f, 0, true) : fd_install(f);
     if (fd < 0) {
-        node->fops = nullptr;
-        vfs_close((int)f->id);
+        vfs_uninstall(f);
         free(node);
+        free(f);
         return fd;
     }
     so->fd = fd;

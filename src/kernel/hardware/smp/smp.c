@@ -13,6 +13,7 @@
 #include <drivers/terminal/terminal.h>
 #include <drivers/timer/tsc.h>
 #include <drivers/net/core/netif.h>
+#include <drivers/net/socket/socket.h>
 
 #define AP_TRAMPOLINE_BASE 0x8000
 #define AP_STARTUP_TIMEOUT_US 200000
@@ -135,7 +136,14 @@ bool net_lock_enter()
     struct cpu* cpu = cpu_this();
     if (net_lock.owner == cpu->index)
         return false;
+    if (sock_lock_any_held()) {
+        terminal_printf("\nlock order violation: net lock taken under a socket lock, from 0x%lx\n",
+                        (uint64_t)__builtin_return_address(0));
+        while (1)
+            asm volatile("cli; hlt");
+    }
     owner_lock_acquire(&net_lock, cpu);
+    netif_tx_batch_begin();
     return true;
 }
 
@@ -145,6 +153,7 @@ bool net_lock_try_enter()
         || __atomic_exchange_n(&net_lock.locked, 1, __ATOMIC_ACQUIRE))
         return false;
     net_lock.owner = cpu_this()->index;
+    netif_tx_batch_begin();
     return true;
 }
 
@@ -155,11 +164,9 @@ bool net_lock_held()
 
 void net_lock_exit()
 {
-    struct netif* bells[NETIF_TX_BELLS];
-    const size_t n = netif_tx_take(bells);
     owner_lock_release(&net_lock);
     __atomic_thread_fence(__ATOMIC_SEQ_CST);
-    netif_tx_ring(bells, n);
+    netif_tx_batch_end();
 }
 
 bool net_lock_drop()

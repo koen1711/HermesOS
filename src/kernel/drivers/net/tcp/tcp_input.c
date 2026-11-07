@@ -823,6 +823,13 @@ static void tcp_input_packet(struct netbuf* nb, const size_t off, const struct i
     uint64_t flags;
     tcp_lock(&flags);
     struct inpcb* inp = inpcb_lookup(&tcp_pcbs, src, th->src_port, dst, th->dst_port, true);
+    struct socket* so = inp && inp->ppcb ? inp->socket : nullptr;
+    if (so) {
+        sock_hold(so);
+        tcp_unlock(flags);
+        sock_lock(so);
+        tcp_lock(&flags);
+    }
     if (inp && inp->ppcb) {
         tcp_input(nb, th, off + hlen, inp->ppcb);
     } else {
@@ -830,6 +837,10 @@ static void tcp_input_packet(struct netbuf* nb, const size_t off, const struct i
         netbuf_free_chain(nb);
     }
     tcp_unlock(flags);
+    if (so) {
+        sock_unlock(so);
+        sock_release(so);
+    }
 }
 
 void tcp_input4(struct netbuf* nb, const size_t header_len)

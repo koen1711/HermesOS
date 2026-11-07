@@ -3,6 +3,7 @@
 #include <drivers/net/core/netbuf.h>
 #include <drivers/net/core/netif.h>
 #include <drivers/net/core/netisr.h>
+#include <drivers/net/socket/socket.h>
 #include <drivers/timer/callout.h>
 #include <hardware/interrupts/irq.h>
 #include <drivers/scheduler/process.h>
@@ -204,8 +205,7 @@ static bool sockbuf_can_sleep()
 
 static void sockbuf_poll_once()
 {
-    if (net_lock_held())
-        netif_tx_flush();
+    netif_tx_flush();
     const uint64_t rflags = irq_save();
     irq_restore(rflags);
     if (rflags & 0x200)
@@ -226,8 +226,11 @@ int sockbuf_timedwait(struct sockbuf* sb, const uint64_t timeout)
     if (netisr_poll_pending())
         return 0;
     if (!sockbuf_can_sleep()) {
-        sb->flags |= SB_WAIT;
+        __atomic_or_fetch(&sb->flags, SB_WAIT, __ATOMIC_RELAXED);
+        struct sock_lock_saved socks;
+        sock_lock_save(&socks);
         sockbuf_poll_once();
+        sock_lock_restore(&socks);
         return 0;
     }
 
@@ -236,7 +239,7 @@ int sockbuf_timedwait(struct sockbuf* sb, const uint64_t timeout)
     callout_init(&timer);
     if (timeout)
         callout_reset(&timer, timeout, sockbuf_timeout, sb);
-    sb->flags |= SB_WAIT;
+    __atomic_or_fetch(&sb->flags, SB_WAIT, __ATOMIC_SEQ_CST);
     const int err = process_sleep_interruptible(sockbuf_wait_id(sb));
     callout_stop(&timer);
     irq_restore(flags);
@@ -251,8 +254,8 @@ int sockbuf_wait(struct sockbuf* sb)
 
 void sockbuf_wakeup(struct sockbuf* sb)
 {
-    if (!(sb->flags & SB_WAIT))
+    if (!(__atomic_load_n(&sb->flags, __ATOMIC_ACQUIRE) & SB_WAIT))
         return;
-    sb->flags &= ~SB_WAIT;
+    __atomic_and_fetch(&sb->flags, ~SB_WAIT, __ATOMIC_SEQ_CST);
     process_wakeup(sockbuf_wait_id(sb));
 }

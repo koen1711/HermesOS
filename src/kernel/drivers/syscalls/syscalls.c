@@ -54,6 +54,37 @@ void syscalls_initialize()
     syscalls_cpu_initialize();
 }
 
+static long socket_syscall_pinned(const interrupt_context* c, struct socket* so)
+{
+    switch (c->rax) {
+        case SYSCALL_ACCEPT:
+            return sys_accept(so, (struct sockaddr*)c->rsi, (socklen_t*)c->rdx);
+        case SYSCALL_ACCEPT4:
+            return sys_accept4(so, (struct sockaddr*)c->rsi, (socklen_t*)c->rdx, (int)c->r10);
+        case SYSCALL_SENDTO:
+            return sys_sendto(so, (const void*)c->rsi, c->rdx, (int)c->r10, (const struct sockaddr*)c->r8,
+                              (socklen_t)c->r9);
+        case SYSCALL_RECVFROM:
+            return sys_recvfrom(so, (void*)c->rsi, c->rdx, (int)c->r10, (struct sockaddr*)c->r8, (socklen_t*)c->r9);
+        case SYSCALL_SENDMSG:
+            return sys_sendmsg(so, (const struct msghdr_s*)c->rsi, (int)c->rdx);
+        case SYSCALL_RECVMSG:
+            return sys_recvmsg(so, (struct msghdr_s*)c->rsi, (int)c->rdx);
+        case SYSCALL_SHUTDOWN:
+            return sys_shutdown(so, (int)c->rsi);
+        case SYSCALL_GETSOCKNAME:
+            return sys_getsockname(so, (struct sockaddr*)c->rsi, (socklen_t*)c->rdx);
+        case SYSCALL_GETPEERNAME:
+            return sys_getpeername(so, (struct sockaddr*)c->rsi, (socklen_t*)c->rdx);
+        case SYSCALL_SETSOCKOPT:
+            return sys_setsockopt(so, (int)c->rsi, (int)c->rdx, (const void*)c->r10, (socklen_t)c->r8);
+        case SYSCALL_GETSOCKOPT:
+            return sys_getsockopt(so, (int)c->rsi, (int)c->rdx, (void*)c->r10, (socklen_t*)c->r8);
+        default:
+            return -ENOSYS;
+    }
+}
+
 static long socket_syscall(const interrupt_context* c)
 {
     const int fd = (int)c->rdi;
@@ -62,35 +93,12 @@ static long socket_syscall(const interrupt_context* c)
             return sys_socket((int)c->rdi, (int)c->rsi, (int)c->rdx);
         case SYSCALL_CONNECT:
             return sys_connect(fd, (const struct sockaddr*)c->rsi, (socklen_t)c->rdx);
-        case SYSCALL_ACCEPT:
-            return sys_accept(fd, (struct sockaddr*)c->rsi, (socklen_t*)c->rdx);
-        case SYSCALL_ACCEPT4:
-            return sys_accept4(fd, (struct sockaddr*)c->rsi, (socklen_t*)c->rdx, (int)c->r10);
-        case SYSCALL_SENDTO:
-            return sys_sendto(fd, (const void*)c->rsi, c->rdx, (int)c->r10, (const struct sockaddr*)c->r8,
-                              (socklen_t)c->r9);
-        case SYSCALL_RECVFROM:
-            return sys_recvfrom(fd, (void*)c->rsi, c->rdx, (int)c->r10, (struct sockaddr*)c->r8, (socklen_t*)c->r9);
-        case SYSCALL_SENDMSG:
-            return sys_sendmsg(fd, (const struct msghdr_s*)c->rsi, (int)c->rdx);
-        case SYSCALL_RECVMSG:
-            return sys_recvmsg(fd, (struct msghdr_s*)c->rsi, (int)c->rdx);
-        case SYSCALL_SHUTDOWN:
-            return sys_shutdown(fd, (int)c->rsi);
         case SYSCALL_BIND:
             return sys_bind(fd, (const struct sockaddr*)c->rsi, (socklen_t)c->rdx);
         case SYSCALL_LISTEN:
             return sys_listen(fd, (int)c->rsi);
-        case SYSCALL_GETSOCKNAME:
-            return sys_getsockname(fd, (struct sockaddr*)c->rsi, (socklen_t*)c->rdx);
-        case SYSCALL_GETPEERNAME:
-            return sys_getpeername(fd, (struct sockaddr*)c->rsi, (socklen_t*)c->rdx);
         case SYSCALL_SOCKETPAIR:
             return sys_socketpair((int)c->rdi, (int)c->rsi, (int)c->rdx, (int*)c->r10);
-        case SYSCALL_SETSOCKOPT:
-            return sys_setsockopt(fd, (int)c->rsi, (int)c->rdx, (const void*)c->r10, (socklen_t)c->r8);
-        case SYSCALL_GETSOCKOPT:
-            return sys_getsockopt(fd, (int)c->rsi, (int)c->rdx, (void*)c->r10, (socklen_t*)c->r8);
         default:
             return -ENOSYS;
     }
@@ -519,6 +527,43 @@ static bool socket_rw_fast(interrupt_context* c)
     return true;
 }
 
+static bool socket_call_fast(interrupt_context* c)
+{
+    switch (c->rax) {
+        case SYSCALL_ACCEPT:
+        case SYSCALL_ACCEPT4:
+        case SYSCALL_SENDTO:
+        case SYSCALL_RECVFROM:
+        case SYSCALL_SENDMSG:
+        case SYSCALL_RECVMSG:
+        case SYSCALL_SHUTDOWN:
+        case SYSCALL_GETSOCKNAME:
+        case SYSCALL_GETPEERNAME:
+        case SYSCALL_SETSOCKOPT:
+        case SYSCALL_GETSOCKOPT:
+            break;
+        default:
+            return false;
+    }
+    struct file_s* f = fd_pin((int)c->rdi);
+    if (f == nullptr) {
+        c->rax = (uint64_t)-EBADF;
+        return true;
+    }
+    if (f->node->fops != &socket_fops) {
+        vfs_file_put(f);
+        c->rax = (uint64_t)-ENOTSOCK;
+        return true;
+    }
+    const bool locked = net_lock_enter();
+    c->rax = (uint64_t)socket_syscall_pinned(c, f->node->private_data);
+    netisr_poll();
+    if (locked)
+        net_lock_exit();
+    vfs_file_put(f);
+    return true;
+}
+
 static bool runs_unlocked(const interrupt_context* c)
 {
     switch (c->rax) {
@@ -563,7 +608,7 @@ void handle_syscall(interrupt_context* context)
     current->syscall_nr = (int64_t)context->rax;
     current->frame = context;
 
-    if (socket_rw_fast(context))
+    if (socket_rw_fast(context) || socket_call_fast(context))
         return;
 
     bool locked = false;

@@ -6,6 +6,7 @@
 #include <drivers/fs/vfs/vfs.h>
 #include <drivers/elf/ELF.h>
 #include <drivers/scheduler/futex.h>
+#include <drivers/net/socket/socket.h>
 #include <drivers/syscalls/uaccess.h>
 #include <drivers/terminal/tty.h>
 #include <hardware/memory/alloc.h>
@@ -852,6 +853,8 @@ static void schedule() {
 }
 
 static void sched_switch(const uint64_t flags) {
+    struct sock_lock_saved socks;
+    sock_lock_save(&socks);
     const bool had_net_lock = net_lock_drop();
     const bool had_kernel_lock = kernel_lock_drop();
     schedule();
@@ -863,6 +866,7 @@ static void sched_switch(const uint64_t flags) {
     if (had_net_lock) {
         net_lock_enter();
     }
+    sock_lock_restore(&socks);
 }
 
 void process_entry_unlock() {

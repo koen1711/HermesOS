@@ -57,14 +57,9 @@ static long addr_room(const struct sockaddr* uaddr, const socklen_t* ulen)
 
 static int sock_install(struct socket* so, const int tflags)
 {
-    const int fd = socket_file_alloc_fd(so);
-    if (fd < 0) {
+    const int fd = socket_file_alloc_fd(so, tflags & SOCK_NONBLOCK, tflags & SOCK_CLOEXEC);
+    if (fd < 0)
         sock_close(so);
-        return fd;
-    }
-    if (tflags & SOCK_NONBLOCK)
-        socket_file_set_nonblock(fd_get(fd), true);
-    fd_set_cloexec(fd, tflags & SOCK_CLOEXEC);
     return fd;
 }
 
@@ -135,18 +130,17 @@ long sys_connect(const int fd, const struct sockaddr* addr, const socklen_t len)
     return sock_connect(so, (struct sockaddr*)&ss, len);
 }
 
-long sys_accept(const int fd, struct sockaddr* addr, socklen_t* len)
+long sys_accept(struct socket* so, struct sockaddr* addr, socklen_t* len)
 {
-    return sys_accept4(fd, addr, len, 0);
+    return sys_accept4(so, addr, len, 0);
 }
 
-long sys_accept4(const int fd, struct sockaddr* addr, socklen_t* len, const int flags)
+long sys_accept4(struct socket* so, struct sockaddr* addr, socklen_t* len, const int flags)
 {
     if (flags & ~(SOCK_NONBLOCK | SOCK_CLOEXEC))
         return -EINVAL;
-    struct socket* so;
-    long err = sock_lookup(fd, &so);
-    if (err || (err = addr_room(addr, len)))
+    long err = addr_room(addr, len);
+    if (err)
         return err;
 
     struct socket* conn;
@@ -156,24 +150,18 @@ long sys_accept4(const int fd, struct sockaddr* addr, socklen_t* len, const int 
     err = sock_accept(so, &conn, (struct sockaddr*)&ss, &klen);
     if (err)
         return err;
-    const int nfd = sock_install(conn, flags);
-    if (nfd < 0)
-        return nfd;
     if (addr && addr_out(&ss, klen, addr, len) < 0) {
-        fd_close(nfd);
+        sock_close(conn);
         return -EFAULT;
     }
-    return nfd;
+    return sock_install(conn, flags);
 }
 
-long sys_sendto(const int fd, const void* buf, const size_t len, const int flags, const struct sockaddr* dst,
+long sys_sendto(struct socket* so, const void* buf, const size_t len, const int flags, const struct sockaddr* dst,
                 const socklen_t dst_len)
 {
-    struct socket* so;
     struct sockaddr_storage ss;
-    long err = sock_lookup(fd, &so);
-    if (err)
-        return err;
+    long err;
     if (!uaccess_ok(buf, len))
         return -EFAULT;
     if (dst && (err = addr_in(&ss, dst, dst_len)))
@@ -181,12 +169,11 @@ long sys_sendto(const int fd, const void* buf, const size_t len, const int flags
     return sock_send(so, buf, len, flags, dst ? (struct sockaddr*)&ss : nullptr, dst ? dst_len : 0);
 }
 
-long sys_recvfrom(const int fd, void* buf, const size_t len, const int flags, struct sockaddr* src,
+long sys_recvfrom(struct socket* so, void* buf, const size_t len, const int flags, struct sockaddr* src,
                   socklen_t* src_len)
 {
-    struct socket* so;
-    long err = sock_lookup(fd, &so);
-    if (err || (err = addr_room(src, src_len)))
+    const long err = addr_room(src, src_len);
+    if (err)
         return err;
     if (!uaccess_ok_write(buf, len))
         return -EFAULT;
@@ -267,12 +254,9 @@ static ssize_t sendmsg_iov(struct socket* so, const struct iovec_s* iov, const s
     return (ssize_t)sent;
 }
 
-long sys_sendmsg(const int fd, const struct msghdr_s* umsg, const int flags)
+long sys_sendmsg(struct socket* so, const struct msghdr_s* umsg, const int flags)
 {
-    struct socket* so;
-    long err = sock_lookup(fd, &so);
-    if (err)
-        return err;
+    long err;
     struct msghdr_s msg;
     struct iovec_s* iov;
     size_t total;
@@ -326,12 +310,9 @@ static ssize_t recvmsg_iov(struct socket* so, const struct iovec_s* iov, const s
     return (ssize_t)got;
 }
 
-long sys_recvmsg(const int fd, struct msghdr_s* umsg, const int flags)
+long sys_recvmsg(struct socket* so, struct msghdr_s* umsg, const int flags)
 {
-    struct socket* so;
-    long err = sock_lookup(fd, &so);
-    if (err)
-        return err;
+    long err;
     struct msghdr_s msg;
     struct iovec_s* iov;
     size_t total;
@@ -366,18 +347,15 @@ long sys_recvmsg(const int fd, struct msghdr_s* umsg, const int flags)
     return n;
 }
 
-long sys_shutdown(const int fd, const int how)
+long sys_shutdown(struct socket* so, const int how)
 {
-    struct socket* so;
-    const long err = sock_lookup(fd, &so);
-    return err ? err : sock_shutdown(so, how);
+    return sock_shutdown(so, how);
 }
 
-static long sys_name(const int fd, struct sockaddr* addr, socklen_t* len, const bool peer)
+static long sys_name(struct socket* so, struct sockaddr* addr, socklen_t* len, const bool peer)
 {
-    struct socket* so;
-    long err = sock_lookup(fd, &so);
-    if (err || (err = addr_room(addr, len)))
+    long err = addr_room(addr, len);
+    if (err)
         return err;
     if (!addr)
         return -EFAULT;
@@ -390,22 +368,18 @@ static long sys_name(const int fd, struct sockaddr* addr, socklen_t* len, const 
     return addr_out(&ss, klen, addr, len);
 }
 
-long sys_getsockname(const int fd, struct sockaddr* addr, socklen_t* len)
+long sys_getsockname(struct socket* so, struct sockaddr* addr, socklen_t* len)
 {
-    return sys_name(fd, addr, len, false);
+    return sys_name(so, addr, len, false);
 }
 
-long sys_getpeername(const int fd, struct sockaddr* addr, socklen_t* len)
+long sys_getpeername(struct socket* so, struct sockaddr* addr, socklen_t* len)
 {
-    return sys_name(fd, addr, len, true);
+    return sys_name(so, addr, len, true);
 }
 
-long sys_setsockopt(const int fd, const int level, const int optname, const void* optval, const socklen_t optlen)
+long sys_setsockopt(struct socket* so, const int level, const int optname, const void* optval, const socklen_t optlen)
 {
-    struct socket* so;
-    const long err = sock_lookup(fd, &so);
-    if (err)
-        return err;
     if (optlen > SOCKOPT_MAX)
         return -EINVAL;
     uint8_t buf[SOCKOPT_MAX];
@@ -414,12 +388,9 @@ long sys_setsockopt(const int fd, const int level, const int optname, const void
     return sock_setopt(so, level, optname, optlen ? buf : nullptr, optlen);
 }
 
-long sys_getsockopt(const int fd, const int level, const int optname, void* optval, socklen_t* optlen)
+long sys_getsockopt(struct socket* so, const int level, const int optname, void* optval, socklen_t* optlen)
 {
-    struct socket* so;
-    long err = sock_lookup(fd, &so);
-    if (err)
-        return err;
+    long err;
     socklen_t room;
     if (copy_from_user(&room, optlen, sizeof(room)) < 0)
         return -EFAULT;

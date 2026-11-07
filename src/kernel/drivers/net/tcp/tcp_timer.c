@@ -64,6 +64,33 @@ static bool tcp_timer_enter(struct tcpcb* tp, const enum tcp_timer_type which)
     return false;
 }
 
+static bool tcp_timer_begin(struct tcpcb* tp, const enum tcp_timer_type which, struct socket** so, uint64_t* flags)
+{
+    *so = tp->t_closed ? nullptr : tp->inp->socket;
+    if (*so) {
+        sock_hold(*so);
+        sock_lock(*so);
+    }
+    tcp_lock(flags);
+    if (tcp_timer_enter(tp, which))
+        return true;
+    tcp_unlock(*flags);
+    if (*so) {
+        sock_unlock(*so);
+        sock_release(*so);
+    }
+    return false;
+}
+
+static void tcp_timer_end(struct socket* so, const uint64_t flags)
+{
+    tcp_unlock(flags);
+    if (so) {
+        sock_unlock(so);
+        sock_release(so);
+    }
+}
+
 bool tcp_timer_active(const struct tcpcb* tp, const enum tcp_timer_type which)
 {
     return callout_pending(&tp->timers[which]);
@@ -96,28 +123,27 @@ static void tcp_rexmt_timeout(struct tcpcb* tp)
 
 void tcp_timer_rexmt(void* arg)
 {
+    struct socket* so;
     uint64_t flags;
-    tcp_lock(&flags);
-    if (tcp_timer_enter(arg, TCPT_REXMT))
-        tcp_rexmt_timeout(arg);
-    tcp_unlock(flags);
+    if (!tcp_timer_begin(arg, TCPT_REXMT, &so, &flags))
+        return;
+    tcp_rexmt_timeout(arg);
+    tcp_timer_end(so, flags);
 }
 
 void tcp_timer_persist(void* arg)
 {
     struct tcpcb* tp = arg;
+    struct socket* so;
     uint64_t flags;
-    tcp_lock(&flags);
-    if (!tcp_timer_enter(tp, TCPT_PERSIST)) {
-        tcp_unlock(flags);
+    if (!tcp_timer_begin(tp, TCPT_PERSIST, &so, &flags))
         return;
-    }
     tcpstat.persisttimeo++;
     tcp_setpersist(tp);
     tp->t_flags |= TF_FORCEDATA;
     tcp_output(tp);
     tp->t_flags &= ~TF_FORCEDATA;
-    tcp_unlock(flags);
+    tcp_timer_end(so, flags);
 }
 
 static bool tcp_keepalive_enabled(const struct tcpcb* tp)
@@ -155,33 +181,33 @@ static void tcp_keep_timeout(struct tcpcb* tp)
 
 void tcp_timer_keep(void* arg)
 {
+    struct socket* so;
     uint64_t flags;
-    tcp_lock(&flags);
-    if (tcp_timer_enter(arg, TCPT_KEEP))
-        tcp_keep_timeout(arg);
-    tcp_unlock(flags);
+    if (!tcp_timer_begin(arg, TCPT_KEEP, &so, &flags))
+        return;
+    tcp_keep_timeout(arg);
+    tcp_timer_end(so, flags);
 }
 
 void tcp_timer_2msl(void* arg)
 {
+    struct socket* so;
     uint64_t flags;
-    tcp_lock(&flags);
-    if (tcp_timer_enter(arg, TCPT_2MSL))
-        tcp_close(arg);
-    tcp_unlock(flags);
+    if (!tcp_timer_begin(arg, TCPT_2MSL, &so, &flags))
+        return;
+    tcp_close(arg);
+    tcp_timer_end(so, flags);
 }
 
 void tcp_timer_delack(void* arg)
 {
     struct tcpcb* tp = arg;
+    struct socket* so;
     uint64_t flags;
-    tcp_lock(&flags);
-    if (!tcp_timer_enter(tp, TCPT_DELACK)) {
-        tcp_unlock(flags);
+    if (!tcp_timer_begin(tp, TCPT_DELACK, &so, &flags))
         return;
-    }
     tp->t_flags &= ~TF_DELACK;
     tp->t_flags |= TF_ACKNOW;
     tcp_output(tp);
-    tcp_unlock(flags);
+    tcp_timer_end(so, flags);
 }
