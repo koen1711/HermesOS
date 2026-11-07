@@ -57,6 +57,7 @@ void ipv4_initialize()
     dlist_init(&all_addrs);
     spinlock_init(&addr_lock, "ipv4_addr");
     netisr_register(NETISR_IP, ipv4_input, IPV4_INPUT_QUEUE_LEN);
+    netisr_register_mpsafe(NETISR_TCP4, ipv4_input, IPV4_INPUT_QUEUE_LEN);
     callout_init(&reassemble_callout);
     callout_reset(&reassemble_callout, ticks_hz(), ipv4_reassemble_timer, nullptr);
 }

@@ -6,6 +6,7 @@
 #include <drivers/net/core/netisr.h>
 #include <drivers/net/core/byteorder.h>
 #include <drivers/net/arp/arp.h>
+#include <drivers/net/ipv4/ipv4.h>
 #include <drivers/net/ipv6/nd6.h>
 #include <drivers/net/socket/sockaddr.h>
 #include <os/errno.h>
@@ -68,7 +69,7 @@ void eth_input(struct netif* nif, struct netbuf* nb)
 
     switch (type) {
     case ETHERTYPE_IPV4:
-        netisr_queue(NETISR_IP, nb);
+        netisr_queue(nb->len > 9 && nb->data[9] == IPPROTO_TCP ? NETISR_TCP4 : NETISR_IP, nb);
         break;
     case ETHERTYPE_ARP:
         netisr_queue(NETISR_ARP, nb);

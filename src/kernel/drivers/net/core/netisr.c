@@ -12,6 +12,7 @@
 struct netisr_proto_state {
     netisr_handler_t handler;
     struct netqueue queue;
+    bool mpsafe;
 };
 
 static struct netisr_proto_state protos[NETISR_MAX];
@@ -35,6 +36,14 @@ int netisr_register(const enum netisr_proto proto, const netisr_handler_t handle
     netqueue_init(&protos[proto].queue, queue_len);
     protos[proto].handler = handler;
     return 0;
+}
+
+int netisr_register_mpsafe(const enum netisr_proto proto, const netisr_handler_t handler, const uint32_t queue_len)
+{
+    const int err = netisr_register(proto, handler, queue_len);
+    if (!err)
+        protos[proto].mpsafe = true;
+    return err;
 }
 
 void netisr_unregister(const enum netisr_proto proto)
@@ -88,62 +97,55 @@ bool netisr_pending()
     return false;
 }
 
-static bool netisr_backlogged()
-{
-    for (int p = 1; p < NETISR_MAX; p++)
-        if (protos[p].queue.max_len && netqueue_len(&protos[p].queue) >= protos[p].queue.max_len / 2)
-            return true;
-    return false;
-}
-
-static bool netisr_drain(const bool wait)
+// One drainer at a time keeps segments in order. Queues that are not mpsafe need the net lock,
+// taken only by try so the drainer never waits on a holder that is waiting on it.
+static bool netisr_drain()
 {
     static bool running;
-    bool locked = false;
-    if (!net_lock_held()) {
-        locked = wait ? net_lock_enter() : net_lock_try_enter();
-        if (!locked)
-            return false;
-    }
-    if (running) {
-        if (locked)
-            net_lock_exit();
-        return false;
-    }
-    running = true;
-
     bool did = false;
-    bool more = true;
-    while (more) {
-        more = false;
-        for (int p = 1; p < NETISR_MAX; p++) {
-            for (int i = 0; i < NETISR_POLL_BUDGET; i++) {
-                struct netbuf* nb = netqueue_dequeue(&protos[p].queue);
-                if (!nb)
-                    break;
-                struct netif* rcvif = nb->rcvif;
-                const netisr_handler_t handler = protos[p].handler;
-                if (handler)
-                    handler(nb);
-                else
-                    netbuf_free_chain(nb);
-                if (rcvif)
-                    netif_rele(rcvif);
-                more = true;
-                did = true;
+    while (netisr_pending() && !__atomic_exchange_n(&running, true, __ATOMIC_ACQUIRE)) {
+        bool more = true, blocked = false;
+        netif_tx_batch_begin();
+        while (more) {
+            more = false;
+            for (int p = 1; p < NETISR_MAX; p++) {
+                if (!netqueue_len(&protos[p].queue))
+                    continue;
+                bool locked = false;
+                if (!protos[p].mpsafe && !net_lock_held() && !(locked = net_lock_try_enter())) {
+                    blocked = true;
+                    continue;
+                }
+                for (int i = 0; i < NETISR_POLL_BUDGET; i++) {
+                    struct netbuf* nb = netqueue_dequeue(&protos[p].queue);
+                    if (!nb)
+                        break;
+                    struct netif* rcvif = nb->rcvif;
+                    const netisr_handler_t handler = protos[p].handler;
+                    if (handler)
+                        handler(nb);
+                    else
+                        netbuf_free_chain(nb);
+                    if (rcvif)
+                        netif_rele(rcvif);
+                    more = true;
+                    did = true;
+                }
+                if (locked)
+                    net_lock_exit();
             }
         }
+        netif_tx_batch_end();
+        __atomic_store_n(&running, false, __ATOMIC_RELEASE);
+        if (blocked)
+            break;
     }
-    running = false;
-    if (locked)
-        net_lock_exit();
     return did;
 }
 
 void netisr_poll()
 {
-    if (netisr_pending())
-        netisr_drain(netisr_backlogged());
+    netisr_drain();
 }
 
 void netisr_purge(struct netif* nif)
@@ -156,5 +158,5 @@ void netisr_purge(struct netif* nif)
 
 bool netisr_poll_pending()
 {
-    return netisr_pending() && netisr_drain(true);
+    return netisr_drain();
 }

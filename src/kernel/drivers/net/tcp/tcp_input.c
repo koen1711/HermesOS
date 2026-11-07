@@ -215,8 +215,8 @@ static int tcp_reassemble_pull(struct tcpcb* tp)
         tp->rcv_nxt += e->len;
         tp->reassemble_len -= e->len;
         flags |= e->flags;
-        tcpstat.rcvpack++;
-        tcpstat.rcvbyte += e->len;
+        TCPSTAT_INC(rcvpack);
+        TCPSTAT_ADD(rcvbyte, e->len);
         if (e->len && so && !(so->state & SS_CANTRCVMORE)) {
             sockbuf_append(&so->rcv, e->data);
             delivered = true;
@@ -319,7 +319,7 @@ static void tcp_input_listen(struct tcpcb* lp, struct netbuf* nb, struct tcp_seg
     tcp_state_change(tp, TCPS_SYN_RECEIVED);
     tcp_timer_activate(tp, TCPT_KEEP, TCP_KEEPINIT_MS);
     tp->t_flags |= TF_ACKNOW;
-    tcpstat.accepts++;
+    TCPSTAT_INC(accepts);
     tcp_output(tp);
 }
 
@@ -387,7 +387,7 @@ static bool tcp_paws_ok(struct tcpcb* tp, const struct tcp_seg* seg)
         tp->ts_recent = 0;
         return true;
     }
-    tcpstat.rcvduppack++;
+    TCPSTAT_INC(rcvduppack);
     return false;
 }
 
@@ -446,7 +446,7 @@ static bool tcp_trim_segment(struct tcpcb* tp, struct tcp_seg* seg)
             th->flags &= ~TH_FIN;
             tp->t_flags |= TF_ACKNOW;
             todrop = seg->len;
-            tcpstat.rcvduppack++;
+            TCPSTAT_INC(rcvduppack);
         }
         netbuf_adj(seg->data, todrop);
         th->seq += todrop;
@@ -697,7 +697,7 @@ static bool tcp_process_data(struct tcpcb* tp, struct tcp_seg* seg)
 
     const bool in_order = th->seq == tp->rcv_nxt && !tp->reassemble_queue;
     if (!in_order)
-        tcpstat.rcvoopack++;
+        TCPSTAT_INC(rcvoopack);
     const int fin = tcp_reassemble(tp, th, seg->data, seg->len);
     seg->data = nullptr;
     if (seg->len)
@@ -794,7 +794,7 @@ static bool tcp_validate(const struct netbuf* nb, const size_t off, const size_t
     if (hlen < TCP_HEADER_LEN || hlen > tlen)
         return false;
     if (!(nb->csum_flags & NETBUF_CSUM_L4_VALID) && inpcb_l4_checksum(nb, off, tlen, IPPROTO_TCP, src, dst)) {
-        tcpstat.rcvbadsum++;
+        TCPSTAT_INC(rcvbadsum);
         return false;
     }
     return true;
@@ -810,7 +810,7 @@ static void tcp_header_to_host(struct tcp_header* th)
 
 static void tcp_input_packet(struct netbuf* nb, const size_t off, const struct in6_addr* src, const struct in6_addr* dst)
 {
-    tcpstat.rcvtotal++;
+    TCPSTAT_INC(rcvtotal);
     const size_t tlen = nb->pkt_len - off;
     if (!tcp_validate(nb, off, tlen, src, dst)) {
         netbuf_free_chain(nb);
@@ -832,7 +832,7 @@ static void tcp_input_packet(struct netbuf* nb, const size_t off, const struct i
     tcp_table_unlock(flags);
     if (so)
         sock_lock(so);
-    if (so && inp->ppcb) {
+    if (so && so->pcb == inp && inp->ppcb) {
         tcp_input(nb, th, off + hlen, inp->ppcb);
     } else {
         tcp_reply_reset(nb, th, tlen - hlen);

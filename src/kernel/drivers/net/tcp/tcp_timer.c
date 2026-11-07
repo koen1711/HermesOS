@@ -59,24 +59,23 @@ static bool tcp_timer_enter(struct tcpcb* tp, const enum tcp_timer_type which)
     tp->t_timer_entered[which]++;
     if (!tp->t_closed)
         return true;
-    if (__atomic_sub_fetch(&tp->t_draining, 1, __ATOMIC_ACQ_REL) == 0)
+    if (__atomic_sub_fetch(&tp->t_draining, 1, __ATOMIC_ACQ_REL) == 0) {
+        struct socket* so = tp->t_so;
         free(tp);
+        sock_release(so);
+    }
     return false;
 }
 
 static bool tcp_timer_begin(struct tcpcb* tp, const enum tcp_timer_type which, struct socket** so)
 {
-    *so = tp->t_closed ? nullptr : tp->inp->socket;
-    if (*so) {
-        sock_hold(*so);
-        sock_lock(*so);
-    }
+    *so = tp->t_so;
+    sock_hold(*so);
+    sock_lock(*so);
     if (tcp_timer_enter(tp, which))
         return true;
-    if (*so) {
-        sock_unlock(*so);
-        sock_release(*so);
-    }
+    sock_unlock(*so);
+    sock_release(*so);
     return false;
 }
 
@@ -99,7 +98,7 @@ static void tcp_rexmt_timeout(struct tcpcb* tp)
         tcp_drop(tp, tp->t_softerror ? tp->t_softerror : ETIMEDOUT);
         return;
     }
-    tcpstat.rexmttimeo++;
+    TCPSTAT_INC(rexmttimeo);
 
     if (tp->rexmt_shift > TCP_MAXRXTSHIFT / 4) {
         tp->rttvar += tp->srtt >> 3;
@@ -133,7 +132,7 @@ void tcp_timer_persist(void* arg)
     struct socket* so;
     if (!tcp_timer_begin(tp, TCPT_PERSIST, &so))
         return;
-    tcpstat.persisttimeo++;
+    TCPSTAT_INC(persisttimeo);
     tcp_setpersist(tp);
     tp->t_flags |= TF_FORCEDATA;
     tcp_output(tp);
@@ -165,7 +164,7 @@ static void tcp_keep_timeout(struct tcpcb* tp)
         return;
     }
     if (tp->keep_probes >= TCP_KEEPCNT) {
-        tcpstat.keeptimeo++;
+        TCPSTAT_INC(keeptimeo);
         tcp_drop(tp, ETIMEDOUT);
         return;
     }

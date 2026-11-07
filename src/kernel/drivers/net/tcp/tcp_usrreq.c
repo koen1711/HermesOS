@@ -98,7 +98,7 @@ static int tcp_connect_locked(struct socket* so, const struct sockaddr* addr, co
     tcp_state_change(tp, TCPS_SYN_SENT);
     sock_is_connecting(so);
     tcp_timer_activate(tp, TCPT_KEEP, TCP_KEEPINIT_MS);
-    tcpstat.connattempt++;
+    TCPSTAT_INC(connattempt);
     tcp_output(tp);
     return 0;
 }

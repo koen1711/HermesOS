@@ -54,6 +54,7 @@ struct tcpcb* tcp_newtcpcb(struct inpcb* inp)
     if (!tp)
         return nullptr;
     tp->inp = inp;
+    tp->t_so = inp->socket;
     tp->state = TCPS_CLOSED;
     for (int i = 0; i < TCPT_COUNT; i++)
         callout_init(&tp->timers[i]);
@@ -89,6 +90,8 @@ void tcp_pcb_release(struct inpcb* inp)
 {
     struct socket* so = inp->socket;
     uint64_t flags;
+    if (so && so->pcb == inp)
+        so->pcb = nullptr;
     tcp_table_lock(&flags);
     inpcb_free(inp);
     tcp_table_unlock(flags);
@@ -104,11 +107,12 @@ struct tcpcb* tcp_close(struct tcpcb* tp)
     tcp_reassemble_flush(tp);
     if (tp->cc->destroy)
         tp->cc->destroy(tp);
-    tcpstat.closed++;
+    TCPSTAT_INC(closed);
     inp->ppcb = nullptr;
     if (draining) {
         tp->t_closed = true;
         tp->t_draining = draining;
+        sock_hold(tp->t_so);
     } else {
         free(tp);
     }
@@ -132,7 +136,7 @@ struct tcpcb* tcp_drop(struct tcpcb* tp, const int error)
         tcp_state_change(tp, TCPS_CLOSED);
         tcp_output(tp);
     }
-    tcpstat.drops++;
+    TCPSTAT_INC(drops);
     if (so && !(tp->inp->flags & INPCB_DETACHED))
         so->error = error;
     return tcp_close(tp);
@@ -176,7 +180,7 @@ void tcp_established(struct tcpcb* tp)
 {
     struct socket* so = tp->inp->socket;
     tcp_state_change(tp, TCPS_ESTABLISHED);
-    tcpstat.connects++;
+    TCPSTAT_INC(connects);
     if (tp->cc->conn_init)
         tp->cc->conn_init(tp);
     tcp_timer_activate(tp, TCPT_KEEP, TCP_KEEPIDLE_MS);

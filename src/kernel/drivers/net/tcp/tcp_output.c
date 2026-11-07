@@ -275,7 +275,7 @@ static void tcp_checksum_and_send(const struct inpcb* inp, struct netbuf* nb,
 {
     const auto th = (struct tcp_header*)nb->data;
     th->checksum = htons(inpcb_l4_checksum(nb, 0, nb->len, IPPROTO_TCP, src, dst));
-    tcpstat.sndtotal++;
+    TCPSTAT_INC(sndtotal);
     inpcb_ip_output(inp, nb, IPPROTO_TCP, src, dst);
 }
 
@@ -304,12 +304,12 @@ static struct netbuf* tcp_build_segment(const struct tcpcb* tp, const struct tcp
 static void tcp_count_send(const struct tcpcb* tp, const struct tcp_txplan* tx)
 {
     if (tx->len && SEQ_LT(tx->seq, tp->snd_max)) {
-        tcpstat.sndrexmitpack++;
+        TCPSTAT_INC(sndrexmitpack);
     } else if (tx->len) {
-        tcpstat.sndpack++;
-        tcpstat.sndbyte += tx->len;
+        TCPSTAT_INC(sndpack);
+        TCPSTAT_ADD(sndbyte, tx->len);
     } else if (tx->flags & TH_ACK) {
-        tcpstat.sndacks++;
+        TCPSTAT_INC(sndacks);
     }
 }
 

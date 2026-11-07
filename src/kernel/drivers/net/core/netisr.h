@@ -8,6 +8,7 @@ enum netisr_proto {
     NETISR_IPV6,
     NETISR_ARP,
     NETISR_ETHER,
+    NETISR_TCP4,
     NETISR_MAX,
 };
 
@@ -18,6 +19,7 @@ typedef void (*netisr_handler_t)(struct netbuf* nb);
 
 void netisr_initialize();
 int netisr_register(enum netisr_proto proto, netisr_handler_t handler, uint32_t queue_len);
+int netisr_register_mpsafe(enum netisr_proto proto, netisr_handler_t handler, uint32_t queue_len);
 void netisr_unregister(enum netisr_proto proto);
 
 int netisr_dispatch(enum netisr_proto proto, struct netbuf* nb);

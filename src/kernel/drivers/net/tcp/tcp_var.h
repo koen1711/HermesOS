@@ -7,6 +7,8 @@
 #include <drivers/net/tcp/tcp.h>
 #include <drivers/net/core/netbuf.h>
 
+struct socket;
+
 enum tcp_state {
     TCPS_CLOSED,
     TCPS_LISTEN,
@@ -72,6 +74,7 @@ struct tcpcb {
     struct callout timers[TCPT_COUNT];
     uint32_t t_timer_entered[TCPT_COUNT];
     bool t_closed;
+    struct socket* t_so;
     uint32_t t_draining;
     uint8_t rexmt_shift;
 
@@ -132,5 +135,8 @@ struct tcp_stats {
 };
 
 extern struct tcp_stats tcpstat;
+
+#define TCPSTAT_ADD(field, n) __atomic_add_fetch(&tcpstat.field, (n), __ATOMIC_RELAXED)
+#define TCPSTAT_INC(field) TCPSTAT_ADD(field, 1)
 
 #endif //NET_TCP_TCP_VAR_H
