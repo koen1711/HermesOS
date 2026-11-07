@@ -16,7 +16,6 @@ int socket_file_close(struct file_s* f);
 int socket_file_poll(struct file_s* f);
 int socket_file_ioctl(struct file_s* f, unsigned long request, void* arg);
 void socket_file_set_nonblock(struct file_s* f, bool on);
-uint64_t socket_file_poll_bit(const struct file_s* f);
 
 int socket_file_alloc_fd(struct socket* so, bool nonblock, bool cloexec);
 struct socket* socket_from_fd(int fd);

@@ -1,6 +1,7 @@
 #include "pipe.h"
 
 #include <drivers/fs/vfs/vfs.h>
+#include <drivers/fs/vfs/poll_head.h>
 #include <drivers/scheduler/process.h>
 #include <drivers/scheduler/signal.h>
 #include <hardware/memory/alloc.h>
@@ -14,6 +15,7 @@ struct pipe {
     size_t len;
     int readers;
     int writers;
+    struct poll_head ph;
 };
 
 static struct pipe* pipe_of(const struct file_s* f)
@@ -26,10 +28,11 @@ static int pipe_wait_id(const struct pipe* p)
     return (int)(((uintptr_t)p >> 4) & 0x0FFFFFFF) | 0x50000000;
 }
 
-static void pipe_notify(const struct pipe* p)
+static void pipe_notify(struct pipe* p, const uint32_t events)
 {
     process_wakeup(pipe_wait_id(p));
-    process_wakeup_poll(~0ULL);
+    poll_head_wake(&p->ph, events);
+    process_wakeup_poll();
 }
 
 static ssize_t pipe_read(struct file_s* f, void* buf, const size_t len)
@@ -48,7 +51,7 @@ static ssize_t pipe_read(struct file_s* f, void* buf, const size_t len)
         ((uint8_t*)buf)[i] = p->buf[(p->head + i) % PIPE_BUFFER_SIZE];
     p->head = (p->head + n) % PIPE_BUFFER_SIZE;
     p->len -= n;
-    pipe_notify(p);
+    pipe_notify(p, VFS_POLLOUT);
     return (ssize_t)n;
 }
 
@@ -76,7 +79,7 @@ static ssize_t pipe_write(struct file_s* f, const void* buf, const size_t len)
             p->buf[(p->head + p->len + i) % PIPE_BUFFER_SIZE] = ((const uint8_t*)buf)[written + i];
         p->len += n;
         written += n;
-        pipe_notify(p);
+        pipe_notify(p, VFS_POLLIN);
     }
     return (ssize_t)written;
 }
@@ -88,7 +91,7 @@ static int pipe_close(struct file_s* f)
         p->readers--;
     else
         p->writers--;
-    pipe_notify(p);
+    pipe_notify(p, VFS_POLLIN | VFS_POLLOUT | VFS_POLLERR | VFS_POLLHUP);
     if (p->readers == 0 && p->writers == 0) {
         free(p->buf);
         free(p);
@@ -105,11 +108,17 @@ static int pipe_poll(struct file_s* f)
     return (PIPE_BUFFER_SIZE - p->len >= PIPE_ATOMIC ? VFS_POLLOUT : 0) | (p->readers == 0 ? VFS_POLLERR : 0);
 }
 
+static struct poll_head* pipe_poll_head(struct file_s* f)
+{
+    return &pipe_of(f)->ph;
+}
+
 static file_operations_t pipe_fops = {
     .read = pipe_read,
     .write = pipe_write,
     .close = pipe_close,
     .poll = pipe_poll,
+    .poll_head = pipe_poll_head,
     .poll_mpsafe = true,
 };
 
@@ -152,6 +161,7 @@ int pipe_create(struct file_s** read_end, struct file_s** write_end)
         return -ENOMEM;
     }
     p->readers = p->writers = 1;
+    poll_head_init(&p->ph);
 
     *read_end = pipe_end(p, O_RDONLY);
     *write_end = *read_end ? pipe_end(p, O_WRONLY) : nullptr;

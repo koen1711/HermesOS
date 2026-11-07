@@ -10,11 +10,14 @@
 #include <hardware/smp/smp.h>
 #include <os/errno.h>
 
+static struct poll_head* socket_file_poll_head(struct file_s* f);
+
 file_operations_t socket_fops = {
     .read = socket_file_read,
     .write = socket_file_write,
     .close = socket_file_close,
     .poll = socket_file_poll,
+    .poll_head = socket_file_poll_head,
     .ioctl = socket_file_ioctl,
     .poll_mpsafe = true,
 };
@@ -91,9 +94,9 @@ int socket_file_poll(struct file_s* f)
     return socket_poll_locked(f);
 }
 
-uint64_t socket_file_poll_bit(const struct file_s* f)
+static struct poll_head* socket_file_poll_head(struct file_s* f)
 {
-    return f->node->fops == &socket_fops ? sock_poll_bit(socket_of(f)) : 0;
+    return &socket_of(f)->ph;
 }
 
 void socket_file_set_nonblock(struct file_s* f, const bool on)

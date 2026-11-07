@@ -187,7 +187,7 @@ void tty_receive(const int index, char c)
             t->cooked = t->len;
             t->eof++;
             process_wakeup(WAIT_CHANNEL_TTY | t->index);
-            process_wakeup_poll(~0ULL);
+            process_wakeup_poll();
             return;
         }
     }
@@ -199,7 +199,7 @@ void tty_receive(const int index, char c)
     if (c == '\n' || !tty_canonical(t))
         t->cooked = t->len;
     process_wakeup(WAIT_CHANNEL_TTY | t->index);
-    process_wakeup_poll(~0ULL);
+    process_wakeup_poll();
 }
 
 void tty_input(const char c)

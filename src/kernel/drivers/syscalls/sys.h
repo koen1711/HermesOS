@@ -88,9 +88,10 @@ long sys_pselect6(int nfds, uint64_t* rfds, uint64_t* wfds, uint64_t* efds, cons
 
 struct file_s;
 typedef long (*poll_scan_t)(void* ctx);
+typedef long (*poll_wait_t)(void* ctx, int64_t timeout_ns);
 int poll_file(struct file_s* f);
 long poll_wait(poll_scan_t scan, void* ctx, int64_t timeout_ns);
-long poll_wait_sigmask(const uint64_t* umask, size_t sigsetsize, poll_scan_t scan, void* ctx, int64_t timeout_ns);
+long poll_wait_sigmask(const uint64_t* umask, size_t sigsetsize, poll_wait_t wait, void* ctx, int64_t timeout_ns);
 long poll_timespec_ns(const struct timespec_k* uts, int64_t* ns);
 
 long sys_epoll_create1(int flags);

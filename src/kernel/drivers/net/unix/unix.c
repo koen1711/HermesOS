@@ -41,7 +41,7 @@ static int unix_send(struct socket* so, struct netbuf* nb, const struct sockaddr
     }
     sockbuf_append(&peer->rcv, nb);
     so->snd.cc = peer->rcv.cc;
-    sock_wakeup(peer);
+    sock_wakeup(peer, VFS_POLLIN);
     return 0;
 }
 
@@ -51,7 +51,7 @@ static int unix_rcvd(struct socket* so, const int flags)
     struct socket* peer = peer_of(so);
     if (peer) {
         peer->snd.cc = so->rcv.cc;
-        sock_wakeup(peer);
+        sock_wakeup(peer, VFS_POLLOUT);
     }
     return 0;
 }

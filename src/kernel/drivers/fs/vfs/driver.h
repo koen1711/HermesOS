@@ -3,6 +3,7 @@
 
 #include "os/stddef.h"
 #include "os/types.h"
+#include <utils/queue/queue.h>
 
 #define O_RDONLY 0x01
 #define O_WRONLY 0x02
@@ -28,6 +29,7 @@
 struct inode_s;
 struct file_s;
 struct mounted_file_system_s;
+struct poll_head;
 
 struct vfs_dirent {
     uint64_t ino;
@@ -90,6 +92,7 @@ typedef struct file_operations_s {
     int (*close)(struct file_s* f);
     int (*readdir)(struct file_s* f, struct vfs_dirent* out);
     int (*poll)(struct file_s* f);
+    struct poll_head* (*poll_head)(struct file_s* f);
     int (*ioctl)(struct file_s* f, unsigned long request, void* arg);
     int (*truncate)(struct file_s* f, size_t size);
     int (*fallocate)(struct file_s* f, int mode, int64_t offset, int64_t len);
@@ -122,6 +125,7 @@ typedef struct file_s {
     struct mounted_file_system_s* mount;
     int ref_count;
     struct file_s* deferred_next;
+    struct dlist ep_links;
     char filename[MAX_PATH_LENGTH];
 } file_t;
 

@@ -8,6 +8,10 @@
 #include <utils/queue/queue.h>
 #include <drivers/net/socket/sockaddr.h>
 #include <drivers/net/socket/sockbuf.h>
+#include <drivers/fs/vfs/driver.h>
+#include <drivers/fs/vfs/poll_head.h>
+
+#define SOCK_WAKE_ALL (VFS_POLLIN | VFS_POLLOUT | VFS_POLLERR | VFS_POLLHUP)
 
 enum so_state
 {
@@ -114,6 +118,8 @@ struct socket {
 
     void (*upcall)(struct socket* so, void* arg);
     void* upcall_arg;
+
+    struct poll_head ph;
 };
 
 void socket_initialize();
@@ -154,8 +160,7 @@ bool sock_lock_held(const struct socket* so);
 bool sock_lock_any_held();
 void sock_lock_save(struct sock_lock_saved* saved);
 void sock_lock_restore(const struct sock_lock_saved* saved);
-void sock_wakeup(struct socket* so);
-uint64_t sock_poll_bit(const struct socket* so);
+void sock_wakeup(struct socket* so, uint32_t events);
 bool sock_mpsafe(const struct socket* so);
 void sock_set_upcall(struct socket* so, void (*upcall)(struct socket* so, void* arg), void* arg);
 

@@ -78,6 +78,7 @@ static void schedule();
 static void sched_switch(uint64_t flags);
 static void kick_clear();
 static volatile uint64_t poll_wake_seq;
+static volatile uint64_t poll_legacy_sleepers;
 volatile uint64_t poll_wake_calls;
 volatile uint64_t poll_wake_woken;
 
@@ -228,7 +229,8 @@ static int sleep_interruptible(const int wait_id, const uint64_t *seq, const boo
     proc->interruptible = true;
     uint64_t flags;
     spinlock_acquire_irqsave(&sched_lock, &flags);
-    if (signal_wakes(proc) || (seq && *seq != __atomic_load_n(&poll_wake_seq, __ATOMIC_SEQ_CST))
+    if (signal_wakes(proc) || __atomic_load_n(&proc->poll_pending, __ATOMIC_SEQ_CST)
+        || (seq && *seq != __atomic_load_n(&poll_wake_seq, __ATOMIC_SEQ_CST))
         || (timed && __atomic_load_n(&proc->timed_out, __ATOMIC_ACQUIRE))) {
         spinlock_release_irqrestore(&sched_lock, flags);
     } else {
@@ -238,6 +240,7 @@ static int sleep_interruptible(const int wait_id, const uint64_t *seq, const boo
         sched_switch(flags);
     }
     proc->interruptible = false;
+    __atomic_store_n(&proc->poll_pending, false, __ATOMIC_RELAXED);
     return signal_wakes(proc) ? -EINTR : 0;
 }
 
@@ -245,11 +248,24 @@ int process_sleep_interruptible(const int wait_id) {
     return sleep_interruptible(wait_id, nullptr, false);
 }
 
+uint64_t process_poll_legacy_enter() {
+    __atomic_add_fetch(&poll_legacy_sleepers, 1, __ATOMIC_SEQ_CST);
+    return process_poll_seq();
+}
+
+void process_poll_legacy_exit() {
+    __atomic_sub_fetch(&poll_legacy_sleepers, 1, __ATOMIC_SEQ_CST);
+}
+
 uint64_t process_poll_seq() {
     return __atomic_load_n(&poll_wake_seq, __ATOMIC_SEQ_CST);
 }
 
-void process_wakeup_poll(const uint64_t interest) {
+void process_wakeup_poll() {
+    __atomic_thread_fence(__ATOMIC_SEQ_CST);
+    if (!__atomic_load_n(&poll_legacy_sleepers, __ATOMIC_RELAXED)) {
+        return;
+    }
     __atomic_add_fetch(&poll_wake_seq, 1, __ATOMIC_SEQ_CST);
     __atomic_add_fetch(&poll_wake_calls, 1, __ATOMIC_RELAXED);
     uint64_t flags;
@@ -258,12 +274,10 @@ void process_wakeup_poll(const uint64_t interest) {
     process_t *proc = waiting_first(WAIT_CHANNEL_POLL);
     while (proc != nullptr && proc->wait_id == WAIT_CHANNEL_POLL) {
         const struct rb_node *next = rb_next(&proc->wait_node);
-        if (proc->poll_interest & interest) {
-            rb_remove(&scheduler.waiting, &proc->wait_node);
-            proc->state = PROC_SLOT_READY;
-            dlist_insert_tail(&scheduler.ready, &proc->link);
-            woken++;
-        }
+        rb_remove(&scheduler.waiting, &proc->wait_node);
+        proc->state = PROC_SLOT_READY;
+        dlist_insert_tail(&scheduler.ready, &proc->link);
+        woken++;
         proc = next ? rb_entry(next, process_t, wait_node) : nullptr;
     }
     spinlock_release_irqrestore(&sched_lock, flags);
@@ -271,6 +285,11 @@ void process_wakeup_poll(const uint64_t interest) {
     if (woken) {
         kick_idle_cpus(woken);
     }
+}
+
+void process_poll_kick(process_t *proc) {
+    __atomic_store_n(&proc->poll_pending, true, __ATOMIC_SEQ_CST);
+    process_wake(proc);
 }
 
 static void sleep_timeout(void *arg) {
@@ -300,8 +319,8 @@ int process_sleep_timeout(const int wait_id, const uint64_t ticks) {
     return sleep_timeout_checked(wait_id, ticks, nullptr);
 }
 
-int process_sleep_poll(const uint64_t seq, const uint64_t ticks) {
-    return sleep_timeout_checked(WAIT_CHANNEL_POLL, ticks, &seq);
+int process_sleep_poll(const uint64_t *seq, const uint64_t ticks) {
+    return sleep_timeout_checked(seq ? WAIT_CHANNEL_POLL : WAIT_CHANNEL_EPOLL, ticks, seq);
 }
 
 void process_interrupt(process_t *proc) {
@@ -436,7 +455,7 @@ void process_exit() {
         process_wakeup(WAIT_CHANNEL_CHILD | proc->ppid);
     }
     if (leader)
-        process_wakeup_poll(~0ULL);
+        process_wakeup_poll();
 
     uint64_t flags;
     spinlock_acquire_irqsave(&sched_lock, &flags);

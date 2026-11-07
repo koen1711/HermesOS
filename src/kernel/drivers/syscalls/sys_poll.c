@@ -66,32 +66,34 @@ static long scan_pollfds(void* ctx)
 long poll_wait(const poll_scan_t scan, void* ctx, const int64_t timeout_ns)
 {
     const uint64_t start = clock_monotonic_ns();
-    process_t* current = scheduler_get()->current;
+    long r;
     for (;;) {
         netisr_poll();
-        const uint64_t seq = process_poll_seq();
-        current->poll_interest = ~0ULL;
-        const long count = scan(ctx);
-        if (count || timeout_ns == 0)
-            return count;
+        const uint64_t seq = process_poll_legacy_enter();
+        r = scan(ctx);
+        if (r || timeout_ns == 0)
+            break;
 
         uint64_t wait = ticks_from_ms(POLL_RECHECK_MS);
         if (timeout_ns > 0) {
             const uint64_t elapsed = clock_monotonic_ns() - start;
             if (elapsed >= (uint64_t)timeout_ns)
-                return 0;
+                break;
             const uint64_t left = clock_ticks_from_ns((uint64_t)timeout_ns - elapsed);
             if (left < wait)
                 wait = left;
         }
 
-        const int err = process_sleep_poll(seq, wait);
+        const int err = process_sleep_poll(&seq, wait);
+        process_poll_legacy_exit();
         if (err == -EINTR)
             return -EINTR;
     }
+    process_poll_legacy_exit();
+    return r;
 }
 
-long poll_wait_sigmask(const uint64_t* umask, const size_t sigsetsize, const poll_scan_t scan, void* ctx,
+long poll_wait_sigmask(const uint64_t* umask, const size_t sigsetsize, const poll_wait_t wait, void* ctx,
                        const int64_t timeout_ns)
 {
     process_t* current = scheduler_get()->current;
@@ -106,7 +108,7 @@ long poll_wait_sigmask(const uint64_t* umask, const size_t sigsetsize, const pol
     if (umask)
         current->sig_blocked = mask & ~((1ULL << (SIGKILL - 1)) | (1ULL << (SIGSTOP - 1)));
 
-    const long r = poll_wait(scan, ctx, timeout_ns);
+    const long r = wait(ctx, timeout_ns);
     if (umask) {
         if (r == -EINTR) {
             current->sig_saved_blocked = saved;
@@ -118,11 +120,16 @@ long poll_wait_sigmask(const uint64_t* umask, const size_t sigsetsize, const pol
     return r;
 }
 
+static long wait_pollfds(void* ctx, const int64_t timeout_ns)
+{
+    return poll_wait(scan_pollfds, ctx, timeout_ns);
+}
+
 static long with_sigmask(const uint64_t* umask, const size_t sigsetsize, struct pollfd_k* fds, const uint64_t nfds,
                          const int64_t timeout_ns)
 {
     struct pollfd_set set = { fds, nfds };
-    return poll_wait_sigmask(umask, sigsetsize, scan_pollfds, &set, timeout_ns);
+    return poll_wait_sigmask(umask, sigsetsize, wait_pollfds, &set, timeout_ns);
 }
 
 long poll_timespec_ns(const struct timespec_k* uts, int64_t* ns)

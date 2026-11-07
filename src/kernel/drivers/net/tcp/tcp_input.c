@@ -226,7 +226,7 @@ static int tcp_reassemble_pull(struct tcpcb* tp)
         free(e);
     }
     if (delivered)
-        sock_wakeup(so);
+        sock_wakeup(so, VFS_POLLIN);
     return flags & TH_FIN;
 }
 
@@ -557,8 +557,9 @@ static void tcp_drop_acked_data(struct tcpcb* tp, const tcp_seq ack, uint32_t ac
     struct socket* so = tp->inp->socket;
     if (!so || !acked)
         return;
+    const bool was_full = sockbuf_space(&so->snd) == 0;
     sockbuf_drop(&so->snd, acked < so->snd.cc ? acked : so->snd.cc);
-    sock_wakeup(so);
+    sock_wakeup(so, was_full ? VFS_POLLOUT : 0);
 }
 
 static void tcp_new_ack(struct tcpcb* tp, const struct tcp_seg* seg)

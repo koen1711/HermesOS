@@ -98,7 +98,7 @@ static void udp_deliver_locked(const struct inpcb* inp, struct socket* so, struc
         netbuf_free_chain(nb);
         return;
     }
-    sock_wakeup(so);
+    sock_wakeup(so, VFS_POLLIN);
 }
 
 static void udp_deliver(const struct inpcb* inp, struct netbuf* nb, const struct in6_addr* src, const uint16_t sport)

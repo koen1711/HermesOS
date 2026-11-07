@@ -151,6 +151,7 @@ static struct socket* sock_alloc(const int type, struct protosw* pr)
     sockbuf_init(&so->rcv, SOCKBUF_DEFAULT_SIZE);
     dlist_init(&so->incomplete);
     dlist_init(&so->complete);
+    poll_head_init(&so->ph);
     return so;
 }
 
@@ -642,18 +643,18 @@ void sock_is_connected(struct socket* so)
         }
         spinlock_release_irqrestore(&accept_lock, flags);
         if (head) {
-            sock_wakeup(head);
+            sock_wakeup(head, VFS_POLLIN);
             sock_release(head);
         }
     }
-    sock_wakeup(so);
+    sock_wakeup(so, SOCK_WAKE_ALL);
 }
 
 void sock_is_disconnecting(struct socket* so)
 {
     so->state &= ~SS_ISCONNECTING;
     so->state |= SS_ISDISCONNECTING | SS_CANTRCVMORE | SS_CANTSENDMORE;
-    sock_wakeup(so);
+    sock_wakeup(so, SOCK_WAKE_ALL);
 }
 
 void sock_is_disconnected(struct socket* so)
@@ -662,7 +663,7 @@ void sock_is_disconnected(struct socket* so)
     so->state |= SS_CANTRCVMORE | SS_CANTSENDMORE;
     __atomic_or_fetch(&so->snd.flags, SB_CANTMORE, __ATOMIC_RELAXED);
     __atomic_or_fetch(&so->rcv.flags, SB_CANTMORE, __ATOMIC_RELAXED);
-    sock_wakeup(so);
+    sock_wakeup(so, SOCK_WAKE_ALL);
 }
 
 bool sock_drop_embryo(struct socket* so)
@@ -686,14 +687,14 @@ void sock_cant_send_more(struct socket* so)
 {
     so->state |= SS_CANTSENDMORE;
     __atomic_or_fetch(&so->snd.flags, SB_CANTMORE, __ATOMIC_RELAXED);
-    sock_wakeup(so);
+    sock_wakeup(so, SOCK_WAKE_ALL);
 }
 
 void sock_cant_recv_more(struct socket* so)
 {
     so->state |= SS_CANTRCVMORE;
     __atomic_or_fetch(&so->rcv.flags, SB_CANTMORE, __ATOMIC_RELAXED);
-    sock_wakeup(so);
+    sock_wakeup(so, SOCK_WAKE_ALL);
 }
 
 struct socket* sock_new_conn(struct socket* head)
@@ -733,19 +734,17 @@ void sock_release(struct socket* so)
     sock_free(so);
 }
 
-uint64_t sock_poll_bit(const struct socket* so)
-{
-    return 1ULL << (((uintptr_t)so >> 6) * 0x9E3779B97F4A7C15ULL >> 58);
-}
-
 bool sock_mpsafe(const struct socket* so)
 {
     return so->proto->flags & PR_MPSAFE;
 }
 
-void sock_wakeup(struct socket* so)
+void sock_wakeup(struct socket* so, const uint32_t events)
 {
-    process_wakeup_poll(sock_poll_bit(so));
+    if (events) {
+        poll_head_wake(&so->ph, events);
+        process_wakeup_poll();
+    }
     sockbuf_wakeup(&so->rcv);
     sockbuf_wakeup(&so->snd);
     if (so->upcall)

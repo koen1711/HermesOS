@@ -2,6 +2,7 @@
 #include "drivers/terminal/terminal.h"
 #include "utils/str/str.h"
 #include <drivers/fs/notify/inotify.h>
+#include <drivers/fs/vfs/poll_head.h>
 #include <hardware/smp/smp.h>
 #include <utils/sync/spinlock.h>
 #include <os/errno.h>
@@ -653,6 +654,7 @@ void vfs_file_release(struct file_s* f)
 {
     const bool locked = kernel_lock_enter();
     const size_t id = f->id;
+    epoll_file_release(f);
     if (f->node->fops != nullptr && f->node->fops->close != nullptr)
         f->node->fops->close(f);
     if (f->mount != nullptr)

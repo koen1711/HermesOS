@@ -28,6 +28,7 @@
 #define WAIT_CHANNEL_CHILD 0x20000000
 #define WAIT_CHANNEL_TIMER 0x30000000
 #define WAIT_CHANNEL_POLL  0x38000000
+#define WAIT_CHANNEL_EPOLL 0x3A000000
 
 typedef enum {
     PROC_SLOT_UNUSED = 0,
@@ -76,7 +77,7 @@ typedef struct {
     struct k_sigaction sig_actions[SIGNAL_MAX];
     struct signal_info sig_info[SIGNAL_MAX];
     int64_t syscall_nr;
-    uint64_t poll_interest;
+    bool poll_pending;
     uint64_t altstack_sp;
     uint64_t altstack_size;
     int32_t altstack_flags;
@@ -115,9 +116,12 @@ void process_wake(process_t *proc);
 
 int process_sleep_interruptible(int wait_id);
 int process_sleep_timeout(int wait_id, uint64_t ticks);
+uint64_t process_poll_legacy_enter();
+void process_poll_legacy_exit();
 uint64_t process_poll_seq();
-int process_sleep_poll(uint64_t seq, uint64_t ticks);
-void process_wakeup_poll(uint64_t interest);
+int process_sleep_poll(const uint64_t *seq, uint64_t ticks);
+void process_wakeup_poll();
+void process_poll_kick(process_t *proc);
 void process_interrupt(process_t *proc);
 process_t *process_find(int pid);
 int process_count();
