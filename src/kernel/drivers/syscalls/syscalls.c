@@ -8,7 +8,9 @@
 #include <drivers/fs/vfs/vfs.h>
 #include <drivers/net/socket/socket_syscalls.h>
 #include <drivers/net/socket/socket_file.h>
+#include <drivers/net/core/netif.h>
 #include <drivers/net/core/netisr.h>
+#include <drivers/net/socket/socket.h>
 #include <hardware/smp/smp.h>
 #include <os/errno.h>
 
@@ -555,9 +557,14 @@ static bool socket_call_fast(interrupt_context* c)
         c->rax = (uint64_t)-ENOTSOCK;
         return true;
     }
-    const bool locked = net_lock_enter();
-    c->rax = (uint64_t)socket_syscall_pinned(c, f->node->private_data);
+    struct socket* so = f->node->private_data;
+    const bool rw = c->rax == SYSCALL_SENDTO || c->rax == SYSCALL_RECVFROM || c->rax == SYSCALL_SENDMSG
+        || c->rax == SYSCALL_RECVMSG;
+    const bool locked = !(rw && sock_mpsafe(so)) && net_lock_enter();
+    netif_tx_batch_begin();
+    c->rax = (uint64_t)socket_syscall_pinned(c, so);
     netisr_poll();
+    netif_tx_batch_end();
     if (locked)
         net_lock_exit();
     vfs_file_put(f);

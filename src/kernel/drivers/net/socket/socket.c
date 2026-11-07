@@ -738,6 +738,11 @@ uint64_t sock_poll_bit(const struct socket* so)
     return 1ULL << (((uintptr_t)so >> 6) * 0x9E3779B97F4A7C15ULL >> 58);
 }
 
+bool sock_mpsafe(const struct socket* so)
+{
+    return so->proto->flags & PR_MPSAFE;
+}
+
 void sock_wakeup(struct socket* so)
 {
     process_wakeup_poll(sock_poll_bit(so));

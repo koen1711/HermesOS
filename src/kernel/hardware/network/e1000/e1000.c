@@ -374,6 +374,8 @@ bool e1000_tx_init(struct e1000_device* dev)
     dev->tx_pending = nullptr;
     dev->tx_pending_count = 0;
     dev->tx_busy = false;
+    callout_init(&dev->tx_kick);
+    dev->tx_kick.mpsafe = true;
     dev->tx_clean = 0;
 
     if (dev->pci.device_id == E1000_I217 || dev->pci.device_id == E1000_82577LM) {
@@ -573,13 +575,21 @@ static void e1000_tx_enqueue(struct netif* nif, struct netbuf* nb)
         e1000_tx_ring_doorbell(dev);
 }
 
-// A single owner drains; a CPU that loses tx_busy leaves its frames for the owner's recheck.
+static void e1000_tx_kick(void* arg)
+{
+    e1000_tx_flush(arg);
+}
+
 void e1000_tx_flush(struct netif* nif)
 {
     const auto dev = (struct e1000_device*)nif->softc;
-    for (;;) {
+    for (int round = 0;; round++) {
         if (!__atomic_load_n(&dev->tx_pending, __ATOMIC_SEQ_CST))
             return;
+        if (round == E1000_TX_OWNER_ROUNDS) {
+            callout_reset(&dev->tx_kick, 1, e1000_tx_kick, nif);
+            return;
+        }
         const uint64_t flags = irq_save();
         if (__atomic_exchange_n(&dev->tx_busy, true, __ATOMIC_ACQUIRE)) {
             irq_restore(flags);

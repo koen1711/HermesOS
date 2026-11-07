@@ -33,7 +33,8 @@ enum pr_flags
 {
     PR_ATOMIC = 0x01,
     PR_ADDR = 0x02,
-    PR_CONNREQUIRED = 0x04
+    PR_CONNREQUIRED = 0x04,
+    PR_MPSAFE = 0x08
 };
 
 struct domain {

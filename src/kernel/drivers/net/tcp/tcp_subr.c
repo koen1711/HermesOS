@@ -29,12 +29,12 @@ void tcp_initialize()
     ipv6_register_protocol(IPPROTO_TCP, tcp_input6);
 }
 
-void tcp_lock(uint64_t* flags)
+void tcp_table_lock(uint64_t* flags)
 {
     spinlock_acquire_irqsave(&tcp_pcbs.lock, flags);
 }
 
-void tcp_unlock(const uint64_t flags)
+void tcp_table_unlock(const uint64_t flags)
 {
     spinlock_release_irqrestore(&tcp_pcbs.lock, flags);
 }
@@ -68,11 +68,16 @@ struct tcpcb* tcp_newtcpcb(struct inpcb* inp)
 
 int tcp_attach_pcb(struct socket* so)
 {
+    uint64_t flags;
+    tcp_table_lock(&flags);
     struct inpcb* inp = inpcb_alloc(&tcp_pcbs, so);
+    tcp_table_unlock(flags);
     if (!inp)
         return -ENOMEM;
     if (!tcp_newtcpcb(inp)) {
+        tcp_table_lock(&flags);
         inpcb_free(inp);
+        tcp_table_unlock(flags);
         return -ENOMEM;
     }
     so->pcb = inp;
@@ -83,7 +88,10 @@ int tcp_attach_pcb(struct socket* so)
 void tcp_pcb_release(struct inpcb* inp)
 {
     struct socket* so = inp->socket;
+    uint64_t flags;
+    tcp_table_lock(&flags);
     inpcb_free(inp);
+    tcp_table_unlock(flags);
     if (so)
         sock_release(so);
 }
@@ -108,7 +116,10 @@ struct tcpcb* tcp_close(struct tcpcb* tp)
     if (inp->flags & INPCB_DETACHED || sock_drop_embryo(inp->socket)) {
         tcp_pcb_release(inp);
     } else {
+        uint64_t flags;
+        tcp_table_lock(&flags);
         inpcb_hash_remove(inp);
+        tcp_table_unlock(flags);
         sock_is_disconnected(inp->socket);
     }
     return nullptr;
@@ -251,10 +262,7 @@ void tcp_ctlinput(const struct inpcb* inp, const int error, const uint32_t mtu)
         sock_hold(so);
         sock_lock(so);
     }
-    uint64_t flags;
-    tcp_lock(&flags);
     tcp_ctlinput_locked(inp, error, mtu);
-    tcp_unlock(flags);
     if (so) {
         sock_unlock(so);
         sock_release(so);

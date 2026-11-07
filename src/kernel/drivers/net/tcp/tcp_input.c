@@ -306,7 +306,10 @@ static void tcp_input_listen(struct tcpcb* lp, struct netbuf* nb, struct tcp_seg
     inp->fport = th->src_port;
     inp->lport = lp->inp->lport;
     inp->flags |= lp->inp->flags & (INPCB_IPV6 | INPCB_IPV6_ONLY);
+    uint64_t flags;
+    tcp_table_lock(&flags);
     inpcb_hash_insert(inp);
+    tcp_table_unlock(flags);
 
     tcp_apply_syn_opts(tp, &seg->to);
     tcp_init_rcv(tp, th->seq);
@@ -821,22 +824,20 @@ static void tcp_input_packet(struct netbuf* nb, const size_t off, const struct i
     tcp_header_to_host(th);
 
     uint64_t flags;
-    tcp_lock(&flags);
+    tcp_table_lock(&flags);
     struct inpcb* inp = inpcb_lookup(&tcp_pcbs, src, th->src_port, dst, th->dst_port, true);
     struct socket* so = inp && inp->ppcb ? inp->socket : nullptr;
-    if (so) {
+    if (so)
         sock_hold(so);
-        tcp_unlock(flags);
+    tcp_table_unlock(flags);
+    if (so)
         sock_lock(so);
-        tcp_lock(&flags);
-    }
-    if (inp && inp->ppcb) {
+    if (so && inp->ppcb) {
         tcp_input(nb, th, off + hlen, inp->ppcb);
     } else {
         tcp_reply_reset(nb, th, tlen - hlen);
         netbuf_free_chain(nb);
     }
-    tcp_unlock(flags);
     if (so) {
         sock_unlock(so);
         sock_release(so);

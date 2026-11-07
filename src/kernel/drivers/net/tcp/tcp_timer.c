@@ -59,22 +59,20 @@ static bool tcp_timer_enter(struct tcpcb* tp, const enum tcp_timer_type which)
     tp->t_timer_entered[which]++;
     if (!tp->t_closed)
         return true;
-    if (--tp->t_draining == 0)
+    if (__atomic_sub_fetch(&tp->t_draining, 1, __ATOMIC_ACQ_REL) == 0)
         free(tp);
     return false;
 }
 
-static bool tcp_timer_begin(struct tcpcb* tp, const enum tcp_timer_type which, struct socket** so, uint64_t* flags)
+static bool tcp_timer_begin(struct tcpcb* tp, const enum tcp_timer_type which, struct socket** so)
 {
     *so = tp->t_closed ? nullptr : tp->inp->socket;
     if (*so) {
         sock_hold(*so);
         sock_lock(*so);
     }
-    tcp_lock(flags);
     if (tcp_timer_enter(tp, which))
         return true;
-    tcp_unlock(*flags);
     if (*so) {
         sock_unlock(*so);
         sock_release(*so);
@@ -82,9 +80,8 @@ static bool tcp_timer_begin(struct tcpcb* tp, const enum tcp_timer_type which, s
     return false;
 }
 
-static void tcp_timer_end(struct socket* so, const uint64_t flags)
+static void tcp_timer_end(struct socket* so)
 {
-    tcp_unlock(flags);
     if (so) {
         sock_unlock(so);
         sock_release(so);
@@ -124,26 +121,24 @@ static void tcp_rexmt_timeout(struct tcpcb* tp)
 void tcp_timer_rexmt(void* arg)
 {
     struct socket* so;
-    uint64_t flags;
-    if (!tcp_timer_begin(arg, TCPT_REXMT, &so, &flags))
+    if (!tcp_timer_begin(arg, TCPT_REXMT, &so))
         return;
     tcp_rexmt_timeout(arg);
-    tcp_timer_end(so, flags);
+    tcp_timer_end(so);
 }
 
 void tcp_timer_persist(void* arg)
 {
     struct tcpcb* tp = arg;
     struct socket* so;
-    uint64_t flags;
-    if (!tcp_timer_begin(tp, TCPT_PERSIST, &so, &flags))
+    if (!tcp_timer_begin(tp, TCPT_PERSIST, &so))
         return;
     tcpstat.persisttimeo++;
     tcp_setpersist(tp);
     tp->t_flags |= TF_FORCEDATA;
     tcp_output(tp);
     tp->t_flags &= ~TF_FORCEDATA;
-    tcp_timer_end(so, flags);
+    tcp_timer_end(so);
 }
 
 static bool tcp_keepalive_enabled(const struct tcpcb* tp)
@@ -182,32 +177,29 @@ static void tcp_keep_timeout(struct tcpcb* tp)
 void tcp_timer_keep(void* arg)
 {
     struct socket* so;
-    uint64_t flags;
-    if (!tcp_timer_begin(arg, TCPT_KEEP, &so, &flags))
+    if (!tcp_timer_begin(arg, TCPT_KEEP, &so))
         return;
     tcp_keep_timeout(arg);
-    tcp_timer_end(so, flags);
+    tcp_timer_end(so);
 }
 
 void tcp_timer_2msl(void* arg)
 {
     struct socket* so;
-    uint64_t flags;
-    if (!tcp_timer_begin(arg, TCPT_2MSL, &so, &flags))
+    if (!tcp_timer_begin(arg, TCPT_2MSL, &so))
         return;
     tcp_close(arg);
-    tcp_timer_end(so, flags);
+    tcp_timer_end(so);
 }
 
 void tcp_timer_delack(void* arg)
 {
     struct tcpcb* tp = arg;
     struct socket* so;
-    uint64_t flags;
-    if (!tcp_timer_begin(tp, TCPT_DELACK, &so, &flags))
+    if (!tcp_timer_begin(tp, TCPT_DELACK, &so))
         return;
     tp->t_flags &= ~TF_DELACK;
     tp->t_flags |= TF_ACKNOW;
     tcp_output(tp);
-    tcp_timer_end(so, flags);
+    tcp_timer_end(so);
 }

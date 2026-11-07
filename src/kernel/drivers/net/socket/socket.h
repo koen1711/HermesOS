@@ -156,6 +156,7 @@ void sock_lock_save(struct sock_lock_saved* saved);
 void sock_lock_restore(const struct sock_lock_saved* saved);
 void sock_wakeup(struct socket* so);
 uint64_t sock_poll_bit(const struct socket* so);
+bool sock_mpsafe(const struct socket* so);
 void sock_set_upcall(struct socket* so, void (*upcall)(struct socket* so, void* arg), void* arg);
 
 #endif //NET_SOCKET_SOCKET_H

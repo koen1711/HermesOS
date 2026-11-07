@@ -13,7 +13,7 @@
     .type = SOCK_STREAM,                        \
     .domain = (dom),                            \
     .protocol = IPPROTO_TCP,                    \
-    .flags = PR_CONNREQUIRED,                   \
+    .flags = PR_CONNREQUIRED | PR_MPSAFE,       \
     .pr_attach = tcp_attach,                    \
     .pr_detach = tcp_detach,                    \
     .pr_bind = tcp_bind,                        \
@@ -47,36 +47,33 @@ static int tcp_gone_error(const struct socket* so)
 int tcp_attach(struct socket* so, const int proto)
 {
     (void)proto;
-    uint64_t flags;
-    tcp_lock(&flags);
-    const int err = tcp_attach_pcb(so);
-    tcp_unlock(flags);
-    return err;
+    return tcp_attach_pcb(so);
 }
 
 int tcp_bind(struct socket* so, const struct sockaddr* addr, const socklen_t len)
 {
     uint64_t flags;
-    tcp_lock(&flags);
+    tcp_table_lock(&flags);
     const int err = so->pcb ? inpcb_bind(so->pcb, addr, len) : -EINVAL;
-    tcp_unlock(flags);
+    tcp_table_unlock(flags);
     return err;
 }
 
 int tcp_listen(struct socket* so, const int backlog)
 {
     (void)backlog;
-    uint64_t flags;
-    tcp_lock(&flags);
     struct tcpcb* tp = tcp_tcpcb(so);
     int err = 0;
-    if (!tp || (tp->state != TCPS_CLOSED && tp->state != TCPS_LISTEN))
+    if (!tp || (tp->state != TCPS_CLOSED && tp->state != TCPS_LISTEN)) {
         err = -EINVAL;
-    else if (!tp->inp->lport)
+    } else if (!tp->inp->lport) {
+        uint64_t flags;
+        tcp_table_lock(&flags);
         err = inpcb_bind(tp->inp, nullptr, 0);
+        tcp_table_unlock(flags);
+    }
     if (!err)
         tcp_state_change(tp, TCPS_LISTEN);
-    tcp_unlock(flags);
     return err;
 }
 
@@ -90,7 +87,10 @@ static int tcp_connect_locked(struct socket* so, const struct sockaddr* addr, co
     if (tp->state != TCPS_CLOSED)
         return -EISCONN;
 
+    uint64_t flags;
+    tcp_table_lock(&flags);
     const int err = inpcb_connect(tp->inp, addr, len);
+    tcp_table_unlock(flags);
     if (err)
         return err;
 
@@ -105,11 +105,7 @@ static int tcp_connect_locked(struct socket* so, const struct sockaddr* addr, co
 
 int tcp_connect(struct socket* so, const struct sockaddr* addr, const socklen_t len)
 {
-    uint64_t flags;
-    tcp_lock(&flags);
-    const int err = tcp_connect_locked(so, addr, len);
-    tcp_unlock(flags);
-    return err;
+    return tcp_connect_locked(so, addr, len);
 }
 
 int tcp_accept(struct socket* so, struct sockaddr* addr, socklen_t* len)
@@ -130,8 +126,6 @@ int tcp_send(struct socket* so, struct netbuf* nb, const struct sockaddr* dst, s
         return -EOPNOTSUPP;
     }
 
-    uint64_t lock_flags;
-    tcp_lock(&lock_flags);
     struct tcpcb* tp = tcp_tcpcb(so);
     int err = 0;
     if (!tp)
@@ -146,19 +140,15 @@ int tcp_send(struct socket* so, struct netbuf* nb, const struct sockaddr* dst, s
         sockbuf_append(&so->snd, nb);
         tcp_output(tp);
     }
-    tcp_unlock(lock_flags);
     return err;
 }
 
 int tcp_rcvd(struct socket* so, const int flags)
 {
     (void)flags;
-    uint64_t lock_flags;
-    tcp_lock(&lock_flags);
     struct tcpcb* tp = tcp_tcpcb(so);
     if (tp)
         tcp_output(tp);
-    tcp_unlock(lock_flags);
     return 0;
 }
 
@@ -166,13 +156,10 @@ int tcp_shutdown(struct socket* so, const int how)
 {
     if (how == SHUT_RD)
         return 0;
-    uint64_t flags;
-    tcp_lock(&flags);
     struct tcpcb* tp = tcp_tcpcb(so);
     sock_cant_send_more(so);
     if (tp && (tp = tcp_usrclosed(tp)))
         tcp_output(tp);
-    tcp_unlock(flags);
     return 0;
 }
 
@@ -191,29 +178,21 @@ static void tcp_disconnect_tp(struct socket* so, struct tcpcb* tp)
 
 int tcp_disconnect(struct socket* so)
 {
-    uint64_t flags;
-    tcp_lock(&flags);
     struct tcpcb* tp = tcp_tcpcb(so);
     if (tp)
         tcp_disconnect_tp(so, tp);
-    tcp_unlock(flags);
     return tp ? 0 : -ENOTCONN;
 }
 
 void tcp_abort(struct socket* so)
 {
-    uint64_t flags;
-    tcp_lock(&flags);
     struct tcpcb* tp = tcp_tcpcb(so);
     if (tp)
         tcp_drop(tp, ECONNABORTED);
-    tcp_unlock(flags);
 }
 
 void tcp_detach(struct socket* so)
 {
-    uint64_t flags;
-    tcp_lock(&flags);
     struct inpcb* inp = so->pcb;
     if (inp) {
         inp->flags |= INPCB_DETACHED;
@@ -225,7 +204,6 @@ void tcp_detach(struct socket* so)
         else if ((tp = tcp_usrclosed(tp)))
             tcp_output(tp);
     }
-    tcp_unlock(flags);
 }
 
 static int tcp_ctloutput_int(void* optval, socklen_t* optlen, int* value, const bool set)
@@ -245,8 +223,6 @@ int tcp_ctloutput(struct socket* so, const int level, const int optname, void* o
     if (level != IPPROTO_TCP)
         return -ENOPROTOOPT;
 
-    uint64_t flags;
-    tcp_lock(&flags);
     struct tcpcb* tp = tcp_tcpcb(so);
     int err = -ENOPROTOOPT;
     int value;
@@ -267,6 +243,5 @@ int tcp_ctloutput(struct socket* so, const int level, const int optname, void* o
         else if (!err && set)
             tp->mss = value;
     }
-    tcp_unlock(flags);
     return err;
 }

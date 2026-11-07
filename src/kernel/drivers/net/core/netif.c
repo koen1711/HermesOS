@@ -186,6 +186,20 @@ void netif_tx_batch_end()
         netif_tx_flush();
 }
 
+uint32_t netif_tx_batch_save()
+{
+    const auto b = &tx_batch[cpu_this()->index];
+    const uint32_t depth = b->depth;
+    b->depth = 0;
+    netif_tx_flush();
+    return depth;
+}
+
+void netif_tx_batch_restore(const uint32_t depth)
+{
+    tx_batch[cpu_this()->index].depth += depth;
+}
+
 bool netif_tx_defer(struct netif* nif)
 {
     const auto b = &tx_batch[cpu_this()->index];

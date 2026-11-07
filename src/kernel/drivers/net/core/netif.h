@@ -106,6 +106,8 @@ void netif_input(struct netif* nif, struct netbuf* nb);
 int netif_output(struct netif* nif, struct netbuf* nb);
 void netif_tx_batch_begin();
 void netif_tx_batch_end();
+uint32_t netif_tx_batch_save();
+void netif_tx_batch_restore(uint32_t depth);
 bool netif_tx_defer(struct netif* nif);
 void netif_tx_flush();
 

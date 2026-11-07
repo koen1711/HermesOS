@@ -148,6 +148,7 @@ enum e1000_transmit_status
 #define E1000_NUM_RX_DESC 256
 #define E1000_NUM_TX_DESC 64
 #define E1000_TX_BATCH 32
+#define E1000_TX_OWNER_ROUNDS 4
 
 struct e1000_rx_desc {
     volatile uint64_t addr;

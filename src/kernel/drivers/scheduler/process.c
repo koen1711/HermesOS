@@ -6,6 +6,7 @@
 #include <drivers/fs/vfs/vfs.h>
 #include <drivers/elf/ELF.h>
 #include <drivers/scheduler/futex.h>
+#include <drivers/net/core/netif.h>
 #include <drivers/net/socket/socket.h>
 #include <drivers/syscalls/uaccess.h>
 #include <drivers/terminal/tty.h>
@@ -222,12 +223,13 @@ static bool signal_wakes(const process_t *proc) {
     return proc->sig_pending & (~proc->sig_blocked | proc->sig_waiting);
 }
 
-static int sleep_interruptible(const int wait_id, const uint64_t *seq) {
+static int sleep_interruptible(const int wait_id, const uint64_t *seq, const bool timed) {
     process_t *proc = scheduler_get()->current;
     proc->interruptible = true;
     uint64_t flags;
     spinlock_acquire_irqsave(&sched_lock, &flags);
-    if (signal_wakes(proc) || (seq && *seq != __atomic_load_n(&poll_wake_seq, __ATOMIC_SEQ_CST))) {
+    if (signal_wakes(proc) || (seq && *seq != __atomic_load_n(&poll_wake_seq, __ATOMIC_SEQ_CST))
+        || (timed && __atomic_load_n(&proc->timed_out, __ATOMIC_ACQUIRE))) {
         spinlock_release_irqrestore(&sched_lock, flags);
     } else {
         proc->state = PROC_SLOT_SLEEPING;
@@ -240,7 +242,7 @@ static int sleep_interruptible(const int wait_id, const uint64_t *seq) {
 }
 
 int process_sleep_interruptible(const int wait_id) {
-    return sleep_interruptible(wait_id, nullptr);
+    return sleep_interruptible(wait_id, nullptr, false);
 }
 
 uint64_t process_poll_seq() {
@@ -273,7 +275,7 @@ void process_wakeup_poll(const uint64_t interest) {
 
 static void sleep_timeout(void *arg) {
     process_t *proc = arg;
-    proc->timed_out = true;
+    __atomic_store_n(&proc->timed_out, true, __ATOMIC_RELEASE);
     process_wake(proc);
 }
 
@@ -286,8 +288,8 @@ static int sleep_timeout_checked(const int wait_id, const uint64_t ticks, const 
     if (ticks) {
         callout_reset(&timer, ticks, sleep_timeout, proc);
     }
-    const int err = sleep_interruptible(wait_id, seq);
-    callout_stop(&timer);
+    const int err = sleep_interruptible(wait_id, seq, ticks != 0);
+    callout_drain(&timer);
     if (err) {
         return err;
     }
@@ -856,6 +858,7 @@ static void sched_switch(const uint64_t flags) {
     struct sock_lock_saved socks;
     sock_lock_save(&socks);
     const bool had_net_lock = net_lock_drop();
+    const uint32_t tx_depth = netif_tx_batch_save();
     const bool had_kernel_lock = kernel_lock_drop();
     schedule();
     spinlock_release_irqrestore(&sched_lock, flags);
@@ -866,6 +869,7 @@ static void sched_switch(const uint64_t flags) {
     if (had_net_lock) {
         net_lock_enter();
     }
+    netif_tx_batch_restore(tx_depth);
     sock_lock_restore(&socks);
 }
 

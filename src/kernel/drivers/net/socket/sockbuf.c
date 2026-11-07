@@ -216,14 +216,22 @@ static void sockbuf_poll_once()
     callout_poll();
 }
 
-static void sockbuf_timeout(void* arg)
+static bool sockbuf_drain_netisr()
 {
-    sockbuf_wakeup(arg);
+    if (!netisr_pending())
+        return false;
+    if (net_lock_held())
+        return netisr_poll_pending();
+    struct sock_lock_saved socks;
+    sock_lock_save(&socks);
+    const bool did = netisr_poll_pending();
+    sock_lock_restore(&socks);
+    return did;
 }
 
 int sockbuf_timedwait(struct sockbuf* sb, const uint64_t timeout)
 {
-    if (netisr_poll_pending())
+    if (sockbuf_drain_netisr())
         return 0;
     if (!sockbuf_can_sleep()) {
         __atomic_or_fetch(&sb->flags, SB_WAIT, __ATOMIC_RELAXED);
@@ -235,14 +243,12 @@ int sockbuf_timedwait(struct sockbuf* sb, const uint64_t timeout)
     }
 
     const uint64_t flags = irq_save();
-    struct callout timer;
-    callout_init(&timer);
-    if (timeout)
-        callout_reset(&timer, timeout, sockbuf_timeout, sb);
     __atomic_or_fetch(&sb->flags, SB_WAIT, __ATOMIC_SEQ_CST);
-    const int err = process_sleep_interruptible(sockbuf_wait_id(sb));
-    callout_stop(&timer);
+    int err = timeout ? process_sleep_timeout(sockbuf_wait_id(sb), timeout)
+                      : process_sleep_interruptible(sockbuf_wait_id(sb));
     irq_restore(flags);
+    if (err == -ETIMEDOUT)
+        err = 0;
 
     return err == -EINTR && !timeout ? -ERESTARTSYS : err;
 }

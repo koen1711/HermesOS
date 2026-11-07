@@ -15,8 +15,8 @@ extern struct inpcb_table tcp_pcbs;
 
 void tcp_initialize();
 
-void tcp_lock(uint64_t* flags);
-void tcp_unlock(uint64_t flags);
+void tcp_table_lock(uint64_t* flags);
+void tcp_table_unlock(uint64_t flags);
 
 int tcp_attach_pcb(struct socket* so);
 void tcp_pcb_release(struct inpcb* inp);
