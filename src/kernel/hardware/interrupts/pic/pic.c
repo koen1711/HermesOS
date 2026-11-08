@@ -2,8 +2,8 @@
 
 #include <os/stdbool.h>
 
-#include "interrupts.h"
-#include "irq.h"
+#include <hardware/interrupts/interrupts.h>
+#include <hardware/interrupts/irq.h>
 
 #define PIC_READ_ISR 0x0B
 
@@ -27,31 +27,20 @@ void handle_pic_interrupt(const interrupt_context* context)
 {
     const uint8_t irq_number = context->interrupt_number - IRQ_OFFSET;
 
-    if (!pic_is_spurious(irq_number)) {
+    if (irq_ioapic_active() || !pic_is_spurious(irq_number)) {
         irq_dispatch(irq_number);
-        pic_eoi(irq_number);
+        irq_eoi(irq_number);
+        irq_softintr();
     }
 }
 
-static inline void pic_write(uint16_t port, uint8_t data)
-{
-    asm volatile("outb %0, %1" : : "a"(data), "Nd"(port));
-}
+static uint16_t masks = 0xFFFB;
 
-uint8_t pic_read(uint16_t port)
+static void pic_write_masks()
 {
-    uint8_t data;
-    asm volatile(
-        "inb %1, %0\n"
-        "1: jmp 1f\n"
-        "1: jmp 1f\n"
-        "1:"
-        : "=a"(data)
-        : "Nd"(port));
-    return data;
+    pic_write(PIC_MASTER_DATA, masks & 0xFF);
+    pic_write(PIC_SLAVE_DATA, masks >> 8);
 }
-
-static void pic_write_masks();
 
 void pic_remap(const uint8_t master_offset, const uint8_t slave_offset)
 {
@@ -72,14 +61,6 @@ void pic_remap(const uint8_t master_offset, const uint8_t slave_offset)
     pic_write_masks();
 }
 
-static uint16_t masks = 0xFFFB;
-
-static void pic_write_masks()
-{
-    pic_write(PIC_MASTER_DATA, masks & 0xFF);
-    pic_write(PIC_SLAVE_DATA, masks >> 8);
-}
-
 void pic_mask(const uint8_t irq)
 {
     if (irq == 2)
@@ -91,6 +72,12 @@ void pic_mask(const uint8_t irq)
 void pic_unmask(const uint8_t irq)
 {
     masks &= ~(1 << irq);
+    pic_write_masks();
+}
+
+void pic_disable()
+{
+    masks = 0xFFFF;
     pic_write_masks();
 }
 

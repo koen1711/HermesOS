@@ -1,8 +1,8 @@
 #include <drivers/timer/clock.h>
 
 #include <drivers/timer/callout.h>
-#include <drivers/timer/rtc.h>
-#include <drivers/timer/tsc.h>
+#include <hardware/timer/rtc.h>
+#include <hardware/timer/tsc.h>
 #include <hardware/smp/smp.h>
 #include <os/errno.h>
 

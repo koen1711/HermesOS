@@ -3,6 +3,7 @@
 
 #include <drivers/net/core/netif.h>
 #include <drivers/net/core/netbuf.h>
+#include <drivers/net/core/netisr.h>
 #include <drivers/net/core/netqueue.h>
 #include <drivers/net/ethernet/ethernet.h>
 #include <hardware/interrupts/irq.h>
@@ -15,6 +16,12 @@
 #define E1000_RING_SIZE   (sizeof(struct e1000_rx_desc) * E1000_NUM_RX_DESC)
 #define E1000_RX_POOL     (E1000_RX_BUF_SIZE * E1000_NUM_RX_DESC)
 #define E1000_TX_MAX_SEGS 2
+#define E1000_RX_INTRS    (ICR_RXDMT0 | ICR_RXO | ICR_RXT0)
+#define E1000_MAX_DEVS    4
+
+static struct e1000_device* e1000_devs[E1000_MAX_DEVS];
+static spinlock_t e1000_devs_lock;
+static uint32_t e1000_pollers;
 
 static bool e1000_dma_setup(struct e1000_device* dev)
 {
@@ -64,8 +71,67 @@ static bool e1000_supported(const pci_device* pci)
         && (pci->device_id == E1000_DEV || pci->device_id == E1000_I217 || pci->device_id == E1000_82577LM);
 }
 
+static bool e1000_rx_softintr(const unsigned budget)
+{
+    __atomic_add_fetch(&e1000_pollers, 1, __ATOMIC_SEQ_CST);
+    bool more = false;
+    for (int i = 0; i < E1000_MAX_DEVS; i++) {
+        struct e1000_device* dev = __atomic_load_n(&e1000_devs[i], __ATOMIC_SEQ_CST);
+        if (!dev)
+            continue;
+        bool full = false;
+        while (__atomic_load_n(&dev->rx_sched, __ATOMIC_SEQ_CST)
+               && !__atomic_exchange_n(&dev->rx_polling, true, __ATOMIC_ACQUIRE)) {
+            if (__atomic_exchange_n(&dev->rx_sched, false, __ATOMIC_ACQUIRE)) {
+                if (e1000_handle_receive(dev, budget) >= budget) {
+                    if (!dev->rx_masked) {
+                        dev->rx_masked = true;
+                        e1000_write_command(dev, REG_IMC, E1000_RX_INTRS);
+                    }
+                    __atomic_store_n(&dev->rx_sched, true, __ATOMIC_RELEASE);
+                    full = true;
+                } else if (dev->rx_masked) {
+                    dev->rx_masked = false;
+                    e1000_write_command(dev, REG_IMASK, E1000_RX_INTRS);
+                }
+            }
+            __atomic_store_n(&dev->rx_polling, false, __ATOMIC_SEQ_CST);
+            if (full)
+                break;
+        }
+        more |= full;
+    }
+    __atomic_sub_fetch(&e1000_pollers, 1, __ATOMIC_SEQ_CST);
+    return more;
+}
+
+static void e1000_devs_add(struct e1000_device* dev)
+{
+    spinlock_acquire(&e1000_devs_lock);
+    for (int i = 0; i < E1000_MAX_DEVS; i++) {
+        if (!e1000_devs[i]) {
+            __atomic_store_n(&e1000_devs[i], dev, __ATOMIC_SEQ_CST);
+            break;
+        }
+    }
+    spinlock_release(&e1000_devs_lock);
+}
+
+static void e1000_devs_remove(const struct e1000_device* dev)
+{
+    spinlock_acquire(&e1000_devs_lock);
+    for (int i = 0; i < E1000_MAX_DEVS; i++)
+        if (e1000_devs[i] == dev)
+            __atomic_store_n(&e1000_devs[i], nullptr, __ATOMIC_SEQ_CST);
+    spinlock_release(&e1000_devs_lock);
+    while (__atomic_load_n(&e1000_pollers, __ATOMIC_SEQ_CST))
+        smp_spin_poll();
+}
+
 void e1000_initialize()
 {
+    spinlock_init(&e1000_devs_lock, "e1000_devs");
+    netisr_register_poller(e1000_rx_softintr);
     for (uint32_t bus = 0; bus < PCI_NUM_BUSES; bus++) {
         for (uint32_t slot = 0; slot < PCI_NUM_DEVICES; slot++) {
             pci_device pci;
@@ -90,6 +156,7 @@ void e1000_initialize()
             dev->nif = nif;
             eth_ifattach(nif, dev->mac);
             netif_link_state_change(nif, e1000_link_up(dev) ? NETIF_LINK_UP : NETIF_LINK_DOWN);
+            e1000_devs_add(dev);
         }
     }
 }
@@ -156,6 +223,7 @@ void e1000_detach(struct e1000_device* dev)
 {
     const bool mapped = dev->bar_type == 1 || dev->mem_base;
 
+    e1000_devs_remove(dev);
     if (dev->irq_registered) {
         e1000_disable_interrupts(dev);
         irq_unregister_handler(dev->pci.interrupt_line, e1000_interrupt, dev);
@@ -416,19 +484,20 @@ void e1000_interrupt(const uint8_t irq, void* ctx)
         if (locked)
             net_lock_exit();
     }
-    if (status & (ICR_RXT0 | ICR_RXDMT0 | ICR_RXO))
-        e1000_handle_receive(dev);
+    if (status & E1000_RX_INTRS)
+        __atomic_store_n(&dev->rx_sched, true, __ATOMIC_RELEASE);
 }
 
-void e1000_handle_receive(struct e1000_device* dev)
+unsigned e1000_handle_receive(struct e1000_device* dev, const unsigned budget)
 {
     struct netif* nif = dev->nif;
+    unsigned done = 0;
 
     uint64_t flags;
     spinlock_acquire_irqsave(&dev->rx_lock, &flags);
     int last_done = -1;
     dma_map_sync(dev->rx_ring_map, DMA_SYNC_POSTREAD);
-    while (dev->rx_descs[dev->rx_cur]->status & RX_STATUS_DD)
+    while (done < budget && dev->rx_descs[dev->rx_cur]->status & RX_STATUS_DD)
     {
         dma_map_sync(dev->rx_buf_map, DMA_SYNC_POSTREAD);
         volatile struct e1000_rx_desc* desc = dev->rx_descs[dev->rx_cur];
@@ -454,6 +523,7 @@ void e1000_handle_receive(struct e1000_device* dev)
         }
 
         desc->status = 0;
+        done++;
         last_done = dev->rx_cur;
         dev->rx_cur = (dev->rx_cur + 1) % E1000_NUM_RX_DESC;
         dma_map_sync(dev->rx_buf_map, DMA_SYNC_PREREAD);
@@ -462,6 +532,7 @@ void e1000_handle_receive(struct e1000_device* dev)
     if (last_done >= 0)
         e1000_write_command(dev, REG_RXDESCTAIL, (uint16_t)last_done);
     spinlock_release_irqrestore(&dev->rx_lock, flags);
+    return done;
 }
 
 void e1000_reclaim_tx(struct e1000_device* dev)
@@ -701,6 +772,6 @@ void e1000_qflush(struct netif* nif)
 void e1000_poll(struct netif* nif)
 {
     struct e1000_device* dev = nif->softc;
-    e1000_handle_receive(dev);
+    e1000_handle_receive(dev, ~0u);
     e1000_tx_try_reclaim(nif);
 }

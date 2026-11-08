@@ -44,6 +44,8 @@
 #include <os/stdint.h>
 #include <os/stdbool.h>
 
+#include "ports.h"
+
 typedef struct {
     uint8_t bus;
     uint8_t device;
@@ -76,28 +78,71 @@ int pci_get_device(uint32_t bus, uint32_t device, uint32_t func, pci_device *out
 
 static pci_address pci_convert_address(const uint32_t address) {
     pci_address addr;
-    addr.bus      = (address >> 16) & 0xFF;
-    addr.device   = (address >>  8) & 0xFF;
+    addr.bus      = address >> 16 & 0xFF;
+    addr.device   = address >>  8 & 0xFF;
     addr.function =  address        & 0x07;
     return addr;
 }
 
-uint32_t pci_config_read_u32(uint8_t bus, uint8_t slot, uint8_t func, uint8_t offset);
+static uint32_t pci_resolve_address(const uint8_t bus, const uint8_t slot, const uint8_t func, const uint8_t offset)
+{
+    return 1u << 31 |
+        (uint32_t)bus << 16 |
+        (uint32_t)slot << 11 |
+        (uint32_t)func << 8 |
+        (uint32_t)offset & 0xFC;
+}
 
-uint16_t pci_config_read_u16(uint8_t bus, uint8_t slot, uint8_t func, uint8_t offset);
-uint8_t pci_config_read_u8(uint8_t bus, uint8_t slot, uint8_t func, uint8_t offset);
+static void pci_config_write_u32(const uint8_t bus, const uint8_t slot, const uint8_t func, const uint8_t offset, const uint32_t value)
+{
+    port_write_u32(PCI_ADDRESS_PORT, pci_resolve_address(bus, slot, func, offset));
+    port_write_u32(PCI_VALUE_PORT, value);
+}
 
-void pci_config_write_u32(uint8_t bus, uint8_t slot, uint8_t func, uint8_t offset, uint32_t value);
-void pci_config_write_u16(uint8_t bus, uint8_t slot, uint8_t func, uint8_t offset, uint16_t value);
-void pci_config_write_u8(uint8_t bus, uint8_t slot, uint8_t func, uint8_t offset, uint8_t value);
+static void pci_config_write_u16(const uint8_t bus, const uint8_t slot, const uint8_t func, const uint8_t offset, const uint16_t value)
+{
+    port_write_u32(PCI_ADDRESS_PORT, pci_resolve_address(bus, slot, func, offset));
+    port_write_u16(PCI_VALUE_PORT + (offset & 2), value);
+}
 
-// Set the bus master bit in PCI_COMMAND so the device can DMA
+static void pci_config_write_u8(const uint8_t bus, const uint8_t slot, const uint8_t func, const uint8_t offset, const uint8_t value)
+{
+    port_write_u32(PCI_ADDRESS_PORT, pci_resolve_address(bus, slot, func, offset));
+    port_write_u8(PCI_VALUE_PORT + (offset & 3), value);
+}
+
+static uint32_t pci_config_read_u32(const uint8_t bus, const uint8_t slot, const uint8_t func, const uint8_t offset)
+{
+    port_write_u32(PCI_ADDRESS_PORT, pci_resolve_address(bus, slot, func, offset));
+    return port_read_u32(PCI_VALUE_PORT);
+}
+
+static uint16_t pci_config_read_u16(const uint8_t bus, const uint8_t slot, const uint8_t func, const uint8_t offset) {
+    uint16_t config = 0;
+
+    port_write_u32(PCI_ADDRESS_PORT, pci_resolve_address(bus, slot, func, offset));
+    config = port_read_u16(PCI_VALUE_PORT + (offset & 2));
+    return config;
+}
+
+static uint8_t pci_config_read_u8(const uint8_t bus, const uint8_t slot, const uint8_t func, const uint8_t offset) {
+    uint8_t config = 0;
+
+    port_write_u32(PCI_ADDRESS_PORT, pci_resolve_address(bus, slot, func, offset));
+    config = port_read_u8(PCI_VALUE_PORT + (offset & 3));
+    return config;
+}
+
 void pci_enable_bus_master(const pci_device* device);
 
-// Scan the PCI bus for devices
 scan_result* pci_scan(int type);
 void pci_scan_bus(int type, int bus, scan_result *result);
 
-uint16_t pci_get_bar_type(const pci_device* device, uint8_t bar_index);
+static uint16_t pci_get_bar_type(const pci_device* device, const uint8_t bar_index)
+{
+    uint16_t bar_type = 0;
+    bar_type = pci_config_read_u8(device->bus, device->device, device->function, PCI_BAR0 + bar_index);
+    return bar_type;
+}
 
 #endif //PCI_H

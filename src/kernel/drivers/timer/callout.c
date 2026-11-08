@@ -1,7 +1,7 @@
 #include <drivers/timer/callout.h>
 
-#include <drivers/timer/pit.h>
-#include <drivers/timer/tsc.h>
+#include <hardware/timer/pit.h>
+#include <hardware/timer/tsc.h>
 #include <hardware/smp/smp.h>
 #include <utils/sync/spinlock.h>
 
@@ -146,7 +146,7 @@ void callout_poll()
     static bool running;
     if (pit_frequency() || running)
         return;
-    running = true;     // a callout may itself wait and poll
+    running = true;
     const uint64_t now = tsc_micros();
     const uint64_t step = 1000000 / ticks_hz();
     if (!next_us)

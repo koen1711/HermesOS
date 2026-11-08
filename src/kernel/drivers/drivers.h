@@ -2,8 +2,8 @@
 #define DRIVERS_H
 
 #include <drivers/ps2/keyboard.h>
-#include <drivers/timer/rtc.h>
-#include <drivers/timer/pit.h>
+#include <hardware/timer/rtc.h>
+#include <hardware/timer/pit.h>
 #include <drivers/syscalls/syscalls.h>
 
 #include "video/LFB.h"

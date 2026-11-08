@@ -3,16 +3,17 @@
 #include <os/stdbool.h>
 #include <os/stdint.h>
 #include <os/errno.h>
-#include <hardware/interrupts/pic.h>
 #include <hardware/interrupts/irq.h>
 #include <drivers/syscalls/syscalls.h>
 #include <drivers/terminal/terminal.h>
-#include <drivers/timer/pit.h>
+#include <hardware/timer/pit.h>
 #include <drivers/scheduler/process.h> // timer: process_yield, exceptions: process_exit
 #include <drivers/scheduler/signal.h>
 #include <hardware/memory/vm.h>
 #include <hardware/smp/lapic.h>
 #include <hardware/smp/smp.h>
+
+#include "pic/pic.h"
 
 #ifdef HERMES_PROFILER
 #include <profiler.h>
@@ -152,6 +153,7 @@ void trap_handler(interrupt_context* context)
 
     if (vector == LAPIC_TIMER_VECTOR || vector == RESCHED_VECTOR) {
         lapic_eoi();
+        irq_softintr();
     } else if (vector != PAGE_FAULT_VECTOR || !resolve_page_fault(context)) {
         if (vector < EXCEPTION_COUNT)
             handle_exception(context);

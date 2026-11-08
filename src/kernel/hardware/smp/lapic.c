@@ -1,7 +1,7 @@
 #include "lapic.h"
 
 #include <hardware/memory/mmu.h>
-#include <drivers/timer/tsc.h>
+#include <hardware/timer/tsc.h>
 
 enum lapic_register {
     LAPIC_ID = 0x020,

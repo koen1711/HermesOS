@@ -43,6 +43,9 @@ struct e1000_device {
     bool tx_busy;
     struct callout tx_kick;
     spinlock_t rx_lock;
+    bool rx_sched;
+    bool rx_masked;
+    bool rx_polling;
     bool irq_registered;
 };
 
@@ -65,7 +68,7 @@ void e1000_enable_interrupts(const struct e1000_device* dev);
 void e1000_disable_interrupts(const struct e1000_device* dev);
 
 void e1000_interrupt(uint8_t irq, void* ctx);
-void e1000_handle_receive(struct e1000_device* dev);
+unsigned e1000_handle_receive(struct e1000_device* dev, unsigned budget);
 void e1000_reclaim_tx(struct e1000_device* dev);
 
 int e1000_netif_init(struct netif* nif);

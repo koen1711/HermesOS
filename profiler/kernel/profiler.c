@@ -5,7 +5,7 @@
 #include <os/stddef.h>
 #include <drivers/scheduler/process.h>
 #include <drivers/terminal/terminal.h>
-#include <drivers/timer/tsc.h>
+#include <hardware/timer/tsc.h>
 #include <hardware/interrupts/interrupts.h>
 #include <hardware/memory/mmu.h>
 #include <hardware/memory/pmm.h>

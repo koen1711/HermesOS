@@ -1,6 +1,6 @@
-#include <drivers/timer/tsc.h>
+#include "tsc.h"
 
-#include <drivers/timer/pit.h>
+#include <hardware/timer/pit.h>
 #include <hardware/port/ports.h>
 
 #define TSC_PIT_GATE_PORT  0x61

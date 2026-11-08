@@ -2,7 +2,6 @@
 #define HARDWARE_INTERRUPTS_IRQ_H
 
 #include <os/stdint.h>
-#include <os/stdbool.h>
 
 #define IRQ_MAX_LINES 16
 
@@ -13,6 +12,10 @@ int irq_register_handler_mpsafe(uint8_t irq, irq_handler_t handler, void* ctx);
 void irq_unregister_handler(uint8_t irq, irq_handler_t handler, const void* ctx);
 
 void irq_dispatch(uint8_t irq);
+void irq_softintr();
+void irq_eoi(uint8_t irq);
+bool irq_switch_to_ioapic();
+bool irq_ioapic_active();
 
 typedef void (*softintr_handler_t)();
 int irq_register_softintr(softintr_handler_t handler);

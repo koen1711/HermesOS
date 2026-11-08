@@ -1,9 +1,12 @@
 #include <hardware/interrupts/irq.h>
 #include <hardware/interrupts/interrupts.h>
-#include <hardware/interrupts/pic.h>
+#include <hardware/smp/lapic.h>
 #include <hardware/smp/smp.h>
 #include <os/errno.h>
 #include <utils/sync/spinlock.h>
+
+#include "pic/pic.h"
+#include "pic/ioapic.h"
 
 
 #define IRQ_MAX_HANDLERS 4      // per line; PCI lines are often shared
@@ -32,6 +35,69 @@ static void (*const stubs[IRQ_MAX_LINES])() = {
     irq_interrupt_12, irq_interrupt_13, irq_interrupt_14, irq_interrupt_15,
 };
 
+static bool use_ioapic;
+
+static uint32_t irq_dest(const uint8_t irq)
+{
+    const int n = cpu_count();
+    if (irq == 0 || n <= 1)
+        return cpu_get(0)->apic_id;
+    return cpu_get(1 + irq % (n - 1))->apic_id;
+}
+
+static void irq_line_unmask(const uint8_t irq)
+{
+    if (use_ioapic) {
+        ioapic_route(irq, IRQ_OFFSET + irq, irq_dest(irq));
+        ioapic_unmask(irq);
+    } else {
+        pic_unmask(irq);
+    }
+}
+
+static void irq_line_mask(const uint8_t irq)
+{
+    if (use_ioapic)
+        ioapic_mask(irq);
+    else if (irq != 0 && irq != 1 && irq != 2)
+        pic_mask(irq);
+}
+
+bool irq_ioapic_active()
+{
+    return use_ioapic;
+}
+
+bool irq_switch_to_ioapic()
+{
+    uint64_t flags;
+    spinlock_acquire_irqsave(&actions_lock, &flags);
+    if (use_ioapic || !lapic_present() || !ioapic_initialize()) {
+        spinlock_release_irqrestore(&actions_lock, flags);
+        return use_ioapic;
+    }
+    pic_disable();
+    use_ioapic = true;
+    for (uint8_t irq = 0; irq < IRQ_MAX_LINES; irq++) {
+        for (int i = 0; i < IRQ_MAX_HANDLERS; i++) {
+            if (actions[irq][i].handler) {
+                irq_line_unmask(irq);
+                break;
+            }
+        }
+    }
+    spinlock_release_irqrestore(&actions_lock, flags);
+    return true;
+}
+
+void irq_eoi(const uint8_t irq)
+{
+    if (use_ioapic)
+        lapic_eoi();
+    else
+        pic_eoi(irq);
+}
+
 static int irq_register(const uint8_t irq, const irq_handler_t handler, void* ctx, const bool mpsafe)
 {
     if (irq >= IRQ_MAX_LINES || !handler)
@@ -47,7 +113,7 @@ static int irq_register(const uint8_t irq, const irq_handler_t handler, void* ct
             __atomic_store_n(&actions[irq][i].handler, handler, __ATOMIC_RELEASE);
 
             idt_set_entry(IRQ_OFFSET + irq, (uintptr_t)stubs[irq]);
-            pic_unmask(irq);
+            irq_line_unmask(irq);
             spinlock_release_irqrestore(&actions_lock, flags);
             return 0;
         }
@@ -82,8 +148,8 @@ void irq_unregister_handler(const uint8_t irq, const irq_handler_t handler, cons
         }
         in_use |= actions[irq][i].handler != nullptr;
     }
-    if (!in_use && irq != 0 && irq != 1 && irq != 2)
-        pic_mask(irq);
+    if (!in_use)
+        irq_line_mask(irq);
 
     if (removed && !irq_in_interrupt()) {
         while (__atomic_load_n(&running[irq], __ATOMIC_SEQ_CST))
@@ -131,11 +197,18 @@ void irq_dispatch(const uint8_t irq)
         }
     }
     __atomic_sub_fetch(&running[irq], 1, __ATOMIC_SEQ_CST);
-    if (cpu->irq_depth == 1) {
-        for (int i = 0; i < IRQ_MAX_SOFTINTR; i++)
-            if (softintrs[i])
-                softintrs[i]();
-    }
+    cpu->irq_depth--;
+}
+
+void irq_softintr()
+{
+    struct cpu* cpu = cpu_this();
+    if (cpu->irq_depth)
+        return;
+    cpu->irq_depth++;
+    for (int i = 0; i < IRQ_MAX_SOFTINTR; i++)
+        if (softintrs[i])
+            softintrs[i]();
     cpu->irq_depth--;
 }
 

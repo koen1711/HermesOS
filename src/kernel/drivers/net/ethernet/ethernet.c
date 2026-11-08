@@ -44,6 +44,20 @@ void eth_ifdetach(struct netif* nif)
     arp_ifdetach(nif);
 }
 
+static uint32_t eth_tcp4_flow_hash(const struct netbuf* nb)
+{
+    const uint8_t* ip = nb->data;
+    const size_t ihl = (ip[0] & 0x0f) * 4;
+    if (ihl < 20 || nb->len < ihl + 4 || (((ip[6] << 8) | ip[7]) & 0x3fff))
+        return 0;
+    uint32_t h = 2166136261u;
+    for (size_t i = 12; i < 20; i++)
+        h = (h ^ ip[i]) * 16777619u;
+    for (size_t i = ihl; i < ihl + 4; i++)
+        h = (h ^ ip[i]) * 16777619u;
+    return h ^ (h >> 16);
+}
+
 void eth_input(struct netif* nif, struct netbuf* nb)
 {
     nb = netbuf_pullup(nb, ETH_HEADER_LEN);
@@ -69,7 +83,10 @@ void eth_input(struct netif* nif, struct netbuf* nb)
 
     switch (type) {
     case ETHERTYPE_IPV4:
-        netisr_queue(nb->len > 9 && nb->data[9] == IPPROTO_TCP ? NETISR_TCP4 : NETISR_IP, nb);
+        if (nb->len > 9 && nb->data[9] == IPPROTO_TCP)
+            netisr_queue_flow(NETISR_TCP4, nb, eth_tcp4_flow_hash(nb));
+        else
+            netisr_queue(NETISR_IP, nb);
         break;
     case ETHERTYPE_ARP:
         netisr_queue(NETISR_ARP, nb);

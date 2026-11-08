@@ -19,7 +19,7 @@ void free_physical_pages(void* first, size_t count);
 
 void* alloc_kernel_page(void);
 void* alloc_kernel_pages(size_t count);
-void free_kernel_page(void* page);
+void free_kernel_page(const void* page);
 void free_kernel_pages(const void* first, size_t count);
 
 size_t pmm_usable_regions(const memory_region_t** regions);

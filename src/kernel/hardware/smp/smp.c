@@ -11,7 +11,7 @@
 #include <drivers/scheduler/process.h>
 #include <drivers/syscalls/syscalls.h>
 #include <drivers/terminal/terminal.h>
-#include <drivers/timer/tsc.h>
+#include <hardware/timer/tsc.h>
 #include <drivers/net/core/netif.h>
 #include <drivers/net/socket/socket.h>
 
@@ -326,6 +326,10 @@ void smp_initialize()
         }
     }
     terminal_printf("smp: %d cpus online\n", ncpus);
+    if (irq_switch_to_ioapic()) {
+        lapic_enable(true);
+        terminal_printf("smp: interrupts routed through the ioapic\n");
+    }
     if (locked)
         kernel_lock_exit();
     irq_restore(flags);

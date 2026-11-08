@@ -122,6 +122,7 @@ uint64_t process_poll_seq();
 int process_sleep_poll(const uint64_t *seq, uint64_t ticks);
 void process_wakeup_poll();
 void process_poll_kick(process_t *proc);
+void process_kick_idle_other();
 void process_interrupt(process_t *proc);
 process_t *process_find(int pid);
 int process_count();

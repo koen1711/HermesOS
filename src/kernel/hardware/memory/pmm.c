@@ -206,7 +206,7 @@ void* alloc_kernel_pages(const size_t count) {
     return first ? phys_to_virt((uint64_t)first) : nullptr;
 }
 
-void free_kernel_page(void* page) {
+void free_kernel_page(const void* page) {
     free_physical_page((void*)virt_to_phys(page));
 }
 

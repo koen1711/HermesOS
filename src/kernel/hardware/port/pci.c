@@ -1,56 +1,7 @@
 #include "pci.h"
 
 #include <hardware/memory/alloc.h>
-#include <hardware/port/pci_ids.h>
 
-#include "ports.h"
-#include "drivers/terminal/terminal.h"
-#include "utils/str/str.h"
-
-uint32_t pci_resolve_address(const uint8_t bus, const uint8_t slot, const uint8_t func, const uint8_t offset)
-{
-	return (1u << 31) | ((uint32_t)bus << 16) | ((uint32_t)slot << 11) | ((uint32_t)func << 8) | ((uint32_t)offset & 0xFC);
-}
-
-void pci_config_write_u32(const uint8_t bus, const uint8_t slot, const uint8_t func, const uint8_t offset, const uint32_t value)
-{
-	port_write_u32(PCI_ADDRESS_PORT, pci_resolve_address(bus, slot, func, offset));
-	port_write_u32(PCI_VALUE_PORT, value);
-}
-
-void pci_config_write_u16(const uint8_t bus, const uint8_t slot, const uint8_t func, const uint8_t offset, const uint16_t value)
-{
-	port_write_u32(PCI_ADDRESS_PORT, pci_resolve_address(bus, slot, func, offset));
-	port_write_u16(PCI_VALUE_PORT + (offset & 2), value);
-}
-
-void pci_config_write_u8(const uint8_t bus, uint8_t slot, uint8_t func, uint8_t offset, uint8_t value)
-{
-	port_write_u32(PCI_ADDRESS_PORT, pci_resolve_address(bus, slot, func, offset));
-	port_write_u8(PCI_VALUE_PORT + (offset & 3), value);
-}
-
-uint32_t pci_config_read_u32(const uint8_t bus, const uint8_t slot, const uint8_t func, const uint8_t offset)
-{
-	port_write_u32(PCI_ADDRESS_PORT, pci_resolve_address(bus, slot, func, offset));
-	return port_read_u32(PCI_VALUE_PORT);
-}
-
-uint16_t pci_config_read_u16(const uint8_t bus, const uint8_t slot, const uint8_t func, const uint8_t offset) {
-	uint16_t config = 0;
-
-	port_write_u32(PCI_ADDRESS_PORT, pci_resolve_address(bus, slot, func, offset));
-	config = port_read_u16(PCI_VALUE_PORT + (offset & 2));
-	return config;
-}
-
-uint8_t pci_config_read_u8(const uint8_t bus, const uint8_t slot, const uint8_t func, const uint8_t offset) {
-	uint8_t config = 0;
-
-	port_write_u32(PCI_ADDRESS_PORT, pci_resolve_address(bus, slot, func, offset));
-	config = port_read_u8(PCI_VALUE_PORT + (offset & 3));
-	return config;
-}
 
 bool pci_is_device_multifunction(const uint8_t bus, const uint8_t slot) {
 	return (pci_config_read_u8(bus, slot, 0, PCI_HEADER_TYPE) & 0x80) != 0;
@@ -64,7 +15,7 @@ uint16_t pci_find_type(const uint32_t dev) {
 	const uint8_t slot = (dev >> 8)  & 0xFF;
 	const uint8_t func = dev & 0x07;
 
-	return ((uint16_t)pci_config_read_u8(bus, slot, func, PCI_CLASS) << 8) |
+	return (uint16_t)pci_config_read_u8(bus, slot, func, PCI_CLASS) << 8 |
 		   pci_config_read_u8(bus, slot, func, PCI_SUBCLASS);
 }
 
@@ -74,31 +25,10 @@ uint16_t pci_find_type(const uint32_t dev) {
 
 void pci_initialize()
 {
-	const scan_result* result = pci_scan(-1);
 
-	for (int i = 0; i < result->count; i++) {
-		const uint32_t dev = result->devices[i];
-		const uint16_t vendor_id = pci_config_read_u16(PCI_BUS(dev), PCI_SLOT(dev), PCI_FUNC(dev), PCI_VENDOR_ID);
-		const uint16_t device_id = pci_config_read_u16(PCI_BUS(dev), PCI_SLOT(dev), PCI_FUNC(dev), PCI_DEVICE_ID);
-
-		const char* vendor_name = pci_lookup_device_name(vendor_id, device_id);
-		if (vendor_name == 0) {
-			vendor_name = str_concat_variadic(4, "Unknown 0x", str_u16_hex(vendor_id), " 0x", str_u16_hex(device_id));
-		}
-
-		terminal_printf("PCI: %s with function %u at %02x:%02x.%u\n", vendor_name, PCI_FUNC(dev), PCI_BUS(dev), PCI_SLOT(dev), PCI_FUNC(dev));
-
-		uint8_t class_code = pci_config_read_u8(PCI_BUS(dev), PCI_SLOT(dev), PCI_FUNC(dev), PCI_CLASS);
-		uint8_t subclass   = pci_config_read_u8(PCI_BUS(dev), PCI_SLOT(dev), PCI_FUNC(dev), PCI_SUBCLASS);
-		uint8_t prog_if    = pci_config_read_u8(PCI_BUS(dev), PCI_SLOT(dev), PCI_FUNC(dev), PCI_PROG_IF);
-
-		terminal_printf("PCI %02x:%02x.%u vid:did=%04x:%04x class=%02x subclass=%02x prog_if=%02x\n",
-			   PCI_BUS(dev), PCI_SLOT(dev), (unsigned)PCI_FUNC(dev),
-			   vendor_id, device_id, class_code, subclass, prog_if);
-	}
 }
 
-bool is_match(const int type, const uint8_t class_code, uint16_t pci_type)
+bool is_match(const int type, const uint8_t class_code, const uint16_t pci_type)
 {
 	if (type == -1) return true;
 	if (type <= 0xFF) return class_code == type;
@@ -125,7 +55,6 @@ void pci_scan_slot(const int type, const int bus, const int slot, scan_result *r
 
 	pci_scan_func(type, bus, slot, 0, result);
 
-	// Check for multifunction devices
 	if (!pci_is_device_multifunction(bus, slot))
 		return;
 	for (int func = 1; func < PCI_NUM_FUNCTIONS; func++) {
@@ -147,7 +76,6 @@ scan_result* pci_scan(const int type) {
 	scan_result* result = malloc(sizeof(scan_result));
 	result->count = 0;
 
-	// Check if the system is a single PCI bus system
 	if ((pci_config_read_u8(0, 0, 0, PCI_HEADER_TYPE) & 0x80) == 0) {
 		pci_scan_bus(type, 0, result);
 		return result;
@@ -193,14 +121,6 @@ int pci_get_device(const uint32_t bus, const uint32_t device, const uint32_t fun
 	out->multifunction = pci_is_device_multifunction(bus, device);
 
 	return 0;
-}
-
-uint16_t pci_get_bar_type(const pci_device* device, const uint8_t bar_index)
-{
-	uint16_t bar_type = 0;
-
-	bar_type = pci_config_read_u8(device->bus, device->device, device->function, PCI_BAR0 + bar_index);
-	return bar_type;
 }
 
 void pci_enable_bus_master(const pci_device* device)

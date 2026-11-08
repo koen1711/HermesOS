@@ -8,17 +8,17 @@
 
 bool uaccess_check(const void* ptr, size_t len, bool write);
 
-static inline bool uaccess_ok(const void* ptr, const size_t len)
+static bool uaccess_ok(const void* ptr, const size_t len)
 {
     return uaccess_check(ptr, len, false);
 }
 
-static inline bool uaccess_ok_write(const void* ptr, const size_t len)
+static bool uaccess_ok_write(const void* ptr, const size_t len)
 {
     return uaccess_check(ptr, len, true);
 }
 
-static inline int copy_from_user(void* dst, const void* user_src, const size_t len)
+static int copy_from_user(void* dst, const void* user_src, const size_t len)
 {
     if (!uaccess_ok(user_src, len))
         return -EFAULT;
@@ -26,7 +26,7 @@ static inline int copy_from_user(void* dst, const void* user_src, const size_t l
     return 0;
 }
 
-static inline int copy_to_user(void* user_dst, const void* src, const size_t len)
+static int copy_to_user(void* user_dst, const void* src, const size_t len)
 {
     if (!uaccess_ok_write(user_dst, len))
         return -EFAULT;

@@ -5,6 +5,8 @@
 #include <os/stdbool.h>
 
 #define MADT_LOCAL_APIC 0
+#define MADT_IOAPIC 1
+#define MADT_ISO 2
 #define MADT_LAPIC_OVERRIDE 5
 #define MADT_ENABLED 0x1
 #define MADT_ONLINE_CAPABLE 0x2
@@ -81,7 +83,7 @@ static const struct sdt_header* map_table(const uint64_t phys)
     return full && checksum_ok(full, full->length) ? full : nullptr;
 }
 
-static const struct madt* find_madt()
+static const struct madt* find_madt_uncached()
 {
     const uint64_t ebda = (uint64_t)(*(const uint16_t*)0x40E) << 4;
     const struct rsdp* rsdp = ebda ? find_rsdp_in(ebda, ebda + 1024) : nullptr;
@@ -105,6 +107,45 @@ static const struct madt* find_madt()
             return (const struct madt*)table;
     }
     return nullptr;
+}
+
+static const struct madt* find_madt()
+{
+    static const struct madt* madt;
+    static bool searched;
+    if (!searched) {
+        madt = find_madt_uncached();
+        searched = true;
+    }
+    return madt;
+}
+
+int acpi_find_irq_routing(struct acpi_irq_routing* out)
+{
+    for (uint8_t i = 0; i < ACPI_ISA_IRQS; i++) {
+        out->isa[i].gsi = i;
+        out->isa[i].flags = 0;
+    }
+    out->nioapics = 0;
+    const struct madt* madt = find_madt();
+    if (!madt)
+        return 0;
+
+    const uint8_t* p = madt->entries;
+    const uint8_t* end = (const uint8_t*)madt + madt->header.length;
+    while (p + 2 <= end && p[1] >= 2 && p + p[1] <= end) {
+        if (p[0] == MADT_IOAPIC && p[1] >= 12 && out->nioapics < ACPI_MAX_IOAPICS) {
+            struct acpi_ioapic* io = &out->ioapics[out->nioapics++];
+            io->id = p[2];
+            memcpy(&io->phys, p + 4, sizeof(uint32_t));
+            memcpy(&io->gsi_base, p + 8, sizeof(uint32_t));
+        } else if (p[0] == MADT_ISO && p[1] >= 10 && p[2] == 0 && p[3] < ACPI_ISA_IRQS) {
+            memcpy(&out->isa[p[3]].gsi, p + 4, sizeof(uint32_t));
+            memcpy(&out->isa[p[3]].flags, p + 8, sizeof(uint16_t));
+        }
+        p += p[1];
+    }
+    return out->nioapics;
 }
 
 int acpi_find_cpus(uint8_t* apic_ids, const int max, uint64_t* lapic_phys)

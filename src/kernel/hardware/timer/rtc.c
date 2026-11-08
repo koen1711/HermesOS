@@ -1,9 +1,7 @@
 #include "rtc.h"
 
-#include <os/stdbool.h>
 #include <hardware/port/ports.h>
-
-#include "hardware/interrupts/pic.h"
+#include <hardware/interrupts/pic/pic.h>
 
 void select_register(const uint8_t reg) {
     port_write_u8(RTC_COMMAND_PORT, (reg & 0x7F) | NMI_DISABLE_BIT);
