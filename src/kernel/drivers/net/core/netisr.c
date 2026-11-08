@@ -28,6 +28,7 @@ struct netisr_proto_state {
 
 static struct netisr_proto_state protos[NETISR_MAX];
 static netisr_poller_t pollers[NETISR_MAX_POLLERS];
+static bool rx_wanted;
 
 void netisr_initialize()
 {
@@ -214,8 +215,19 @@ void netisr_unregister_poller(const netisr_poller_t poller)
     }
 }
 
+void netisr_rx_schedule()
+{
+    __atomic_store_n(&rx_wanted, true, __ATOMIC_RELEASE);
+}
+
 void netisr_softintr()
 {
+    const process_t* current = scheduler_get()->current;
+    if (current && current->pid != IDLE_PROC_PID
+        && (__atomic_load_n(&rx_wanted, __ATOMIC_ACQUIRE) || netisr_pending()) && process_kick_idle_other())
+        return;
+
+    __atomic_store_n(&rx_wanted, false, __ATOMIC_RELAXED);
     bool more = false;
     for (int i = 0; i < NETISR_MAX_POLLERS; i++) {
         const netisr_poller_t poller = __atomic_load_n(&pollers[i], __ATOMIC_ACQUIRE);
@@ -224,8 +236,10 @@ void netisr_softintr()
     }
     if (netisr_drain(NETISR_SOFTINTR_BUDGET) >= NETISR_SOFTINTR_BUDGET && netisr_pending())
         more = true;
-    if (more)
+    if (more) {
+        __atomic_store_n(&rx_wanted, true, __ATOMIC_RELEASE);
         process_kick_idle_other();
+    }
 }
 
 void netisr_purge(struct netif* nif)

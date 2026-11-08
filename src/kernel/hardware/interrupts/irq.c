@@ -26,13 +26,17 @@ static softintr_handler_t softintrs[IRQ_MAX_SOFTINTR];
 extern void irq_interrupt_0(), irq_interrupt_1(), irq_interrupt_2(), irq_interrupt_3(),
             irq_interrupt_4(), irq_interrupt_5(), irq_interrupt_6(), irq_interrupt_7(),
             irq_interrupt_8(), irq_interrupt_9(), irq_interrupt_10(), irq_interrupt_11(),
-            irq_interrupt_12(), irq_interrupt_13(), irq_interrupt_14(), irq_interrupt_15();
+            irq_interrupt_12(), irq_interrupt_13(), irq_interrupt_14(), irq_interrupt_15(),
+            irq_interrupt_16(), irq_interrupt_17(), irq_interrupt_18(), irq_interrupt_19(),
+            irq_interrupt_20(), irq_interrupt_21(), irq_interrupt_22(), irq_interrupt_23();
 
 static void (*const stubs[IRQ_MAX_LINES])() = {
     irq_interrupt_0, irq_interrupt_1, irq_interrupt_2, irq_interrupt_3,
     irq_interrupt_4, irq_interrupt_5, irq_interrupt_6, irq_interrupt_7,
     irq_interrupt_8, irq_interrupt_9, irq_interrupt_10, irq_interrupt_11,
     irq_interrupt_12, irq_interrupt_13, irq_interrupt_14, irq_interrupt_15,
+    irq_interrupt_16, irq_interrupt_17, irq_interrupt_18, irq_interrupt_19,
+    irq_interrupt_20, irq_interrupt_21, irq_interrupt_22, irq_interrupt_23,
 };
 
 static bool use_ioapic;
@@ -45,8 +49,14 @@ static uint32_t irq_dest(const uint8_t irq)
     return cpu_get(1 + irq % (n - 1))->apic_id;
 }
 
+static bool msi_used[IRQ_MAX_LINES];
+static irq_msi_hook_t msi_hooks[IRQ_MAX_MSI_HOOKS];
+static bool msi_ready;
+
 static void irq_line_unmask(const uint8_t irq)
 {
+    if (irq >= IRQ_ISA_LINES)
+        return;
     if (use_ioapic) {
         ioapic_route(irq, IRQ_OFFSET + irq, irq_dest(irq));
         ioapic_unmask(irq);
@@ -57,6 +67,8 @@ static void irq_line_unmask(const uint8_t irq)
 
 static void irq_line_mask(const uint8_t irq)
 {
+    if (irq >= IRQ_ISA_LINES)
+        return;
     if (use_ioapic)
         ioapic_mask(irq);
     else if (irq != 0 && irq != 1 && irq != 2)
@@ -78,7 +90,7 @@ bool irq_switch_to_ioapic()
     }
     pic_disable();
     use_ioapic = true;
-    for (uint8_t irq = 0; irq < IRQ_MAX_LINES; irq++) {
+    for (uint8_t irq = 0; irq < IRQ_ISA_LINES; irq++) {
         for (int i = 0; i < IRQ_MAX_HANDLERS; i++) {
             if (actions[irq][i].handler) {
                 irq_line_unmask(irq);
@@ -90,9 +102,63 @@ bool irq_switch_to_ioapic()
     return true;
 }
 
+int irq_msi_alloc()
+{
+    if (!use_ioapic)
+        return -ENODEV;
+    uint64_t flags;
+    spinlock_acquire_irqsave(&actions_lock, &flags);
+    for (uint8_t irq = IRQ_ISA_LINES; irq < IRQ_MAX_LINES; irq++) {
+        if (!msi_used[irq]) {
+            msi_used[irq] = true;
+            spinlock_release_irqrestore(&actions_lock, flags);
+            return irq;
+        }
+    }
+    spinlock_release_irqrestore(&actions_lock, flags);
+    return -ENOSPC;
+}
+
+int irq_on_msi_ready(const irq_msi_hook_t hook)
+{
+    if (__atomic_load_n(&msi_ready, __ATOMIC_ACQUIRE)) {
+        hook();
+        return 0;
+    }
+    for (int i = 0; i < IRQ_MAX_MSI_HOOKS; i++) {
+        irq_msi_hook_t expected = nullptr;
+        if (__atomic_compare_exchange_n(&msi_hooks[i], &expected, hook, false, __ATOMIC_RELEASE, __ATOMIC_RELAXED))
+            return 0;
+    }
+    return -ENOSPC;
+}
+
+void irq_msi_ready()
+{
+    if (!use_ioapic || __atomic_exchange_n(&msi_ready, true, __ATOMIC_ACQ_REL))
+        return;
+    for (int i = 0; i < IRQ_MAX_MSI_HOOKS; i++) {
+        const irq_msi_hook_t hook = __atomic_exchange_n(&msi_hooks[i], nullptr, __ATOMIC_ACQUIRE);
+        if (hook)
+            hook();
+    }
+}
+
+void irq_msi_free(const uint8_t irq)
+{
+    if (irq >= IRQ_ISA_LINES && irq < IRQ_MAX_LINES)
+        __atomic_store_n(&msi_used[irq], false, __ATOMIC_RELEASE);
+}
+
+void irq_msi_message(const uint8_t irq, uint64_t* address, uint32_t* data)
+{
+    *address = 0xFEE00000ull | (uint64_t)(irq_dest(irq) & 0xFF) << 12;
+    *data = IRQ_OFFSET + irq;
+}
+
 void irq_eoi(const uint8_t irq)
 {
-    if (use_ioapic)
+    if (use_ioapic || irq >= IRQ_ISA_LINES)
         lapic_eoi();
     else
         pic_eoi(irq);

@@ -20,6 +20,7 @@
 #include <drivers/net/tcp/tcp_subr.h>
 #include <drivers/net/udp/udp.h>
 #include <hardware/network/e1000/e1000.h>
+#include <hardware/network/virtio/virtio_net.h>
 
 void net_initialize()
 {
@@ -44,6 +45,7 @@ void net_initialize()
 
     loopback_initialize();
     e1000_initialize();
+    virtio_net_initialize();
 
     for (struct netif* nif = netif_first(); nif; nif = netif_next(nif)) {
         if (nif->flags & NETIF_LOOPBACK)

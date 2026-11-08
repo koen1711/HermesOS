@@ -31,6 +31,7 @@ int netisr_queue_flow(enum netisr_proto proto, struct netbuf* nb, uint32_t hash)
 void netisr_poll();
 void netisr_softintr();
 int netisr_register_poller(netisr_poller_t poller);
+void netisr_rx_schedule();
 void netisr_unregister_poller(netisr_poller_t poller);
 bool netisr_pending();
 

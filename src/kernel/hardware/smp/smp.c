@@ -329,6 +329,7 @@ void smp_initialize()
     if (irq_switch_to_ioapic()) {
         lapic_enable(true);
         terminal_printf("smp: interrupts routed through the ioapic\n");
+        irq_msi_ready();
     }
     if (locked)
         kernel_lock_exit();

@@ -79,11 +79,13 @@ static bool e1000_rx_softintr(const unsigned budget)
         struct e1000_device* dev = __atomic_load_n(&e1000_devs[i], __ATOMIC_SEQ_CST);
         if (!dev)
             continue;
+        unsigned done = 0;
         bool full = false;
-        while (__atomic_load_n(&dev->rx_sched, __ATOMIC_SEQ_CST)
+        while (!full && __atomic_load_n(&dev->rx_sched, __ATOMIC_SEQ_CST)
                && !__atomic_exchange_n(&dev->rx_polling, true, __ATOMIC_ACQUIRE)) {
             if (__atomic_exchange_n(&dev->rx_sched, false, __ATOMIC_ACQUIRE)) {
-                if (e1000_handle_receive(dev, budget) >= budget) {
+                done += e1000_handle_receive(dev, budget - done);
+                if (done >= budget) {
                     if (!dev->rx_masked) {
                         dev->rx_masked = true;
                         e1000_write_command(dev, REG_IMC, E1000_RX_INTRS);
@@ -96,8 +98,6 @@ static bool e1000_rx_softintr(const unsigned budget)
                 }
             }
             __atomic_store_n(&dev->rx_polling, false, __ATOMIC_SEQ_CST);
-            if (full)
-                break;
         }
         more |= full;
     }
@@ -484,8 +484,10 @@ void e1000_interrupt(const uint8_t irq, void* ctx)
         if (locked)
             net_lock_exit();
     }
-    if (status & E1000_RX_INTRS)
+    if (status & E1000_RX_INTRS) {
         __atomic_store_n(&dev->rx_sched, true, __ATOMIC_RELEASE);
+        netisr_rx_schedule();
+    }
 }
 
 unsigned e1000_handle_receive(struct e1000_device* dev, const unsigned budget)

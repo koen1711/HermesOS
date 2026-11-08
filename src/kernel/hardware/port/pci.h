@@ -25,6 +25,10 @@
 #define PCI_BAR4                 0x20 // 4
 #define PCI_BAR5                 0x24 // 4
 
+#define PCI_COMMAND_INTX_DISABLE 0x400
+#define PCI_STATUS_CAP_LIST      0x10
+#define PCI_CAP_PTR              0x34 // 1
+#define PCI_CAP_MSIX             0x11
 #define PCI_INTERRUPT_LINE        0x3C // 1
 #define PCI_INTERRUPT_PIN         0x3D // 1
 
@@ -131,6 +135,19 @@ static uint8_t pci_config_read_u8(const uint8_t bus, const uint8_t slot, const u
     port_write_u32(PCI_ADDRESS_PORT, pci_resolve_address(bus, slot, func, offset));
     config = port_read_u8(PCI_VALUE_PORT + (offset & 3));
     return config;
+}
+
+static uint8_t pci_find_capability(const uint8_t bus, const uint8_t slot, const uint8_t func, const uint8_t id)
+{
+    if (!(pci_config_read_u16(bus, slot, func, PCI_STATUS) & PCI_STATUS_CAP_LIST))
+        return 0;
+    uint8_t cap = pci_config_read_u8(bus, slot, func, PCI_CAP_PTR) & ~3;
+    for (int hops = 0; cap && hops < 48; hops++) {
+        if (pci_config_read_u8(bus, slot, func, cap) == id)
+            return cap;
+        cap = pci_config_read_u8(bus, slot, func, cap + 1) & ~3;
+    }
+    return 0;
 }
 
 void pci_enable_bus_master(const pci_device* device);

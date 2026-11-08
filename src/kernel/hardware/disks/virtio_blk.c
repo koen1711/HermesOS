@@ -16,29 +16,13 @@
 #include <hardware/memory/mmu.h>
 #include <hardware/memory/pmm.h>
 #include <hardware/port/pci.h>
-#include <hardware/port/ports.h>
+#include <hardware/virtio/virtio.h>
 #include <utils/str/str.h>
 #include <utils/sync/spinlock.h>
 
 #include "partition_table.h"
 
-#define VIRTIO_VENDOR          0x1AF4
 #define VIRTIO_BLK_LEGACY_ID   0x1001
-
-#define VIO_HOST_FEATURES      0x00
-#define VIO_GUEST_FEATURES     0x04
-#define VIO_QUEUE_PFN          0x08
-#define VIO_QUEUE_NUM          0x0C
-#define VIO_QUEUE_SEL          0x0E
-#define VIO_QUEUE_NOTIFY       0x10
-#define VIO_STATUS             0x12
-#define VIO_ISR                0x13
-#define VIO_CONFIG             0x14
-
-#define VIO_STATUS_ACK         0x01
-#define VIO_STATUS_DRIVER      0x02
-#define VIO_STATUS_DRIVER_OK   0x04
-#define VIO_STATUS_FAILED      0x80
 
 #define VBLK_F_SEG_MAX         (1u << 2)
 #define VBLK_F_RO              (1u << 5)
@@ -48,9 +32,6 @@
 #define VBLK_T_OUT             1
 #define VBLK_T_FLUSH           4
 
-#define VRING_DESC_F_NEXT      1
-#define VRING_DESC_F_WRITE     2
-
 #define VBLK_SECTOR            512
 #define VBLK_MAX_DEVICES       4
 #define VBLK_MAX_INFLIGHT      32
@@ -58,18 +39,6 @@
 #define VBLK_MAX_BYTES         (128 * 1024)
 #define VBLK_POKE_MS           100
 #define WAIT_CHANNEL_VBLK      0x3D000000
-
-struct vring_desc {
-    uint64_t addr;
-    uint32_t len;
-    uint16_t flags;
-    uint16_t next;
-} __attribute__((packed));
-
-struct vring_used_elem {
-    uint32_t id;
-    uint32_t len;
-} __attribute__((packed));
 
 struct vblk_hdr {
     uint32_t type;
@@ -92,21 +61,14 @@ struct vblk_req {
 
 struct vblk_device {
     int index;
-    uint16_t io;
-    uint8_t irq;
+    struct virtio_device vdev;
     bool read_only;
     bool can_flush;
     uint64_t sectors;
     uint32_t max_segs;
     uint32_t max_bytes;
 
-    uint16_t qsize;
-    struct vring_desc *desc;
-    volatile uint16_t *avail;
-    volatile uint8_t *used;
-    uint16_t free_head;
-    uint16_t num_free;
-    uint16_t last_used;
+    struct virtqueue vq;
     int16_t *owner;
 
     struct vblk_dma *dma;
@@ -135,42 +97,15 @@ static int vblk_free_wait_id(const struct vblk_device *d)
     return WAIT_CHANNEL_VBLK | (d->index << 8) | 0xFF;
 }
 
-static volatile uint16_t *used_idx(const struct vblk_device *d)
-{
-    return (volatile uint16_t *)(d->used + 2);
-}
-
-static volatile struct vring_used_elem *used_ring(const struct vblk_device *d)
-{
-    return (volatile struct vring_used_elem *)(d->used + 4);
-}
-
-static void free_chain_locked(struct vblk_device *d, uint16_t head)
-{
-    for (;;) {
-        const uint16_t flags = d->desc[head].flags;
-        const uint16_t next = d->desc[head].next;
-        d->desc[head].next = d->free_head;
-        d->free_head = head;
-        d->num_free++;
-        if (!(flags & VRING_DESC_F_NEXT))
-            break;
-        head = next;
-    }
-}
-
 static bool reap_locked(struct vblk_device *d)
 {
     bool any = false;
-    while (d->last_used != *used_idx(d)) {
-        __atomic_thread_fence(__ATOMIC_ACQUIRE);
-        const uint16_t head = (uint16_t)used_ring(d)[d->last_used % d->qsize].id;
-        d->last_used++;
-        const int slot = head < d->qsize ? d->owner[head] : -1;
+    uint16_t head;
+    while (virtqueue_get(&d->vq, &head, nullptr)) {
+        const int slot = d->owner[head];
         if (slot < 0)
             continue;
         d->owner[head] = -1;
-        free_chain_locked(d, head);
         d->reqs[slot].done = true;
         process_wakeup(vblk_wait_id(d, slot));
         any = true;
@@ -184,7 +119,7 @@ static void vblk_irq(uint8_t irq, void *ctx)
 {
     (void)irq;
     struct vblk_device *d = ctx;
-    if (!(port_read_u8(d->io + VIO_ISR) & 1))
+    if (!(virtio_isr(&d->vdev) & VIRTIO_ISR_QUEUE))
         return;
     uint64_t flags;
     spinlock_acquire_irqsave(&d->lock, &flags);
@@ -207,21 +142,13 @@ static void vblk_poke(void *arg)
 
 static int take_slot_locked(struct vblk_device *d, const uint16_t ndesc)
 {
-    if (d->num_free < ndesc)
+    if (d->vq.num_free < ndesc)
         return -1;
     for (int i = 0; i < VBLK_MAX_INFLIGHT; i++) {
         if (!d->reqs[i].in_use)
             return i;
     }
     return -1;
-}
-
-static uint16_t take_desc_locked(struct vblk_device *d)
-{
-    const uint16_t i = d->free_head;
-    d->free_head = d->desc[i].next;
-    d->num_free--;
-    return i;
 }
 
 static void dma_pin(const struct dma_map *map, const bool pin)
@@ -280,35 +207,31 @@ static int vblk_request(struct vblk_device *d, const uint32_t type, const uint64
     d->dma->hdr[slot].sector = sector;
     d->dma->status[slot] = 0xFF;
 
-    spinlock_acquire_irqsave(&d->lock, &flags);
-    const uint16_t head = take_desc_locked(d);
-    d->desc[head].addr = d->dma_phys + __builtin_offsetof(struct vblk_dma, hdr) + slot * sizeof(struct vblk_hdr);
-    d->desc[head].len = sizeof(struct vblk_hdr);
-    d->desc[head].flags = VRING_DESC_F_NEXT;
-    uint16_t prev = head;
-    for (int i = 0; len && i < map->num_segments; i++) {
-        const uint16_t n = take_desc_locked(d);
-        d->desc[n].addr = map->segments[i].addr;
-        d->desc[n].len = (uint32_t)map->segments[i].len;
-        d->desc[n].flags = VRING_DESC_F_NEXT | (write ? 0 : VRING_DESC_F_WRITE);
-        d->desc[prev].next = n;
-        prev = n;
-    }
-    const uint16_t tail = take_desc_locked(d);
-    d->desc[tail].addr = d->dma_phys + __builtin_offsetof(struct vblk_dma, status) + slot;
-    d->desc[tail].len = 1;
-    d->desc[tail].flags = VRING_DESC_F_WRITE;
-    d->desc[prev].next = tail;
+    struct virtio_buf bufs[VBLK_MAX_SEGS + 2];
+    uint16_t n = 0;
+    bufs[n++] = (struct virtio_buf){
+        d->dma_phys + __builtin_offsetof(struct vblk_dma, hdr) + slot * sizeof(struct vblk_hdr), sizeof(struct vblk_hdr),
+        false};
+    for (int i = 0; len && i < map->num_segments; i++)
+        bufs[n++] = (struct virtio_buf){map->segments[i].addr, (uint32_t)map->segments[i].len, !write};
+    bufs[n++] = (struct virtio_buf){d->dma_phys + __builtin_offsetof(struct vblk_dma, status) + slot, 1, true};
 
-    req->head = head;
+    spinlock_acquire_irqsave(&d->lock, &flags);
+    int head;
+    while ((head = virtqueue_add(&d->vq, bufs, n)) < 0) {
+        if (reap_locked(d))
+            continue;
+        spinlock_release_irqrestore(&d->lock, flags);
+        if (sleep)
+            process_sleep_timeout(vblk_free_wait_id(d), ticks_from_ms(VBLK_POKE_MS));
+        else
+            asm volatile("pause");
+        spinlock_acquire_irqsave(&d->lock, &flags);
+    }
+    req->head = (uint16_t)head;
     d->owner[head] = (int16_t)slot;
-    const uint16_t avail_idx = d->avail[1];
-    d->avail[2 + avail_idx % d->qsize] = head;
-    __atomic_thread_fence(__ATOMIC_SEQ_CST);
-    d->avail[1] = (uint16_t)(avail_idx + 1);
-    __atomic_thread_fence(__ATOMIC_SEQ_CST);
     spinlock_release_irqrestore(&d->lock, flags);
-    port_write_u16(d->io + VIO_QUEUE_NOTIFY, 0);
+    virtqueue_kick(&d->vq);
 
     for (;;) {
         const uint64_t iflags = irq_save();
@@ -409,33 +332,13 @@ static const struct block_device_ops vblk_bdev_ops = {
 
 static bool vblk_setup_queue(struct vblk_device *d)
 {
-    port_write_u16(d->io + VIO_QUEUE_SEL, 0);
-    d->qsize = port_read_u16(d->io + VIO_QUEUE_NUM);
-    if (d->qsize == 0)
+    if (!virtqueue_setup(&d->vdev, &d->vq, 0))
         return false;
-
-    const uint64_t avail_end = (uint64_t)d->qsize * sizeof(struct vring_desc) + 6 + 2ULL * d->qsize;
-    const uint64_t used_off = PAGE_ALIGN_UP(avail_end);
-    const uint64_t total = used_off + PAGE_ALIGN_UP(6 + 8ULL * d->qsize);
-    uint8_t *ring = alloc_kernel_pages(total / PAGE_SIZE);
-    if (!ring)
-        return false;
-    memset(ring, 0, total);
-
-    d->desc = (struct vring_desc *)ring;
-    d->avail = (volatile uint16_t *)(ring + (uint64_t)d->qsize * sizeof(struct vring_desc));
-    d->used = ring + used_off;
-    d->owner = malloc(d->qsize * sizeof(int16_t));
+    d->owner = malloc(d->vq.size * sizeof(int16_t));
     if (!d->owner)
         return false;
-    for (uint16_t i = 0; i < d->qsize; i++) {
-        d->desc[i].next = (uint16_t)(i + 1);
+    for (uint16_t i = 0; i < d->vq.size; i++)
         d->owner[i] = -1;
-    }
-    d->free_head = 0;
-    d->num_free = d->qsize;
-
-    port_write_u32(d->io + VIO_QUEUE_PFN, (uint32_t)(virt_to_phys(ring) >> 12));
     return true;
 }
 
@@ -499,46 +402,35 @@ static void vblk_probe(const pci_address addr)
 {
     if (vblk_count >= VBLK_MAX_DEVICES)
         return;
-    const uint32_t bar0 = pci_config_read_u32(addr.bus, addr.device, addr.function, PCI_BAR0);
-    if (!(bar0 & 1))
-        return;
-
     struct vblk_device *d = malloc_safe(sizeof(struct vblk_device));
     if (!d)
         return;
+    if (!virtio_attach(&d->vdev, addr)) {
+        free(d);
+        return;
+    }
     d->index = vblk_count;
-    d->io = (uint16_t)(bar0 & ~3u);
-    d->irq = pci_config_read_u8(addr.bus, addr.device, addr.function, PCI_INTERRUPT_LINE);
     spinlock_init(&d->lock, "virtio-blk");
 
-    const uint16_t command = pci_config_read_u16(addr.bus, addr.device, addr.function, PCI_COMMAND);
-    pci_config_write_u16(addr.bus, addr.device, addr.function, PCI_COMMAND, command | PCI_COMMAND_MASTER | 1);
-
-    port_write_u8(d->io + VIO_STATUS, 0);
-    port_write_u8(d->io + VIO_STATUS, VIO_STATUS_ACK);
-    port_write_u8(d->io + VIO_STATUS, VIO_STATUS_ACK | VIO_STATUS_DRIVER);
-
-    const uint32_t host = port_read_u32(d->io + VIO_HOST_FEATURES);
-    const uint32_t guest = host & (VBLK_F_SEG_MAX | VBLK_F_RO | VBLK_F_FLUSH);
-    port_write_u32(d->io + VIO_GUEST_FEATURES, guest);
+    const uint32_t guest = virtio_negotiate(&d->vdev, VBLK_F_SEG_MAX | VBLK_F_RO | VBLK_F_FLUSH);
     d->read_only = guest & VBLK_F_RO;
     d->can_flush = guest & VBLK_F_FLUSH;
-    d->sectors = port_read_u32(d->io + VIO_CONFIG) | (uint64_t)port_read_u32(d->io + VIO_CONFIG + 4) << 32;
+    d->sectors = virtio_config_u32(&d->vdev, 0) | (uint64_t)virtio_config_u32(&d->vdev, 4) << 32;
 
     uint32_t segs = VBLK_MAX_SEGS;
     if (guest & VBLK_F_SEG_MAX) {
-        const uint32_t seg_max = port_read_u32(d->io + VIO_CONFIG + 12);
+        const uint32_t seg_max = virtio_config_u32(&d->vdev, 12);
         if (seg_max && seg_max < segs)
             segs = seg_max;
     }
 
     if (!vblk_setup_queue(d)) {
-        port_write_u8(d->io + VIO_STATUS, VIO_STATUS_FAILED);
+        virtio_fail(&d->vdev);
         terminal_printf("virtio-blk: queue setup failed\n");
         return;
     }
-    if (segs + 2 > d->qsize)
-        segs = d->qsize > 2 ? d->qsize - 2 : 1;
+    if (segs + 2 > d->vq.size)
+        segs = d->vq.size > 2 ? d->vq.size - 2 : 1;
     d->max_segs = segs;
     d->max_bytes = segs > 1 ? (segs - 1) * PAGE_SIZE : VBLK_SECTOR * 8;
     if (d->max_bytes > VBLK_MAX_BYTES)
@@ -547,7 +439,7 @@ static void vblk_probe(const pci_address addr)
     d->dma = alloc_kernel_pages(PAGE_ALIGN_UP(sizeof(struct vblk_dma)) / PAGE_SIZE);
     if (!d->dma || dma_tag_create(nullptr, 1, 0, DMA_ADDR_MAX, d->max_bytes, (int)segs, d->max_bytes, 0,
                                   &d->tag) != 0) {
-        port_write_u8(d->io + VIO_STATUS, VIO_STATUS_FAILED);
+        virtio_fail(&d->vdev);
         terminal_printf("virtio-blk: DMA setup failed\n");
         return;
     }
@@ -556,30 +448,22 @@ static void vblk_probe(const pci_address addr)
     for (int i = 0; i < VBLK_MAX_INFLIGHT; i++) {
         callout_init(&d->reqs[i].poke);
         if (dma_map_create(d->tag, 0, &d->reqs[i].map) != 0) {
-            port_write_u8(d->io + VIO_STATUS, VIO_STATUS_FAILED);
+            virtio_fail(&d->vdev);
             return;
         }
     }
 
-    if (d->irq < IRQ_MAX_LINES)
-        irq_register_handler(d->irq, vblk_irq, d);
-    port_write_u8(d->io + VIO_STATUS, VIO_STATUS_ACK | VIO_STATUS_DRIVER | VIO_STATUS_DRIVER_OK);
+    if (d->vdev.irq < IRQ_ISA_LINES)
+        irq_register_handler(d->vdev.irq, vblk_irq, d);
+    virtio_driver_ok(&d->vdev);
 
     vblk_devices[vblk_count++] = d;
     terminal_printf("virtio-blk%d: %u MiB, queue %u, irq %u\n", d->index, (uint32_t)(d->sectors / 2048),
-                    d->qsize, d->irq);
+                    d->vq.size, d->vdev.irq);
     vblk_mount_partitions(d);
 }
 
 void virtio_blk_initialize()
 {
-    const scan_result *result = pci_scan(-1);
-    for (uint32_t i = 0; i < result->count; i++) {
-        if (result->devices[i] == 0)
-            continue;
-        const pci_address addr = pci_convert_address(result->devices[i]);
-        if (pci_config_read_u16(addr.bus, addr.device, addr.function, PCI_VENDOR_ID) == VIRTIO_VENDOR
-            && pci_config_read_u16(addr.bus, addr.device, addr.function, PCI_DEVICE_ID) == VIRTIO_BLK_LEGACY_ID)
-            vblk_probe(addr);
-    }
+    virtio_pci_foreach(VIRTIO_BLK_LEGACY_ID, vblk_probe);
 }

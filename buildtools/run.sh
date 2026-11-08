@@ -20,4 +20,4 @@ DISK_IF=ide
 [ -n "$VIRTIO" ] && DISK_IF=virtio
 echo "Disk interface: $DISK_IF"
 
-qemu-system-x86_64 -machine pc $ACCEL -nic user,model=e1000,hostfwd=tcp:127.0.0.1:8000-:8000 -smp "$SMP" -s -drive file="$BINARY_DIR/core.img",format=raw,if=$DISK_IF -serial stdio -device bochs-display -rtc base=localtime -m "${QEMU_MEMORY:-4G}" $QEMU_EXTRA_ARGS
+qemu-system-x86_64 -machine pc $ACCEL -netdev user,id=net0,hostfwd=tcp:127.0.0.1:8000-:8000 -device ${QEMU_NIC:-e1000},netdev=net0 -smp "$SMP" -s -drive file="$BINARY_DIR/core.img",format=raw,if=$DISK_IF -serial stdio -device bochs-display -rtc base=localtime -m "${QEMU_MEMORY:-4G}" $QEMU_EXTRA_ARGS

@@ -71,6 +71,16 @@ TRAP_NOERR irq_interrupt_13, 0x2d
 TRAP_NOERR irq_interrupt_14, 0x2e      # primary ATA
 TRAP_NOERR irq_interrupt_15, 0x2f      # secondary ATA, also the slave's spurious IRQ
 
+# MSI lines 16-23 (IRQ_OFFSET + n), raised only by devices irq_msi_message programmed
+TRAP_NOERR irq_interrupt_16, 0x30
+TRAP_NOERR irq_interrupt_17, 0x31
+TRAP_NOERR irq_interrupt_18, 0x32
+TRAP_NOERR irq_interrupt_19, 0x33
+TRAP_NOERR irq_interrupt_20, 0x34
+TRAP_NOERR irq_interrupt_21, 0x35
+TRAP_NOERR irq_interrupt_22, 0x36
+TRAP_NOERR irq_interrupt_23, 0x37
+
 TRAP_NOERR irq_interrupt_syscall, 0x80 # SYSCALL_VECTOR, syscalls_initialize puts it in the IDT
 TRAP_NOERR irq_lapic_timer, 0x40       # LAPIC_TIMER_VECTOR, smp_initialize puts these in the IDT
 TRAP_NOERR irq_tlb_shootdown, 0x41

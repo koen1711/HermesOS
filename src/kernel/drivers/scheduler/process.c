@@ -148,11 +148,12 @@ static void kick_clear() {
     __atomic_store_n(&kick_pending[cpu_this()->index], false, __ATOMIC_SEQ_CST);
 }
 
-static void kick_other_idle_cpus(int count) {
+static int kick_other_idle_cpus(int count) {
     const int self = cpu_this()->index;
     const int n = cpu_count();
+    const int wanted = count;
     if (count <= 0 || n <= 1) {
-        return;
+        return 0;
     }
     const int start = __atomic_fetch_add(&kick_cursor, 1, __ATOMIC_RELAXED);
     for (int k = 0; k < n && count > 0; k++) {
@@ -171,6 +172,7 @@ static void kick_other_idle_cpus(int count) {
         smp_kick(i);
         count--;
     }
+    return wanted - count;
 }
 
 static void kick_idle_cpus(int count) {
@@ -185,8 +187,8 @@ static void kick_idle_cpu() {
     kick_idle_cpus(1);
 }
 
-void process_kick_idle_other() {
-    kick_other_idle_cpus(1);
+bool process_kick_idle_other() {
+    return kick_other_idle_cpus(1) > 0;
 }
 
 void process_wakeup(const int wait_id) {
