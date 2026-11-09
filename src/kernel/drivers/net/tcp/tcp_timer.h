@@ -16,6 +16,7 @@
 #define TCP_KEEPINTVL_MS   75000
 #define TCP_KEEPCNT        8
 #define TCP_PERSMIN_MS     5000
+#define TCP_LOCAL_RETRY_MS 2
 #define TCP_PERSMAX_MS     60000
 
 uint64_t tcp_now_ms();

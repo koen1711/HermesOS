@@ -6,12 +6,15 @@
 #include <hardware/interrupts/irq.h>
 #include <hardware/smp/smp.h>
 #include <drivers/scheduler/process.h>
+#include <hardware/timer/tsc.h>
 #include <os/errno.h>
 
 #define NETISR_POLL_BUDGET 64
 #define NETISR_SOFTINTR_BUDGET 256
 #define NETISR_FLOWS 8
 #define NETISR_RX_BUDGET 128
+#define NETISR_IDLE_POLL_US 30
+#define NETISR_IDLE_POLL_MAX_US 100
 #define NETISR_MAX_POLLERS 4
 
 struct netisr_queue {
@@ -228,14 +231,38 @@ void netisr_softintr()
         return;
 
     __atomic_store_n(&rx_wanted, false, __ATOMIC_RELAXED);
-    bool more = false;
-    for (int i = 0; i < NETISR_MAX_POLLERS; i++) {
-        const netisr_poller_t poller = __atomic_load_n(&pollers[i], __ATOMIC_ACQUIRE);
-        if (poller)
-            more |= poller(NETISR_RX_BUDGET);
+    const bool idle = !current || current->pid == IDLE_PROC_PID;
+    unsigned polled = 0;
+    unsigned drained = 0;
+    uint64_t deadline = 0;
+    const uint64_t limit = idle ? tsc_micros() + NETISR_IDLE_POLL_MAX_US : 0;
+    bool arm = !idle;
+    bool more;
+    for (;;) {
+        unsigned got = 0;
+        for (int i = 0; i < NETISR_MAX_POLLERS; i++) {
+            const netisr_poller_t poller = __atomic_load_n(&pollers[i], __ATOMIC_ACQUIRE);
+            if (poller && polled + got < NETISR_RX_BUDGET)
+                got += poller(NETISR_RX_BUDGET - polled - got, arm);
+        }
+        polled += got;
+        drained += netisr_drain(NETISR_SOFTINTR_BUDGET - drained);
+        if (polled >= NETISR_RX_BUDGET || drained >= NETISR_SOFTINTR_BUDGET) {
+            more = polled >= NETISR_RX_BUDGET || netisr_pending();
+            break;
+        }
+        if (arm) {
+            more = false;
+            break;
+        }
+        const uint64_t now = tsc_micros();
+        if (got)
+            deadline = now + NETISR_IDLE_POLL_US < limit ? now + NETISR_IDLE_POLL_US : limit;
+        if (now >= deadline || process_ready_pending())
+            arm = true;
+        else
+            asm volatile("pause");
     }
-    if (netisr_drain(NETISR_SOFTINTR_BUDGET) >= NETISR_SOFTINTR_BUDGET && netisr_pending())
-        more = true;
     if (more) {
         __atomic_store_n(&rx_wanted, true, __ATOMIC_RELEASE);
         process_kick_idle_other();

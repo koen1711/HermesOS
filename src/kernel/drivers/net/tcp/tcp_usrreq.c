@@ -47,6 +47,7 @@ static int tcp_gone_error(const struct socket* so)
 int tcp_attach(struct socket* so, const int proto)
 {
     (void)proto;
+    so->snd.hiwat = TCP_SNDBUF_DEFAULT;
     return tcp_attach_pcb(so);
 }
 

@@ -13,11 +13,14 @@
 #define BLOCK_USED ((memory_block_t*)0x4845415055534544ULL)
 #define BLOCK_LARGE ((memory_block_t*)0x484541504C524745ULL)
 #define BIN_STEP 16
-#define BIN_COUNT 64
-#define BIN_MAX (BIN_STEP * BIN_COUNT)
-#define CACHE_MAX 32
+#define SMALL_BINS 64
+#define SMALL_MAX (BIN_STEP * SMALL_BINS)
+#define MEDIUM_STEP 512
+#define BIN_MAX (16 * 1024)
+#define BIN_COUNT (SMALL_BINS + (BIN_MAX - SMALL_MAX) / MEDIUM_STEP)
 #define CACHE_BATCH 16
 #define BIN_SLAB_PAGES 16
+#define BIN_SLAB_MIN_OBJECTS 8
 #define MEMCPY_REP_THRESHOLD 512
 #define MEMSET_REP_THRESHOLD 512
 
@@ -45,6 +48,22 @@ struct cpu_cache {
 
 static memory_block_t* bins[BIN_COUNT];
 static struct cpu_cache caches[MAX_CPUS];
+
+static uintptr_t bin_index(const uintptr_t size) {
+    if (size <= SMALL_MAX) return size / BIN_STEP - 1;
+    return SMALL_BINS - 1 + (size - SMALL_MAX + MEDIUM_STEP - 1) / MEDIUM_STEP;
+}
+
+static uintptr_t bin_size(const uintptr_t bin) {
+    if (bin < SMALL_BINS) return (bin + 1) * BIN_STEP;
+    return SMALL_MAX + (bin - SMALL_BINS + 1) * MEDIUM_STEP;
+}
+
+static uint32_t bin_batch(const uintptr_t bin) {
+    const uintptr_t size = bin_size(bin);
+    if (size <= SMALL_MAX) return CACHE_BATCH;
+    return size <= 4096 ? 8 : 4;
+}
 
 static void insert_free_locked(memory_block_t* block) {
     memory_block_t* previous = nullptr;
@@ -161,7 +180,8 @@ static memory_block_t* bin_refill_locked(const uintptr_t bin, struct cpu_bin* ca
 
     memory_block_t* tail = head;
     uint32_t taken = 1;
-    while (taken < CACHE_BATCH && tail->next) {
+    const uint32_t batch = bin_batch(bin);
+    while (taken < batch && tail->next) {
         tail = tail->next;
         taken++;
     }
@@ -173,14 +193,16 @@ static memory_block_t* bin_refill_locked(const uintptr_t bin, struct cpu_bin* ca
 }
 
 static bool bin_add_slab(const uintptr_t bin) {
-    const uint64_t object_size = (bin + 1) * BIN_STEP;
+    const uint64_t object_size = bin_size(bin);
     const uint64_t stride = object_size + sizeof(memory_block_t);
-    uint8_t* slab = alloc_kernel_pages(BIN_SLAB_PAGES);
+    uint64_t pages = PAGE_ALIGN_UP(BIN_SLAB_MIN_OBJECTS * stride) / PAGE_SIZE;
+    if (pages < BIN_SLAB_PAGES) pages = BIN_SLAB_PAGES;
+    uint8_t* slab = alloc_kernel_pages(pages);
     if (!slab) return false;
 
     memory_block_t* head = nullptr;
     memory_block_t* tail = nullptr;
-    for (uint64_t at = (BIN_SLAB_PAGES * PAGE_SIZE / stride) * stride; at >= stride; at -= stride) {
+    for (uint64_t at = (pages * PAGE_SIZE / stride) * stride; at >= stride; at -= stride) {
         const auto object = (memory_block_t*)(slab + at - stride);
         object->size = object_size;
         object->next = head;
@@ -197,7 +219,7 @@ static bool bin_add_slab(const uintptr_t bin) {
 }
 
 static void* bin_alloc(const uintptr_t size) {
-    const uintptr_t bin = size / BIN_STEP - 1;
+    const uintptr_t bin = bin_index(size);
     for (;;) {
         const uint64_t flags = irq_save();
         struct cpu_bin* cache = &caches[cpu_this()->index].bins[bin];
@@ -221,17 +243,18 @@ static void* bin_alloc(const uintptr_t size) {
 }
 
 static void bin_free(memory_block_t* object) {
-    const uintptr_t bin = object->size / BIN_STEP - 1;
+    const uintptr_t bin = bin_index(object->size);
+    const uint32_t batch = bin_batch(bin);
     const uint64_t flags = irq_save();
     struct cpu_bin* cache = &caches[cpu_this()->index].bins[bin];
     object->next = cache->head;
     cache->head = object;
-    if (++cache->count >= CACHE_MAX) {
+    if (++cache->count >= 2 * batch) {
         memory_block_t* tail = object;
-        for (uint32_t i = 1; i < CACHE_BATCH; i++)
+        for (uint32_t i = 1; i < batch; i++)
             tail = tail->next;
         cache->head = tail->next;
-        cache->count -= CACHE_BATCH;
+        cache->count -= batch;
         spinlock_acquire(&heap_lock);
         tail->next = bins[bin];
         bins[bin] = object;
@@ -245,10 +268,11 @@ void* malloc(const uintptr_t size) {
 
     const uintptr_t aligned_size = (size + BIN_STEP - 1) & ~(uintptr_t)(BIN_STEP - 1);
 
-    void* ptr = nullptr;
     if (aligned_size <= BIN_MAX)
-        ptr = bin_alloc(aligned_size);
-    else if (aligned_size >= LARGE_ALLOC_THRESHOLD)
+        return bin_alloc(aligned_size);
+
+    void* ptr = nullptr;
+    if (aligned_size >= LARGE_ALLOC_THRESHOLD)
         ptr = large_alloc(aligned_size);
     while (!ptr) {
         ptr = heap_take(aligned_size);

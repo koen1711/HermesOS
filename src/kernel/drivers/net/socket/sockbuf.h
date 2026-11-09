@@ -23,6 +23,7 @@ struct netbuf;
 struct sockbuf {
     struct netbuf* head;
     struct netbuf* tail;
+    struct netbuf* last;
     size_t cc;
     size_t hiwat;
     size_t lowat;
@@ -40,6 +41,7 @@ bool sockbuf_append_addr(struct sockbuf* sb, const struct sockaddr* from, sockle
 void sockbuf_drop(struct sockbuf* sb, size_t len);
 void sockbuf_drop_record(struct sockbuf* sb);
 size_t sockbuf_space(const struct sockbuf* sb);
+bool sockbuf_writable(const struct sockbuf* sb);
 
 size_t sockbuf_copy(const struct sockbuf* sb, size_t offset, size_t len, void* out);
 

@@ -106,6 +106,10 @@ void process_initialize() {
     init_shell_process();
 }
 
+bool process_ready_pending() {
+    return !dlist_empty(&scheduler.ready);
+}
+
 scheduler_t *scheduler_get() {
     return &per_cpu[cpu_this()->index];
 }

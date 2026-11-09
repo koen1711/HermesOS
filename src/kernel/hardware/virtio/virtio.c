@@ -182,6 +182,8 @@ bool virtqueue_setup(struct virtio_device* dev, struct virtqueue* vq, const uint
     vq->free_head = 0;
     vq->num_free = size;
     vq->last_used = 0;
+    vq->kicked = 0;
+    vq->event = dev->features & VIRTIO_RING_F_EVENT_IDX;
 
     port_write_u32(dev->io + VIO_QUEUE_PFN, (uint32_t)(virt_to_phys(ring) >> 12));
     return true;
@@ -211,10 +213,20 @@ int virtqueue_add(struct virtqueue* vq, const struct virtio_buf* bufs, const uin
     return head;
 }
 
-void virtqueue_kick(const struct virtqueue* vq)
+void virtqueue_kick(struct virtqueue* vq)
 {
     __atomic_thread_fence(__ATOMIC_SEQ_CST);
-    if (!(vq->used->flags & VRING_USED_F_NO_NOTIFY))
+    const uint16_t now = vq->avail->idx;
+    const uint16_t old = vq->kicked;
+    vq->kicked = now;
+    bool notify;
+    if (vq->event) {
+        const uint16_t event = *(const volatile uint16_t*)&vq->used->ring[vq->size];
+        notify = (uint16_t)(now - event - 1) < (uint16_t)(now - old);
+    } else {
+        notify = !(vq->used->flags & VRING_USED_F_NO_NOTIFY);
+    }
+    if (notify)
         port_write_u16(vq->dev->io + VIO_QUEUE_NOTIFY, vq->index);
 }
 
@@ -246,7 +258,21 @@ bool virtqueue_get(struct virtqueue* vq, uint16_t* head, uint32_t* len)
 
 bool virtqueue_intr_enable(const struct virtqueue* vq)
 {
-    vq->avail->flags &= ~VRING_AVAIL_F_NO_INTERRUPT;
-    __atomic_thread_fence(__ATOMIC_SEQ_CST);
+    if (vq->event) {
+        vq->avail->ring[vq->size] = vq->last_used;
+        __atomic_thread_fence(__ATOMIC_SEQ_CST);
+    } else {
+        __atomic_and_fetch(&vq->avail->flags, (uint16_t)~VRING_AVAIL_F_NO_INTERRUPT, __ATOMIC_SEQ_CST);
+    }
     return virtqueue_pending(vq);
+}
+
+bool virtqueue_intr_enable_delayed(const struct virtqueue* vq)
+{
+    if (!vq->event)
+        return virtqueue_intr_enable(vq);
+    const uint16_t bufs = (uint16_t)((uint16_t)(vq->avail->idx - vq->last_used) * 3 / 4);
+    vq->avail->ring[vq->size] = (uint16_t)(vq->last_used + bufs);
+    __atomic_thread_fence(__ATOMIC_SEQ_CST);
+    return (uint16_t)(vq->used->idx - vq->last_used) > bufs;
 }

@@ -40,12 +40,18 @@ struct e1000_device {
     uint16_t tx_clean;
     struct netbuf* tx_pending;
     uint32_t tx_pending_count;
+    struct netbuf* tx_backlog;
+    struct netbuf* tx_backlog_tail;
+    uint32_t tx_backlog_len;
+    bool tx_sched;
+    bool tx_intr;
     bool tx_busy;
     struct callout tx_kick;
     spinlock_t rx_lock;
     bool rx_sched;
     bool rx_masked;
     bool rx_polling;
+    uint16_t rx_unreturned;
     bool irq_registered;
 };
 

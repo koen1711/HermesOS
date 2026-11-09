@@ -82,7 +82,7 @@ static int socket_poll_locked(const struct file_s* f)
         events |= VFS_POLLIN;
     const bool stream = so->proto->flags & PR_CONNREQUIRED;
     if ((!stream || (so->state & SS_ISCONNECTED)) && !(so->state & SS_CANTSENDMORE)
-        && sockbuf_space(&so->snd) > 0)
+        && (stream ? sockbuf_writable(&so->snd) : sockbuf_space(&so->snd) > 0))
         events |= VFS_POLLOUT;
     if (stream && (so->state & SS_CANTRCVMORE) && (so->state & SS_CANTSENDMORE))
         events |= VFS_POLLHUP;

@@ -34,6 +34,7 @@
 #define VNET_MAX_DEVS        4
 #define VNET_TX_BATCH        32
 #define VNET_TX_OWNER_ROUNDS 4
+#define VNET_VECTORS         3
 
 struct vnet_hdr {
     uint8_t flags;
@@ -60,6 +61,11 @@ struct vnet_device {
 
     struct netbuf* tx_pending;
     uint32_t tx_pending_count;
+    struct netbuf* tx_backlog;
+    struct netbuf* tx_backlog_tail;
+    uint32_t tx_backlog_len;
+    bool tx_sched;
+    bool tx_intr;
     bool tx_busy;
     struct callout tx_kick;
 };
@@ -122,23 +128,26 @@ static unsigned vnet_rx(struct vnet_device* dev, const unsigned budget)
     return done;
 }
 
-static bool vnet_rx_softintr(const unsigned budget)
+static void vnet_tx_flush(struct netif* nif);
+
+static unsigned vnet_rx_softintr(const unsigned budget, const bool arm)
 {
     __atomic_add_fetch(&vnet_pollers, 1, __ATOMIC_SEQ_CST);
-    bool more = false;
+    unsigned total = 0;
     for (int i = 0; i < VNET_MAX_DEVS; i++) {
         struct vnet_device* dev = __atomic_load_n(&vnet_devs[i], __ATOMIC_SEQ_CST);
         if (!dev)
             continue;
-        unsigned done = 0;
-        bool full = false;
-        while (!full && __atomic_load_n(&dev->rx_sched, __ATOMIC_SEQ_CST)
+        if (__atomic_load_n(&dev->tx_sched, __ATOMIC_ACQUIRE))
+            vnet_tx_flush(dev->nif);
+        bool stop = total >= budget;
+        while (!stop && __atomic_load_n(&dev->rx_sched, __ATOMIC_SEQ_CST)
                && !__atomic_exchange_n(&dev->rx_polling, true, __ATOMIC_ACQUIRE)) {
             if (__atomic_exchange_n(&dev->rx_sched, false, __ATOMIC_ACQUIRE)) {
-                done += vnet_rx(dev, budget - done);
-                if (done >= budget) {
+                total += vnet_rx(dev, budget - total);
+                if (total >= budget || !arm) {
                     __atomic_store_n(&dev->rx_sched, true, __ATOMIC_RELEASE);
-                    full = true;
+                    stop = true;
                 } else if (virtqueue_intr_enable(&dev->rxq)) {
                     virtqueue_intr_disable(&dev->rxq);
                     __atomic_store_n(&dev->rx_sched, true, __ATOMIC_RELEASE);
@@ -146,10 +155,9 @@ static bool vnet_rx_softintr(const unsigned budget)
             }
             __atomic_store_n(&dev->rx_polling, false, __ATOMIC_SEQ_CST);
         }
-        more |= full;
     }
     __atomic_sub_fetch(&vnet_pollers, 1, __ATOMIC_SEQ_CST);
-    return more;
+    return total;
 }
 
 static bool vnet_link_up(const struct vnet_device* dev)
@@ -174,6 +182,15 @@ static void vnet_rx_wake(struct vnet_device* dev)
     netisr_rx_schedule();
 }
 
+static void vnet_tx_wake(struct vnet_device* dev)
+{
+    if (__atomic_exchange_n(&dev->tx_intr, false, __ATOMIC_ACQ_REL)) {
+        virtqueue_intr_disable(&dev->txq);
+        __atomic_store_n(&dev->tx_sched, true, __ATOMIC_RELEASE);
+        netisr_rx_schedule();
+    }
+}
+
 static void vnet_interrupt(const uint8_t irq, void* ctx)
 {
     struct vnet_device* dev = ctx;
@@ -182,8 +199,10 @@ static void vnet_interrupt(const uint8_t irq, void* ctx)
     const uint8_t isr = virtio_isr(&dev->vdev);
     if (isr & VIRTIO_ISR_CONFIG)
         vnet_config_changed(dev);
-    if (isr & VIRTIO_ISR_QUEUE)
+    if (isr & VIRTIO_ISR_QUEUE) {
+        vnet_tx_wake(dev);
         vnet_rx_wake(dev);
+    }
 }
 
 static void vnet_msix_config(const uint8_t irq, void* ctx)
@@ -198,33 +217,42 @@ static void vnet_msix_rx(const uint8_t irq, void* ctx)
     vnet_rx_wake(ctx);
 }
 
+static void vnet_msix_tx(const uint8_t irq, void* ctx)
+{
+    (void)irq;
+    vnet_tx_wake(ctx);
+}
+
 static bool vnet_upgrade_msix(struct vnet_device* dev)
 {
     struct virtio_device* v = &dev->vdev;
-    if (virtio_msix_prepare(v, 2) != 0)
+    static const irq_handler_t handlers[VNET_VECTORS] = {vnet_msix_config, vnet_msix_rx, vnet_msix_tx};
+    if (virtio_msix_prepare(v, VNET_VECTORS) != 0)
         return false;
-    if (irq_register_handler_mpsafe(v->msix_irq[0], vnet_msix_config, dev) != 0) {
-        virtio_msix_disable(v);
-        return false;
+    int registered = 0;
+    while (registered < VNET_VECTORS
+           && irq_register_handler_mpsafe(v->msix_irq[registered], handlers[registered], dev) == 0)
+        registered++;
+    bool ok = registered == VNET_VECTORS;
+    if (ok) {
+        virtio_msix_activate(v);
+        ok = virtio_msix_config_vector(v, 0) && virtio_msix_queue_vector(v, VNET_RXQ, 1)
+            && virtio_msix_queue_vector(v, VNET_TXQ, 2);
+        if (!ok) {
+            virtio_msix_config_vector(v, VIRTIO_MSI_NO_VECTOR);
+            virtio_msix_queue_vector(v, VNET_RXQ, VIRTIO_MSI_NO_VECTOR);
+            virtio_msix_queue_vector(v, VNET_TXQ, VIRTIO_MSI_NO_VECTOR);
+        }
     }
-    if (irq_register_handler_mpsafe(v->msix_irq[1], vnet_msix_rx, dev) != 0) {
-        irq_unregister_handler(v->msix_irq[0], vnet_msix_config, dev);
-        virtio_msix_disable(v);
-        return false;
-    }
-    virtio_msix_activate(v);
-    const bool ok = virtio_msix_config_vector(v, 0) && virtio_msix_queue_vector(v, VNET_RXQ, 1)
-        && virtio_msix_queue_vector(v, VNET_TXQ, VIRTIO_MSI_NO_VECTOR);
-    if (!ok) {
-        virtio_msix_config_vector(v, VIRTIO_MSI_NO_VECTOR);
-        virtio_msix_queue_vector(v, VNET_RXQ, VIRTIO_MSI_NO_VECTOR);
-        irq_unregister_handler(v->msix_irq[1], vnet_msix_rx, dev);
-        irq_unregister_handler(v->msix_irq[0], vnet_msix_config, dev);
-        virtio_msix_disable(v);
-    } else {
+    if (ok) {
         irq_unregister_handler(v->irq, vnet_interrupt, dev);
+    } else {
+        while (registered--)
+            irq_unregister_handler(v->msix_irq[registered], handlers[registered], dev);
+        virtio_msix_disable(v);
     }
     vnet_rx_wake(dev);
+    vnet_tx_wake(dev);
     return ok;
 }
 
@@ -233,8 +261,8 @@ static void vnet_upgrade_all()
     for (int i = 0; i < VNET_MAX_DEVS; i++) {
         struct vnet_device* dev = __atomic_load_n(&vnet_devs[i], __ATOMIC_SEQ_CST);
         if (dev && vnet_upgrade_msix(dev))
-            terminal_printf("virtio-net%d: msi-x vectors %u/%u\n", i, IRQ_OFFSET + dev->vdev.msix_irq[0],
-                            IRQ_OFFSET + dev->vdev.msix_irq[1]);
+            terminal_printf("virtio-net%d: msi-x vectors %u/%u/%u\n", i, IRQ_OFFSET + dev->vdev.msix_irq[0],
+                            IRQ_OFFSET + dev->vdev.msix_irq[1], IRQ_OFFSET + dev->vdev.msix_irq[2]);
     }
 }
 
@@ -251,16 +279,6 @@ static void vnet_tx_enqueue(struct vnet_device* dev, struct netbuf* nb)
     for (const struct netbuf* b = nb; b; b = b->next)
         length += b->len;
 
-    if (!dev->txq.num_free) {
-        virtqueue_kick(&dev->txq);
-        vnet_tx_reclaim(dev);
-    }
-    if (!dev->txq.num_free) {
-        netbuf_free_chain(nb);
-        nif->stats.tx_dropped++;
-        return;
-    }
-
     const uint16_t slot = dev->txq.free_head;
     uint8_t* buf = vnet_buf(dev->tx_bufs, slot);
     memset(buf, 0, sizeof(struct vnet_hdr));
@@ -273,7 +291,34 @@ static void vnet_tx_enqueue(struct vnet_device* dev, struct netbuf* nb)
     nif->stats.tx_bytes += length;
 }
 
-static void vnet_tx_flush(struct netif* nif);
+static void vnet_tx_intr(struct vnet_device* dev, const bool on)
+{
+    if (__atomic_exchange_n(&dev->tx_intr, on, __ATOMIC_ACQ_REL) != on && !on)
+        virtqueue_intr_disable(&dev->txq);
+}
+
+static void vnet_tx_drain_backlog(struct vnet_device* dev)
+{
+    for (;;) {
+        while (dev->tx_backlog && dev->txq.num_free) {
+            struct netbuf* nb = dev->tx_backlog;
+            dev->tx_backlog = nb->next_pkt;
+            nb->next_pkt = nullptr;
+            dev->tx_backlog_len--;
+            vnet_tx_enqueue(dev, nb);
+        }
+        if (!dev->tx_backlog) {
+            dev->tx_backlog_tail = nullptr;
+            vnet_tx_intr(dev, false);
+            return;
+        }
+        virtqueue_kick(&dev->txq);
+        vnet_tx_intr(dev, true);
+        if (!virtqueue_intr_enable_delayed(&dev->txq))
+            return;
+        vnet_tx_reclaim(dev);
+    }
+}
 
 static void vnet_tx_kick(void* arg)
 {
@@ -284,7 +329,7 @@ static void vnet_tx_flush(struct netif* nif)
 {
     struct vnet_device* dev = nif->softc;
     for (int round = 0;; round++) {
-        if (!__atomic_load_n(&dev->tx_pending, __ATOMIC_SEQ_CST))
+        if (!__atomic_load_n(&dev->tx_pending, __ATOMIC_SEQ_CST) && !__atomic_load_n(&dev->tx_sched, __ATOMIC_SEQ_CST))
             return;
         if (round == VNET_TX_OWNER_ROUNDS) {
             callout_reset(&dev->tx_kick, 1, vnet_tx_kick, nif);
@@ -296,6 +341,7 @@ static void vnet_tx_flush(struct netif* nif)
             return;
         }
 
+        __atomic_store_n(&dev->tx_sched, false, __ATOMIC_SEQ_CST);
         struct netbuf* nb = __atomic_exchange_n(&dev->tx_pending, nullptr, __ATOMIC_ACQUIRE);
         struct netbuf* ordered = nullptr;
         uint32_t count = 0;
@@ -308,14 +354,12 @@ static void vnet_tx_flush(struct netif* nif)
         }
         __atomic_sub_fetch(&dev->tx_pending_count, count, __ATOMIC_RELAXED);
 
+        netif_tx_backlog_append(nif, &dev->tx_backlog, &dev->tx_backlog_tail, &dev->tx_backlog_len, ordered);
+
         vnet_tx_reclaim(dev);
-        while (ordered) {
-            struct netbuf* next = ordered->next_pkt;
-            ordered->next_pkt = nullptr;
-            vnet_tx_enqueue(dev, ordered);
-            ordered = next;
-        }
+        vnet_tx_drain_backlog(dev);
         virtqueue_kick(&dev->txq);
+        netif_tx_room(nif, __atomic_load_n(&dev->tx_pending_count, __ATOMIC_RELAXED) + dev->tx_backlog_len);
 
         __atomic_store_n(&dev->tx_busy, false, __ATOMIC_SEQ_CST);
         irq_restore(flags);
@@ -335,6 +379,13 @@ static int vnet_transmit(struct netif* nif, struct netbuf* nb)
         return -EMSGSIZE;
     }
 
+    if (!netif_tx_admit(nif, __atomic_load_n(&dev->tx_pending_count, __ATOMIC_RELAXED)
+                                 + __atomic_load_n(&dev->tx_backlog_len, __ATOMIC_RELAXED))) {
+        netbuf_free_chain(nb);
+        __atomic_store_n(&dev->tx_sched, true, __ATOMIC_RELEASE);
+        vnet_tx_flush(nif);
+        return -ENOBUFS;
+    }
     const uint32_t pending = __atomic_add_fetch(&dev->tx_pending_count, 1, __ATOMIC_RELAXED);
     nb->next_pkt = __atomic_load_n(&dev->tx_pending, __ATOMIC_RELAXED);
     while (!__atomic_compare_exchange_n(&dev->tx_pending, &nb->next_pkt, nb, true, __ATOMIC_SEQ_CST,
@@ -433,7 +484,7 @@ static void vnet_probe(const pci_address addr)
     dev->tx_kick.mpsafe = true;
 
     const uint32_t features =
-        virtio_negotiate(&dev->vdev, VNET_F_MAC | VNET_F_STATUS | VNET_F_GUEST_CSUM | VIRTIO_F_ANY_LAYOUT);
+        virtio_negotiate(&dev->vdev, VNET_F_MAC | VNET_F_STATUS | VNET_F_GUEST_CSUM | VIRTIO_F_ANY_LAYOUT | VIRTIO_RING_F_EVENT_IDX);
     if (!(features & VIRTIO_F_ANY_LAYOUT) || !virtqueue_setup(&dev->vdev, &dev->rxq, VNET_RXQ)
         || !virtqueue_setup(&dev->vdev, &dev->txq, VNET_TXQ)
         || !(dev->rx_bufs = vnet_alloc_pool(dev->rxq.size)) || !(dev->tx_bufs = vnet_alloc_pool(dev->txq.size))) {

@@ -9,6 +9,7 @@
 #include <drivers/net/socket/socket.h>
 #include <drivers/net/core/byteorder.h>
 #include <drivers/net/core/netbuf.h>
+#include <drivers/net/core/netif.h>
 #include <hardware/memory/alloc.h>
 #include <os/errno.h>
 
@@ -270,13 +271,39 @@ static void tcp_fill_header(struct tcp_header* th, const uint16_t sport, const u
     th->urgent = 0;
 }
 
-static void tcp_checksum_and_send(const struct inpcb* inp, struct netbuf* nb,
-                                  const struct in6_addr* src, const struct in6_addr* dst)
+static int tcp_checksum_and_send(const struct inpcb* inp, struct netbuf* nb,
+                                 const struct in6_addr* src, const struct in6_addr* dst)
 {
     const auto th = (struct tcp_header*)nb->data;
     th->checksum = htons(inpcb_l4_checksum(nb, 0, nb->len, IPPROTO_TCP, src, dst));
     TCPSTAT_INC(sndtotal);
-    inpcb_ip_output(inp, nb, IPPROTO_TCP, src, dst);
+    return inpcb_ip_output(inp, nb, IPPROTO_TCP, src, dst);
+}
+
+static void tcp_tx_retry_later(struct tcpcb* tp)
+{
+    if (!tcp_timer_active(tp, TCPT_REXMT) && !tcp_timer_active(tp, TCPT_DELACK))
+        tcp_timer_activate(tp, TCPT_DELACK, TCP_LOCAL_RETRY_MS);
+}
+
+static void tcp_local_congestion(struct tcpcb* tp, const uint32_t gen)
+{
+    TCPSTAT_INC(sndlocalfull);
+    tp->t_flags |= TF_TXBLOCKED;
+    tp->tx_blocked_gen = gen;
+    tp->tx_blocked_ms = tcp_now_ms();
+    tcp_tx_retry_later(tp);
+}
+
+static bool tcp_tx_blocked(struct tcpcb* tp)
+{
+    if (!(tp->t_flags & TF_TXBLOCKED))
+        return false;
+    if (tp->tx_blocked_gen == netif_tx_generation() && !(tp->t_flags & TF_ACKNOW)
+        && tcp_now_ms() - tp->tx_blocked_ms < TCP_LOCAL_RETRY_MS)
+        return true;
+    tp->t_flags &= ~TF_TXBLOCKED;
+    return false;
 }
 
 static struct netbuf* tcp_build_segment(const struct tcpcb* tp, const struct tcp_txplan* tx,
@@ -378,9 +405,13 @@ static int tcp_output_once(struct tcpcb* tp)
     struct netbuf* nb = tcp_build_segment(tp, &tx, opt, optlen, win);
     if (!nb)
         return -ENOBUFS;
+    const uint32_t gen = netif_tx_generation();
+    if (tcp_checksum_and_send(tp->inp, nb, &tp->inp->laddr, &tp->inp->faddr) == -ENOBUFS) {
+        tcp_local_congestion(tp, gen);
+        return -ENOBUFS;
+    }
     tcp_count_send(tp, &tx);
     tcp_after_send(tp, &tx, win);
-    tcp_checksum_and_send(tp->inp, nb, &tp->inp->laddr, &tp->inp->faddr);
 
     const bool full = tx.len == maxseg || tx.sack_rxmit;
     return full && !(tx.flags & TH_RST) && !(tp->t_flags & TF_FORCEDATA);
@@ -388,6 +419,10 @@ static int tcp_output_once(struct tcpcb* tp)
 
 int tcp_output(struct tcpcb* tp)
 {
+    if (tcp_tx_blocked(tp)) {
+        tcp_tx_retry_later(tp);
+        return 0;
+    }
     const bool idle = tp->snd_max == tp->snd_una;
     if (idle && TCPS_HAVEESTABLISHED(tp->state) && tp->cc->after_idle &&
         tcp_now_ms() - tp->t_rcvtime >= tp->rto)

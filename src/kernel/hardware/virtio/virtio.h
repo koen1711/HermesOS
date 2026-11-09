@@ -16,6 +16,7 @@
 #define VIRTIO_ISR_CONFIG          0x02
 
 #define VIRTIO_F_ANY_LAYOUT        (1u << 27)
+#define VIRTIO_RING_F_EVENT_IDX    (1u << 29)
 
 #define VRING_DESC_F_NEXT          1
 #define VRING_DESC_F_WRITE         2
@@ -83,6 +84,8 @@ struct virtqueue {
     uint16_t free_head;
     uint16_t num_free;
     uint16_t last_used;
+    uint16_t kicked;
+    bool event;
 };
 
 struct virtio_buf {
@@ -134,7 +137,7 @@ static uint32_t virtio_config_u32(const struct virtio_device* dev, const uint16_
 
 bool virtqueue_setup(struct virtio_device* dev, struct virtqueue* vq, uint16_t index);
 int virtqueue_add(struct virtqueue* vq, const struct virtio_buf* bufs, uint16_t count);
-void virtqueue_kick(const struct virtqueue* vq);
+void virtqueue_kick(struct virtqueue* vq);
 
 static bool virtqueue_pending(const struct virtqueue* vq)
 {
@@ -145,10 +148,14 @@ bool virtqueue_get(struct virtqueue* vq, uint16_t* head, uint32_t* len);
 
 static void virtqueue_intr_disable(const struct virtqueue* vq)
 {
-    vq->avail->flags |= VRING_AVAIL_F_NO_INTERRUPT;
+    if (vq->event)
+        vq->avail->ring[vq->size] = (uint16_t)(vq->last_used + 0x8000);
+    else
+        __atomic_or_fetch(&vq->avail->flags, VRING_AVAIL_F_NO_INTERRUPT, __ATOMIC_SEQ_CST);
 }
 
 bool virtqueue_intr_enable(const struct virtqueue* vq);
+bool virtqueue_intr_enable_delayed(const struct virtqueue* vq);
 
 
 #endif //OS_VIRTIO_H

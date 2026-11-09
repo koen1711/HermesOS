@@ -16,7 +16,7 @@ struct netbuf;
 struct netif;
 
 typedef void (*netisr_handler_t)(struct netbuf* nb);
-typedef bool (*netisr_poller_t)(unsigned budget);
+typedef unsigned (*netisr_poller_t)(unsigned budget, bool arm);
 
 void netisr_initialize();
 int netisr_register(enum netisr_proto proto, netisr_handler_t handler, uint32_t queue_len);

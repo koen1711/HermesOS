@@ -27,7 +27,7 @@ static size_t sockbuf_chain_len(const struct netbuf* nb)
 
 void sockbuf_init(struct sockbuf* sb, const size_t hiwat)
 {
-    sb->head = sb->tail = nullptr;
+    sb->head = sb->tail = sb->last = nullptr;
     sb->cc = 0;
     sb->hiwat = hiwat;
     sb->lowat = 1;
@@ -40,7 +40,7 @@ void sockbuf_release(struct sockbuf* sb)
     uint64_t flags;
     spinlock_acquire_irqsave(&sb->lock, &flags);
     struct netbuf* rec = sb->head;
-    sb->head = sb->tail = nullptr;
+    sb->head = sb->tail = sb->last = nullptr;
     sb->cc = 0;
     spinlock_release_irqrestore(&sb->lock, flags);
 
@@ -56,14 +56,18 @@ void sockbuf_append(struct sockbuf* sb, struct netbuf* nb)
     if (!nb)
         return;
     const size_t len = sockbuf_chain_len(nb);
+    struct netbuf* last = nb;
+    while (last->next)
+        last = last->next;
     uint64_t flags;
     spinlock_acquire_irqsave(&sb->lock, &flags);
     if (sb->tail) {
-        netbuf_cat(sb->tail, nb);
+        netbuf_cat(sb->last, nb);
     } else {
         nb->next_pkt = nullptr;
         sb->head = sb->tail = nb;
     }
+    sb->last = last;
     sb->cc += len;
     spinlock_release_irqrestore(&sb->lock, flags);
 }
@@ -86,6 +90,9 @@ bool sockbuf_append_addr(struct sockbuf* sb, const struct sockaddr* from, const 
     rec->next_pkt = nullptr;
     if (nb)
         nb->flags &= ~NETBUF_PKTHDR;
+    struct netbuf* last = rec;
+    while (last->next)
+        last = last->next;
 
     uint64_t flags;
     spinlock_acquire_irqsave(&sb->lock, &flags);
@@ -102,6 +109,7 @@ bool sockbuf_append_addr(struct sockbuf* sb, const struct sockaddr* from, const 
     else
         sb->head = rec;
     sb->tail = rec;
+    sb->last = last;
     sb->cc += len;
     spinlock_release_irqrestore(&sb->lock, flags);
     return true;
@@ -140,6 +148,8 @@ void sockbuf_drop(struct sockbuf* sb, size_t len)
         b->next_pkt = freed;
         freed = b;
     }
+    if (!sb->head)
+        sb->last = nullptr;
     spinlock_release_irqrestore(&sb->lock, flags);
 
     while (freed) {
@@ -157,7 +167,7 @@ void sockbuf_drop_record(struct sockbuf* sb)
     if (rec) {
         sb->head = rec->next_pkt;
         if (!sb->head)
-            sb->tail = nullptr;
+            sb->tail = sb->last = nullptr;
         sb->cc -= sockbuf_chain_len(rec);
         rec->next_pkt = nullptr;
     }
@@ -169,6 +179,12 @@ void sockbuf_drop_record(struct sockbuf* sb)
 size_t sockbuf_space(const struct sockbuf* sb)
 {
     return sb->cc < sb->hiwat ? sb->hiwat - sb->cc : 0;
+}
+
+bool sockbuf_writable(const struct sockbuf* sb)
+{
+    const size_t space = sockbuf_space(sb);
+    return space && space >= sb->hiwat / 3;
 }
 
 size_t sockbuf_copy(const struct sockbuf* sb, size_t offset, size_t len, void* out)

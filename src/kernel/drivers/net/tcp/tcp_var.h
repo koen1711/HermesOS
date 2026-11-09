@@ -44,10 +44,12 @@ enum tcpcb_flags
     TF_SACK_PERMIT = 0x0080,
     TF_FASTRECOVERY = 0x0100,
     TF_NEEDFIN = 0x0200,
-    TF_FORCEDATA = 0x0400
+    TF_FORCEDATA = 0x0400,
+    TF_TXBLOCKED = 0x0800
 };
 
 #define TCP_SACK_SCOREBOARD 8
+#define TCP_SNDBUF_DEFAULT (256 * 1024)
 #define TCP_MAX_PAYLOAD (NETBUF_CLUSTER_SIZE - NETBUF_HEADROOM - TCP_MAX_HEADER_LEN)
 
 #define TCPS_HAVERCVDSYN(s)   ((s) >= TCPS_SYN_RECEIVED)
@@ -98,6 +100,8 @@ struct tcpcb {
     uint32_t snd_cwnd;
     uint32_t snd_ssthresh;
     tcp_seq snd_recover;
+    uint32_t tx_blocked_gen;
+    uint64_t tx_blocked_ms;
     uint32_t dupacks;
     const struct tcp_cc_algo* cc;
     void* cc_data;
@@ -132,6 +136,7 @@ struct tcp_stats {
     uint64_t sndtotal, sndpack, sndbyte, sndrexmitpack, sndacks;
     uint64_t rcvtotal, rcvpack, rcvbyte, rcvbadsum, rcvduppack, rcvoopack;
     uint64_t rexmttimeo, persisttimeo, keeptimeo;
+    uint64_t sndlocalfull;
 };
 
 extern struct tcp_stats tcpstat;

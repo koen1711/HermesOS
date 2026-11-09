@@ -9,6 +9,7 @@
 #define NETIF_NAME_LEN   16
 #define NETIF_HWADDR_LEN 6
 #define NETIF_TX_BELLS   4
+#define NETIF_TX_BACKLOG_MAX 1024
 
 enum netif_flags
 {
@@ -72,6 +73,7 @@ struct netif {
     uint32_t flags;
     uint32_t link_state;
     uint32_t mtu;
+    bool tx_congested;
     uint8_t hw_addr[NETIF_HWADDR_LEN];
     uint8_t hw_addr_len;
 
@@ -109,6 +111,12 @@ void netif_tx_batch_end();
 uint32_t netif_tx_batch_save();
 void netif_tx_batch_restore(uint32_t depth);
 bool netif_tx_defer(struct netif* nif);
+void netif_tx_backlog_append(struct netif* nif, struct netbuf** head, struct netbuf** tail, uint32_t* len,
+                             struct netbuf* list);
+void netif_tx_backlog_free(struct netbuf** list);
+bool netif_tx_admit(struct netif* nif, uint32_t queued);
+void netif_tx_room(struct netif* nif, uint32_t queued);
+uint32_t netif_tx_generation();
 void netif_tx_flush();
 
 struct netif* netif_find_by_name(const char* name);

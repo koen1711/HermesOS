@@ -215,6 +215,61 @@ bool netif_tx_defer(struct netif* nif)
     return true;
 }
 
+static uint32_t tx_generation;
+
+uint32_t netif_tx_generation()
+{
+    return __atomic_load_n(&tx_generation, __ATOMIC_ACQUIRE);
+}
+
+bool netif_tx_admit(struct netif* nif, const uint32_t queued)
+{
+    if (queued < NETIF_TX_BACKLOG_MAX)
+        return true;
+    __atomic_store_n(&nif->tx_congested, true, __ATOMIC_RELEASE);
+    nif->stats.tx_dropped++;
+    return false;
+}
+
+void netif_tx_room(struct netif* nif, const uint32_t queued)
+{
+    if (queued < NETIF_TX_BACKLOG_MAX / 2 && __atomic_load_n(&nif->tx_congested, __ATOMIC_ACQUIRE)
+        && __atomic_exchange_n(&nif->tx_congested, false, __ATOMIC_ACQ_REL))
+        __atomic_add_fetch(&tx_generation, 1, __ATOMIC_RELEASE);
+}
+
+void netif_tx_backlog_append(struct netif* nif, struct netbuf** head, struct netbuf** tail, uint32_t* len,
+                             struct netbuf* list)
+{
+    while (list) {
+        struct netbuf* nb = list;
+        list = nb->next_pkt;
+        nb->next_pkt = nullptr;
+        if (*len >= 2 * NETIF_TX_BACKLOG_MAX) {
+            netbuf_free_chain(nb);
+            nif->stats.tx_dropped++;
+            continue;
+        }
+        if (*tail)
+            (*tail)->next_pkt = nb;
+        else
+            *head = nb;
+        *tail = nb;
+        (*len)++;
+    }
+}
+
+void netif_tx_backlog_free(struct netbuf** list)
+{
+    struct netbuf* nb = *list;
+    *list = nullptr;
+    while (nb) {
+        struct netbuf* next = nb->next_pkt;
+        netbuf_free_chain(nb);
+        nb = next;
+    }
+}
+
 void netif_tx_flush()
 {
     const auto b = &tx_batch[cpu_this()->index];

@@ -24,23 +24,67 @@ enum lapic_register {
 #define ICR_STARTUP 0x4600
 #define ICR_ALL_BUT_SELF (3 << 18)
 
+#define MSR_APIC_BASE 0x1B
+#define APIC_BASE_X2APIC (1ull << 10)
+#define APIC_BASE_ENABLE (1ull << 11)
+#define X2APIC_MSR_BASE 0x800
+#define X2APIC_ICR 0x830
+#define CPUID1_ECX_X2APIC (1u << 21)
+
 static volatile uint32_t* lapic;
 static uint32_t timer_count;
+static bool x2apic;
+
+static uint64_t rdmsr(const uint32_t msr)
+{
+    uint32_t lo, hi;
+    asm volatile("rdmsr" : "=a"(lo), "=d"(hi) : "c"(msr));
+    return (uint64_t)hi << 32 | lo;
+}
+
+static void wrmsr(const uint32_t msr, const uint64_t value)
+{
+    asm volatile("wrmsr" : : "c"(msr), "a"((uint32_t)value), "d"((uint32_t)(value >> 32)) : "memory");
+}
+
+static bool x2apic_supported()
+{
+    uint32_t eax, ebx, ecx, edx;
+    asm volatile("cpuid" : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx) : "a"(1), "c"(0));
+    return ecx & CPUID1_ECX_X2APIC;
+}
 
 static uint32_t lapic_read(const uint32_t reg)
 {
+    if (x2apic)
+        return (uint32_t)rdmsr(X2APIC_MSR_BASE + (reg >> 4));
     return lapic[reg / 4];
 }
 
 static void lapic_write(const uint32_t reg, const uint32_t value)
 {
-    lapic[reg / 4] = value;
+    if (x2apic)
+        wrmsr(X2APIC_MSR_BASE + (reg >> 4), value);
+    else
+        lapic[reg / 4] = value;
 }
 
 static void icr_wait()
 {
     while (lapic_read(LAPIC_ICR_LOW) & ICR_PENDING)
         asm volatile("pause");
+}
+
+static void lapic_send_icr(const uint32_t apic_id, const uint32_t low)
+{
+    if (x2apic) {
+        asm volatile("mfence" : : : "memory");
+        wrmsr(X2APIC_ICR, (uint64_t)apic_id << 32 | low);
+        return;
+    }
+    lapic_write(LAPIC_ICR_HIGH, apic_id << 24);
+    lapic_write(LAPIC_ICR_LOW, low);
+    icr_wait();
 }
 
 bool lapic_initialize(const uint64_t phys)
@@ -59,6 +103,12 @@ bool lapic_present()
 
 void lapic_enable(const bool mask_lint0)
 {
+    if (x2apic || x2apic_supported()) {
+        const uint64_t base = rdmsr(MSR_APIC_BASE);
+        if (!(base & APIC_BASE_X2APIC))
+            wrmsr(MSR_APIC_BASE, base | APIC_BASE_ENABLE | APIC_BASE_X2APIC);
+        x2apic = true;
+    }
     lapic_write(LAPIC_SVR, LAPIC_SVR_ENABLE | LAPIC_SPURIOUS_VECTOR);
     if (mask_lint0)
         lapic_write(LAPIC_LVT_LINT0, LAPIC_MASKED);
@@ -66,6 +116,8 @@ void lapic_enable(const bool mask_lint0)
 
 uint32_t lapic_id()
 {
+    if (x2apic)
+        return lapic_read(LAPIC_ID);
     return lapic ? lapic_read(LAPIC_ID) >> 24 : 0;
 }
 
@@ -76,30 +128,22 @@ void lapic_eoi()
 
 void lapic_send_init(const uint32_t apic_id)
 {
-    lapic_write(LAPIC_ICR_HIGH, apic_id << 24);
-    lapic_write(LAPIC_ICR_LOW, ICR_INIT);
-    icr_wait();
+    lapic_send_icr(apic_id, ICR_INIT);
 }
 
 void lapic_send_startup(const uint32_t apic_id, const uint32_t vector)
 {
-    lapic_write(LAPIC_ICR_HIGH, apic_id << 24);
-    lapic_write(LAPIC_ICR_LOW, ICR_STARTUP | (vector & 0xFF));
-    icr_wait();
+    lapic_send_icr(apic_id, ICR_STARTUP | (vector & 0xFF));
 }
 
 void lapic_send_ipi(const uint32_t apic_id, const uint32_t vector)
 {
-    lapic_write(LAPIC_ICR_HIGH, apic_id << 24);
-    lapic_write(LAPIC_ICR_LOW, vector & 0xFF);
-    icr_wait();
+    lapic_send_icr(apic_id, vector & 0xFF);
 }
 
 void lapic_send_others(const uint32_t vector)
 {
-    lapic_write(LAPIC_ICR_HIGH, 0);
-    lapic_write(LAPIC_ICR_LOW, ICR_ALL_BUT_SELF | (vector & 0xFF));
-    icr_wait();
+    lapic_send_icr(0, ICR_ALL_BUT_SELF | (vector & 0xFF));
 }
 
 void lapic_timer_calibrate(const uint32_t hz)
