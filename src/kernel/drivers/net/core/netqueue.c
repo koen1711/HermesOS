@@ -9,6 +9,26 @@ void netqueue_init(struct netqueue* q, const size_t max_len)
     q->drops = 0;
     spinlock_init(&q->lock, "netqueue");
     q->max_len = max_len;
+    q->mask = nullptr;
+    q->bit = 0;
+}
+
+void netqueue_set_mask(struct netqueue* q, uint64_t* mask, const uint64_t bit)
+{
+    q->mask = mask;
+    q->bit = bit;
+}
+
+static void netqueue_mark(const struct netqueue* q)
+{
+    if (q->mask)
+        __atomic_fetch_or(q->mask, q->bit, __ATOMIC_RELEASE);
+}
+
+static void netqueue_unmark(const struct netqueue* q)
+{
+    if (q->mask)
+        __atomic_fetch_and(q->mask, ~q->bit, __ATOMIC_RELAXED);
 }
 
 bool netqueue_enqueue(struct netqueue* q, struct netbuf* nb)
@@ -27,7 +47,8 @@ bool netqueue_enqueue(struct netqueue* q, struct netbuf* nb)
         q->head = nb;
     }
     q->tail = nb;
-    q->len++;
+    if (q->len++ == 0)
+        netqueue_mark(q);
     spinlock_release_irqrestore(&q->lock, flags);
     return true;
 }
@@ -43,10 +64,36 @@ struct netbuf* netqueue_dequeue(struct netqueue* q)
             q->tail = nullptr;
         }
         nb->next_pkt = nullptr;
-        q->len--;
+        if (--q->len == 0)
+            netqueue_unmark(q);
     }
     spinlock_release_irqrestore(&q->lock, flags);
     return nb;
+}
+
+struct netbuf* netqueue_dequeue_batch(struct netqueue* q, const size_t max, size_t* n)
+{
+    uint64_t flags;
+    spinlock_acquire_irqsave(&q->lock, &flags);
+    struct netbuf* head = q->head;
+    struct netbuf* last = nullptr;
+    size_t got = 0;
+    for (struct netbuf* nb = head; nb && got < max; nb = nb->next_pkt) {
+        last = nb;
+        got++;
+    }
+    if (last) {
+        q->head = last->next_pkt;
+        if (!q->head)
+            q->tail = nullptr;
+        last->next_pkt = nullptr;
+        q->len -= got;
+        if (!q->len)
+            netqueue_unmark(q);
+    }
+    spinlock_release_irqrestore(&q->lock, flags);
+    *n = got;
+    return got ? head : nullptr;
 }
 
 void netqueue_drain(struct netqueue* q)
@@ -56,6 +103,7 @@ void netqueue_drain(struct netqueue* q)
     struct netbuf* nb = q->head;
     q->head = q->tail = nullptr;
     q->len = 0;
+    netqueue_unmark(q);
     spinlock_release_irqrestore(&q->lock, flags);
 
     // free outside the lock
@@ -87,6 +135,8 @@ size_t netqueue_purge(struct netqueue* q, const struct netif* rcvif)
             pp = &nb->next_pkt;
         }
     }
+    if (!q->len)
+        netqueue_unmark(q);
     spinlock_release_irqrestore(&q->lock, flags);
 
     while (dropped) {
@@ -95,19 +145,4 @@ size_t netqueue_purge(struct netqueue* q, const struct netif* rcvif)
         dropped = next;
     }
     return count;
-}
-
-size_t netqueue_len(const struct netqueue* q)
-{
-    return q->len;
-}
-
-bool netqueue_full(const struct netqueue* q)
-{
-    return q->len >= q->max_len;
-}
-
-bool netqueue_empty(const struct netqueue* q)
-{
-    return q->len == 0;
 }

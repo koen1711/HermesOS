@@ -16,11 +16,14 @@
 #define NETISR_IDLE_POLL_US 30
 #define NETISR_IDLE_POLL_MAX_US 100
 #define NETISR_MAX_POLLERS 4
+#define NETISR_FLOW_MASK ((1u << NETISR_FLOWS) - 1)
+
+static_assert(NETISR_MAX * NETISR_FLOWS <= 64);
 
 struct netisr_queue {
     struct netqueue q;
     bool running;
-};
+} __attribute__((aligned(64)));
 
 struct netisr_proto_state {
     netisr_handler_t handler;
@@ -32,14 +35,21 @@ struct netisr_proto_state {
 static struct netisr_proto_state protos[NETISR_MAX];
 static netisr_poller_t pollers[NETISR_MAX_POLLERS];
 static bool rx_wanted;
+static uint64_t netisr_mask __attribute__((aligned(64)));
+
+static void netisr_queue_init(const int proto, const uint32_t i, const uint32_t queue_len)
+{
+    netqueue_init(&protos[proto].queues[i].q, queue_len);
+    netqueue_set_mask(&protos[proto].queues[i].q, &netisr_mask, 1ull << (proto * NETISR_FLOWS + i));
+}
 
 void netisr_initialize()
 {
     for (int p = 0; p < NETISR_MAX; p++) {
         protos[p].handler = nullptr;
         protos[p].nqueues = 1;
-        for (int i = 0; i < NETISR_FLOWS; i++)
-            netqueue_init(&protos[p].queues[i].q, 0);
+        for (uint32_t i = 0; i < NETISR_FLOWS; i++)
+            netisr_queue_init(p, i, 0);
     }
 
     irq_register_softintr(netisr_softintr);
@@ -54,7 +64,7 @@ static int netisr_register_queues(const enum netisr_proto proto, const netisr_ha
         return -EEXIST;
     protos[proto].nqueues = mpsafe ? NETISR_FLOWS : 1;
     for (uint32_t i = 0; i < protos[proto].nqueues; i++)
-        netqueue_init(&protos[proto].queues[i].q, queue_len);
+        netisr_queue_init(proto, i, queue_len);
     protos[proto].mpsafe = mpsafe;
     __atomic_store_n(&protos[proto].handler, handler, __ATOMIC_RELEASE);
     return 0;
@@ -127,11 +137,7 @@ int netisr_queue(const enum netisr_proto proto, struct netbuf* nb)
 
 bool netisr_pending()
 {
-    for (int p = 1; p < NETISR_MAX; p++)
-        for (uint32_t i = 0; i < protos[p].nqueues; i++)
-            if (netqueue_len(&protos[p].queues[i].q))
-                return true;
-    return false;
+    return __atomic_load_n(&netisr_mask, __ATOMIC_ACQUIRE) != 0;
 }
 
 static unsigned netisr_drain_queue(struct netisr_proto_state* ps, struct netisr_queue* nq, const unsigned budget,
@@ -146,18 +152,24 @@ static unsigned netisr_drain_queue(struct netisr_proto_state* ps, struct netisr_
             break;
         }
         while (did < budget) {
-            struct netbuf* nb = netqueue_dequeue(&nq->q);
+            size_t n;
+            struct netbuf* nb = netqueue_dequeue_batch(&nq->q, budget - did, &n);
             if (!nb)
                 break;
-            struct netif* rcvif = nb->rcvif;
+            did += n;
             const netisr_handler_t handler = __atomic_load_n(&ps->handler, __ATOMIC_ACQUIRE);
-            if (handler)
-                handler(nb);
-            else
-                netbuf_free_chain(nb);
-            if (rcvif)
-                netif_rele(rcvif);
-            did++;
+            while (nb) {
+                struct netbuf* next = nb->next_pkt;
+                nb->next_pkt = nullptr;
+                struct netif* rcvif = nb->rcvif;
+                if (handler)
+                    handler(nb);
+                else
+                    netbuf_free_chain(nb);
+                if (rcvif)
+                    netif_rele(rcvif);
+                nb = next;
+            }
         }
         if (locked)
             net_lock_exit();
@@ -168,19 +180,27 @@ static unsigned netisr_drain_queue(struct netisr_proto_state* ps, struct netisr_
 
 static unsigned netisr_drain(const unsigned budget)
 {
+    uint64_t pending = __atomic_load_n(&netisr_mask, __ATOMIC_ACQUIRE);
+    if (!pending)
+        return 0;
     unsigned did = 0;
     const uint32_t start = (uint32_t)cpu_this()->index;
     netif_tx_batch_begin();
-    bool progress = true;
-    while (progress && did < budget) {
-        progress = false;
+    while (pending && did < budget) {
+        bool progress = false;
         for (int p = 1; p < NETISR_MAX && did < budget; p++) {
+            uint32_t bits = (uint32_t)(pending >> (p * NETISR_FLOWS)) & NETISR_FLOW_MASK;
+            if (!bits)
+                continue;
             struct netisr_proto_state* ps = &protos[p];
+            const uint32_t nq_count = ps->nqueues;
+            const uint32_t rot = start % nq_count;
+            bits = ((bits >> rot) | (bits << (nq_count - rot))) & ((1u << nq_count) - 1);
             bool blocked = false;
-            for (uint32_t k = 0; k < ps->nqueues && did < budget && !blocked; k++) {
-                struct netisr_queue* nq = &ps->queues[(start + k) % ps->nqueues];
-                if (!netqueue_len(&nq->q))
-                    continue;
+            while (bits && did < budget && !blocked) {
+                const uint32_t k = (uint32_t)__builtin_ctz(bits);
+                bits &= bits - 1;
+                struct netisr_queue* nq = &ps->queues[(k + rot) % nq_count];
                 const unsigned left = budget - did;
                 const unsigned n = netisr_drain_queue(ps, nq, left < NETISR_POLL_BUDGET ? left : NETISR_POLL_BUDGET,
                                                       &blocked);
@@ -188,6 +208,9 @@ static unsigned netisr_drain(const unsigned budget)
                 progress |= n != 0;
             }
         }
+        if (!progress)
+            break;
+        pending = __atomic_load_n(&netisr_mask, __ATOMIC_ACQUIRE);
     }
     netif_tx_batch_end();
     return did;
@@ -235,7 +258,8 @@ void netisr_softintr()
     unsigned polled = 0;
     unsigned drained = 0;
     uint64_t deadline = 0;
-    const uint64_t limit = idle ? tsc_micros() + NETISR_IDLE_POLL_MAX_US : 0;
+    const uint64_t poll_ticks = tsc_ticks_from_micros(NETISR_IDLE_POLL_US);
+    const uint64_t limit = idle ? tsc_read() + tsc_ticks_from_micros(NETISR_IDLE_POLL_MAX_US) : 0;
     bool arm = !idle;
     bool more;
     for (;;) {
@@ -255,9 +279,9 @@ void netisr_softintr()
             more = false;
             break;
         }
-        const uint64_t now = tsc_micros();
+        const uint64_t now = tsc_read();
         if (got)
-            deadline = now + NETISR_IDLE_POLL_US < limit ? now + NETISR_IDLE_POLL_US : limit;
+            deadline = now + poll_ticks < limit ? now + poll_ticks : limit;
         if (now >= deadline || process_ready_pending())
             arm = true;
         else

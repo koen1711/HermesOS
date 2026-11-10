@@ -135,7 +135,6 @@ static void e1000_devs_remove(const struct e1000_device* dev)
 void e1000_initialize()
 {
     spinlock_init(&e1000_devs_lock, "e1000_devs");
-    netisr_register_poller(e1000_rx_softintr);
     for (uint32_t bus = 0; bus < PCI_NUM_BUSES; bus++) {
         for (uint32_t slot = 0; slot < PCI_NUM_DEVICES; slot++) {
             pci_device pci;
@@ -163,6 +162,8 @@ void e1000_initialize()
             e1000_devs_add(dev);
         }
     }
+    if (__atomic_load_n(&e1000_devs[0], __ATOMIC_SEQ_CST))
+        netisr_register_poller(e1000_rx_softintr);
 }
 
 static void e1000_reset(const struct e1000_device* dev)

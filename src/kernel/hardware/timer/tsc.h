@@ -7,5 +7,6 @@ void tsc_initialize();
 uint64_t tsc_read();
 
 uint64_t tsc_micros();
+uint64_t tsc_ticks_from_micros(uint64_t us);
 
 #endif //DRIVERS_TIMER_TSC_H
