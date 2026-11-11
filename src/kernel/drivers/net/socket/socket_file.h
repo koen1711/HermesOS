@@ -7,11 +7,13 @@
 #include <drivers/fs/vfs/driver.h>
 
 struct socket;
+struct iovec_s;
 
 extern file_operations_t socket_fops;
 
 ssize_t socket_file_read(struct file_s* f, void* buf, size_t len);
 ssize_t socket_file_write(struct file_s* f, const void* buf, size_t len);
+ssize_t socket_file_writev(struct file_s* f, const struct iovec_s* iov, int cnt);
 int socket_file_close(struct file_s* f);
 int socket_file_poll(struct file_s* f);
 int socket_file_ioctl(struct file_s* f, unsigned long request, void* arg);

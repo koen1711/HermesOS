@@ -30,4 +30,11 @@ extern tss_t task_state_segment;
 
 void tss_initialize();
 
+#ifdef HERMES_UNIKERNEL
+#define IST_TRAP  2
+#define IST_FATAL 3
+
+void tss_install_ist(tss_t* tss, int cpu_index);
+#endif
+
 #endif //TSS_H

@@ -73,6 +73,7 @@ enum msg_flags
 
 struct protosw;
 struct netbuf;
+struct iovec_s;
 
 struct sock_lock {
     volatile uint32_t locked;
@@ -130,6 +131,8 @@ int sock_listen(struct socket* so, int backlog);
 int sock_connect(struct socket* so, const struct sockaddr* addr, socklen_t len);
 int sock_accept(struct socket* so, struct socket** out, struct sockaddr* addr, socklen_t* len);
 struct netbuf* sock_send_prebuild(const struct socket* so, const void* buf, size_t len);
+struct netbuf* sock_send_prebuild_iov(const struct socket* so, const struct iovec_s* iov, size_t cnt, size_t total);
+// buf == nullptr: returns 0 instead of falling back when nb no longer fits
 ssize_t sock_send_prebuilt(struct socket* so, struct netbuf* nb, const void* buf, size_t len);
 ssize_t sock_send(struct socket* so, const void* buf, size_t len, int flags,
                   const struct sockaddr* dst, socklen_t dst_len);

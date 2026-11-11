@@ -240,6 +240,13 @@ static ssize_t sendmsg_iov(struct socket* so, const struct iovec_s* iov, const s
         return n;
     }
 
+    if (!(flags & MSG_OOB)) {
+        struct netbuf* nb = sock_send_prebuild_iov(so, iov, iovlen, total);
+        const ssize_t n = nb ? sock_send_prebuilt(so, nb, nullptr, total) : 0;
+        if (n)
+            return n;
+    }
+
     size_t sent = 0;
     for (size_t i = 0; i < iovlen; i++) {
         if (!iov[i].iov_len)

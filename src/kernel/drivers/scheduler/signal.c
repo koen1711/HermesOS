@@ -5,16 +5,14 @@
 #include <hardware/interrupts/irq.h>
 #include <hardware/memory/alloc.h>
 #include <drivers/timer/clock.h>
+#include <hardware/interrupts/mode.h>
 #include <os/errno.h>
 
-#define USER_CS 0x23
-#define USER_SS 0x1B
 #define RFLAGS_IF 0x200
 #define RFLAGS_TF 0x100
 #define RFLAGS_DF 0x400
 
 #define RFLAGS_USER 0x50DD5
-#define USER_ADDR_LIMIT 0x0000800000000000ULL
 #define RED_ZONE 128
 #define INT80_LEN 2
 
@@ -170,6 +168,12 @@ bool signal_fault(const interrupt_context* context, const uint64_t cr2)
 static void signal_restart(interrupt_context* context, const int64_t syscall_nr)
 {
     context->rax = (uint64_t)syscall_nr;
+#ifdef HERMES_UNIKERNEL
+    if (context->error_code == SYSCALL_FRAME_KCALL) {
+        context->rip -= HERMES_KCALL_RESTART_LEN;
+        return;
+    }
+#endif
     context->rip -= INT80_LEN;
 }
 
@@ -300,7 +304,7 @@ static bool signal_setup_frame(interrupt_context* context, process_t* current, c
 
 void signal_deliver(interrupt_context* context)
 {
-    if ((context->cs & 3) != 3)
+    if (!frame_from_workload(context))
         return;
     process_t* current = signal_current_user();
     if (current == nullptr)
@@ -425,10 +429,12 @@ void sys_rt_sigreturn(interrupt_context* context)
         return;
     }
     const struct sigcontext_s* m = &uc.uc_mcontext;
+#ifndef HERMES_UNIKERNEL
     if (m->rip >= USER_ADDR_LIMIT || m->rsp >= USER_ADDR_LIMIT) {
         process_exit_group(SIGSEGV);
         return;
     }
+#endif
     context->r8 = m->r8;
     context->r9 = m->r9;
     context->r10 = m->r10;
@@ -447,8 +453,8 @@ void sys_rt_sigreturn(interrupt_context* context)
     context->rsp = m->rsp;
     context->rip = m->rip;
     context->rflags = (context->rflags & ~RFLAGS_USER) | (m->eflags & RFLAGS_USER) | RFLAGS_IF;
-    context->cs = USER_CS;
-    context->ss = USER_SS;
+    context->cs = WORKLOAD_CS;
+    context->ss = WORKLOAD_SS;
     current->sig_blocked = uc.uc_sigmask & ~unblockable;
     current->syscall_nr = -1;
 

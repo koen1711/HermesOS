@@ -17,6 +17,8 @@ if(HERMES_PROFILER)
     list(APPEND ALL_ASM_SOURCES ${PROFILER_ASM_SOURCES})
 endif()
 
+option(HERMES_UNIKERNEL "Trusted workload: every process runs in ring 0, syscalls are direct calls" OFF)
+
 list(APPEND SOURCES ${ALL_ASM_SOURCES})
 set_source_files_properties(${ALL_ASM_SOURCES} PROPERTIES LANGUAGE ASM)
 
@@ -64,7 +66,18 @@ if(HERMES_PROFILER)
         $<$<COMPILE_LANGUAGE:C>:-fno-omit-frame-pointer -fno-optimize-sibling-calls -g>)
 endif()
 
-set(MLIBC_LIB_DIR ${CMAKE_SOURCE_DIR}/buildtools/cross/usr/lib)
+if(HERMES_UNIKERNEL)
+    target_compile_definitions(${PROJECT_NAME} PRIVATE $<$<COMPILE_LANGUAGE:C>:HERMES_UNIKERNEL>)
+    target_compile_options(${PROJECT_NAME} PRIVATE $<$<COMPILE_LANGUAGE:ASM>:--defsym=HERMES_UNIKERNEL=1>)
+    set(HERMES_MLIBC_PREFIX ${CMAKE_SOURCE_DIR}/buildtools/cross-unikernel CACHE PATH "mlibc from UNIKERNEL=1 buildtools/mlibc-build.sh")
+    if(NOT EXISTS ${HERMES_MLIBC_PREFIX}/usr/lib/libc.so)
+        message(FATAL_ERROR "HERMES_UNIKERNEL needs a libc that calls kcall_entry: run UNIKERNEL=1 buildtools/mlibc-build.sh")
+    endif()
+else()
+    set(HERMES_MLIBC_PREFIX ${CMAKE_SOURCE_DIR}/buildtools/cross)
+endif()
+
+set(MLIBC_LIB_DIR ${HERMES_MLIBC_PREFIX}/usr/lib)
 set(MLIBC_SHARED_LIBS ld.so libc.so libdl.so libm.so libpthread.so libresolv.so librt.so libssp.so libutil.so)
 list(TRANSFORM MLIBC_SHARED_LIBS PREPEND ${MLIBC_LIB_DIR}/)
 

@@ -2,6 +2,7 @@
 #include <hardware/memory/mmu.h>
 #include <hardware/memory/pmm.h>
 #include <hardware/gdt/tss.h>
+#include <hardware/interrupts/mode.h>
 #include <hardware/smp/smp.h>
 #include <drivers/fs/vfs/vfs.h>
 #include <drivers/elf/ELF.h>
@@ -820,9 +821,9 @@ int process_exec(process_t *proc, const char *path, char *const argv[], char *co
     }
 
     memset(proc->frame, 0, sizeof(interrupt_context));
-    proc->frame->cs = 0x20 | 3;
+    proc->frame->cs = WORKLOAD_CS;
     proc->frame->rip = entry;
-    proc->frame->ss = 0x18 | 3;
+    proc->frame->ss = WORKLOAD_SS;
     proc->frame->rsp = sp;
     proc->frame->rflags = 0x202;
 
@@ -840,7 +841,11 @@ static process_t *find_free_process_slot() {
 
 static void set_tss(const process_t *proc) {
     struct cpu *cpu = cpu_this();
+#ifdef HERMES_UNIKERNEL
+    cpu->kernel_rsp = proc->stack + KERNEL_STACK_SIZE;
+#else
     cpu->tss->rsp0 = cpu->kernel_rsp = proc->stack + KERNEL_STACK_SIZE;
+#endif
 }
 
 static void reap_detached() {
@@ -1048,9 +1053,9 @@ static process_t *create_process() {
 
     proc->frame = (interrupt_context*)(stack_top - sizeof(interrupt_context));
 
-    proc->frame->cs = 0x20 | 3;
+    proc->frame->cs = WORKLOAD_CS;
     proc->frame->rip = USER_VIRTUAL_BASE;
-    proc->frame->ss = 0x18 | 3;
+    proc->frame->ss = WORKLOAD_SS;
     proc->frame->rsp = USER_STACK_START;
     proc->frame->rflags = 0x202;
 

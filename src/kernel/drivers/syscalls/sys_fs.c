@@ -5,6 +5,7 @@
 #include <drivers/fs/vfs/vfs.h>
 #include <drivers/fs/pipe/pipe.h>
 #include <drivers/net/socket/socket_file.h>
+#include <drivers/net/socket/socket_syscalls.h>
 #include <drivers/scheduler/process.h>
 #include <drivers/timer/clock.h>
 #include <hardware/memory/alloc.h>
@@ -123,11 +124,6 @@ struct dirent64_k {
     char d_name[];
 } __attribute__((packed));
 
-struct iovec_k {
-    void* iov_base;
-    size_t iov_len;
-};
-
 
 
 static long dup_from(int fd, int min_fd, bool cloexec);
@@ -237,17 +233,17 @@ long sys_close(const int fd)
     return fd_close(fd);
 }
 
-static long iov_in(const void* uiov, const int iov_cnt, struct iovec_k** out)
+static long iov_in(const void* uiov, const int iov_cnt, struct iovec_s** out)
 {
     *out = nullptr;
     if (iov_cnt < 0 || iov_cnt > IOV_MAX)
         return -EINVAL;
     if (iov_cnt == 0)
         return 0;
-    struct iovec_k* iov = malloc(iov_cnt * sizeof(struct iovec_k));
+    struct iovec_s* iov = malloc(iov_cnt * sizeof(struct iovec_s));
     if (iov == nullptr)
         return -ENOMEM;
-    if (copy_from_user(iov, uiov, iov_cnt * sizeof(struct iovec_k)) < 0) {
+    if (copy_from_user(iov, uiov, iov_cnt * sizeof(struct iovec_s)) < 0) {
         free(iov);
         return -EFAULT;
     }
@@ -262,7 +258,7 @@ static long rw_vector(const int fd, const void* uiov, const int iov_cnt, const i
         return -EBADF;
     if (offset >= 0 && f->node->type != INODE_FILE)
         return -ESPIPE;
-    struct iovec_k* iov;
+    struct iovec_s* iov;
     const long err = iov_in(uiov, iov_cnt, &iov);
     if (err)
         return err;
@@ -305,11 +301,15 @@ long sys_socket_rw(struct file_s* f, void* buf, const size_t len, const bool wri
 
 long sys_socket_rwv(struct file_s* f, const void* uiov, const int iov_cnt, const bool write)
 {
-    struct iovec_k* iov;
+    struct iovec_s* iov;
     const long err = iov_in(uiov, iov_cnt, &iov);
     if (err)
         return err;
-    long total = 0;
+    long total = write && iov_cnt > 1 ? socket_file_writev(f, iov, iov_cnt) : 0;
+    if (total) {
+        free(iov);
+        return total;
+    }
     for (int i = 0; i < iov_cnt; i++) {
         if (iov[i].iov_len == 0)
             continue;

@@ -1,4 +1,5 @@
 #include <drivers/net/socket/socket.h>
+#include <drivers/net/socket/socket_syscalls.h>
 
 #include <drivers/net/socket/protosw.h>
 #include <drivers/net/core/netbuf.h>
@@ -366,12 +367,32 @@ static ssize_t sock_send_locked(struct socket* so, const void* buf, const size_t
     return (ssize_t)sent;
 }
 
-struct netbuf* sock_send_prebuild(const struct socket* so, const void* buf, const size_t len)
+static bool sock_prebuild_fits(const struct socket* so, const size_t len)
 {
     const uint32_t flags = so->proto->flags;
-    if (!(flags & PR_CONNREQUIRED) || (flags & PR_ATOMIC) || !len || len > sockbuf_space(&so->snd))
+    return (flags & PR_CONNREQUIRED) && !(flags & PR_ATOMIC) && len && len <= sockbuf_space(&so->snd);
+}
+
+struct netbuf* sock_send_prebuild(const struct socket* so, const void* buf, const size_t len)
+{
+    return sock_prebuild_fits(so, len) ? sock_make_netbuf(buf, len) : nullptr;
+}
+
+struct netbuf* sock_send_prebuild_iov(const struct socket* so, const struct iovec_s* iov, const size_t cnt,
+                                      const size_t total)
+{
+    if (!sock_prebuild_fits(so, total))
         return nullptr;
-    return sock_make_netbuf(buf, len);
+    struct netbuf* nb = netbuf_alloc(true);
+    if (!nb)
+        return nullptr;
+    for (size_t i = 0; i < cnt; i++) {
+        if (iov[i].iov_len && !netbuf_append(nb, iov[i].iov_base, iov[i].iov_len)) {
+            netbuf_free_chain(nb);
+            return nullptr;
+        }
+    }
+    return nb;
 }
 
 static ssize_t sock_send_prebuilt_locked(struct socket* so, struct netbuf* nb, const void* buf, const size_t len)
@@ -379,7 +400,7 @@ static ssize_t sock_send_prebuilt_locked(struct socket* so, struct netbuf* nb, c
     if ((so->state & SS_CANTSENDMORE) || so->error || !(so->state & SS_ISCONNECTED)
         || !so->proto->pr_send || sockbuf_space(&so->snd) < len) {
         netbuf_free_chain(nb);
-        return sock_send_locked(so, buf, len, 0, nullptr, 0);
+        return buf ? sock_send_locked(so, buf, len, 0, nullptr, 0) : 0;
     }
     const int err = so->proto->pr_send(so, nb, nullptr, 0, 0);
     return err < 0 ? err : (ssize_t)len;

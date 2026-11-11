@@ -10,6 +10,12 @@
 
 #include <os/stdint.h>
 
+#ifdef HERMES_UNIKERNEL
+#define IDT_DEFAULT_IST 2
+#else
+#define IDT_DEFAULT_IST 0
+#endif
+
 typedef struct {
     uint16_t offset_low;
     uint16_t selector;

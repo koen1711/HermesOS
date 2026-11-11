@@ -4,15 +4,17 @@
 #include <os/stdint.h>
 #include <os/errno.h>
 #include <hardware/interrupts/irq.h>
+#include <hardware/gdt/tss.h>
 #include <drivers/syscalls/syscalls.h>
 #include <drivers/terminal/terminal.h>
 #include <hardware/timer/pit.h>
-#include <drivers/scheduler/process.h> // timer: process_yield, exceptions: process_exit
+#include <drivers/scheduler/process.h>
 #include <drivers/scheduler/signal.h>
 #include <hardware/memory/vm.h>
 #include <hardware/smp/lapic.h>
 #include <hardware/smp/smp.h>
 
+#include "mode.h"
 #include "pic/pic.h"
 
 #ifdef HERMES_PROFILER
@@ -43,7 +45,7 @@ void idt_set_entry(const uint8_t index, const uintptr_t handler)
     idt_entry entry;
     entry.offset_low = handler & 0xFFFF;
     entry.selector = 0x08;
-    entry.ist = 0;
+    entry.ist = IDT_DEFAULT_IST;
     entry.type_attr = 0x8E;
     entry.offset_mid = (handler >> 16) & 0xFFFF;
     entry.offset_high = (handler >> 32) & 0xFFFFFFFF;
@@ -54,7 +56,7 @@ void idt_set_entry(const uint8_t index, const uintptr_t handler)
 
 static bool from_user_mode(const interrupt_context* context)
 {
-    return (context->cs & 3) == 3;
+    return frame_from_workload(context);
 }
 
 static void handle_exception(const interrupt_context* context)
@@ -200,6 +202,10 @@ void idt_initialize()
 
     for (int i = 0; i < EXCEPTION_COUNT; i++)
         idt_set_entry(i, exception_stub_table[i]);
+#ifdef HERMES_UNIKERNEL
+    idt[2].ist = IST_FATAL;
+    idt[8].ist = IST_FATAL;
+#endif
 
     pic_remap(IRQ_OFFSET, IRQ_OFFSET + 8);
 

@@ -8,6 +8,8 @@ SECTIONS
     .boottext :
     {
         *(.multiboot)
+        . = DEFINED(kcall_entry) ? 0x1000 : .;
+        *(.kcall)
         *(.text .text.*)
     }
 

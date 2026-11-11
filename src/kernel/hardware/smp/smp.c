@@ -52,7 +52,11 @@ static void cpu_install(struct cpu* cpu)
 {
     cpu->self = cpu;
     wrmsr(MSR_GS_BASE, (uint64_t)cpu);
+#ifdef HERMES_UNIKERNEL
+    wrmsr(MSR_KERNEL_GS_BASE, (uint64_t)cpu);
+#else
     wrmsr(MSR_KERNEL_GS_BASE, 0);
+#endif
 }
 
 struct cpu* cpu_this()
@@ -259,6 +263,9 @@ static bool start_ap(struct cpu* cpu)
         return false;
 
     cpu->tss = tss;
+#ifdef HERMES_UNIKERNEL
+    tss_install_ist(tss, cpu->index);
+#endif
     if (!process_create_idle(cpu->index, (uint64_t)stack))
         return false;
 

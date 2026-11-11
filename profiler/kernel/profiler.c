@@ -7,6 +7,7 @@
 #include <drivers/terminal/terminal.h>
 #include <hardware/timer/tsc.h>
 #include <hardware/interrupts/interrupts.h>
+#include <hardware/interrupts/mode.h>
 #include <hardware/memory/mmu.h>
 #include <hardware/memory/pmm.h>
 #include <hardware/smp/lapic.h>
@@ -40,7 +41,6 @@
 #define IDT_INTERRUPT_GATE 0x8E
 #define IDT_NMI_IST 1
 
-#define USER_RPL 3
 
 #define NMI_UNCLAIMED_ON_IST 0
 #define NMI_CLAIMED 1
@@ -199,7 +199,7 @@ static uint64_t move_frame_to_kernel_stack(const struct profiler_percpu* self, c
 static void record_sample(const struct profiler_percpu* self, const interrupt_context* frame, const uint64_t tsc)
 {
     struct profiler_cpu_state* state = self->state;
-    const bool user = (frame->cs & 3) == USER_RPL;
+    const bool user = frame_from_workload(frame);
     uint64_t frames[PROFILER_MAX_DEPTH];
     size_t depth = 0;
     bool truncated = false;
@@ -275,7 +275,7 @@ uint64_t profiler_nmi_handler(interrupt_context* frame, struct profiler_percpu**
         return NMI_CLAIMED;
     }
 
-    if ((frame->cs & 3) == USER_RPL)
+    if (frame_from_workload(frame))
         return move_frame_to_kernel_stack(self, frame);
     return NMI_UNCLAIMED_ON_IST;
 }
@@ -366,9 +366,8 @@ void profiler_initialize(void)
     for (int i = 0; i < ncpus; i++)
         cpu_get(i)->tss->ist1 = slots[i];
 
-    // The gate can be live while it's written: only the store of the lower half may change what an NMI sees
     const uint64_t entry = (uintptr_t)profiler_nmi_entry;
-    uint64_t* gate = (uint64_t*)&idt[IDT_VECTOR_NMI];
+    const auto gate = (uint64_t*)&idt[IDT_VECTOR_NMI];
     __atomic_store_n(&gate[1], entry >> 32, __ATOMIC_RELEASE);
     __atomic_store_n(&gate[0],
                      (entry & 0xFFFF) | (uint64_t)IDT_KERNEL_CODE << 16 | (uint64_t)IDT_NMI_IST << 32

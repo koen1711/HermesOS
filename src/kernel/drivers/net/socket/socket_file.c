@@ -2,6 +2,7 @@
 
 #include <drivers/net/core/netif.h>
 #include <drivers/net/socket/socket.h>
+#include <drivers/net/socket/socket_syscalls.h>
 #include <drivers/net/socket/protosw.h>
 #include <drivers/syscalls/uaccess.h>
 #include <drivers/fs/vfs/vfs.h>
@@ -50,6 +51,27 @@ ssize_t socket_file_write(struct file_s* f, const void* buf, const size_t len)
     const bool locked = !sock_mpsafe(so) && net_lock_enter();
     netif_tx_batch_begin();
     const ssize_t n = nb ? sock_send_prebuilt(so, nb, buf, len) : sock_send(so, buf, len, 0, nullptr, 0);
+    netif_tx_batch_end();
+    if (locked)
+        net_lock_exit();
+    return n;
+}
+
+ssize_t socket_file_writev(struct file_s* f, const struct iovec_s* iov, const int cnt)
+{
+    size_t total = 0;
+    for (int i = 0; i < cnt; i++) {
+        if (!uaccess_ok(iov[i].iov_base, iov[i].iov_len))
+            return 0;
+        total += iov[i].iov_len;
+    }
+    struct socket* so = socket_of(f);
+    struct netbuf* nb = sock_send_prebuild_iov(so, iov, cnt, total);
+    if (!nb)
+        return 0;
+    const bool locked = !sock_mpsafe(so) && net_lock_enter();
+    netif_tx_batch_begin();
+    const ssize_t n = sock_send_prebuilt(so, nb, nullptr, total);
     netif_tx_batch_end();
     if (locked)
         net_lock_exit();

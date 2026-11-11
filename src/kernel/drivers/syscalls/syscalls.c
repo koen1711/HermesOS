@@ -13,6 +13,8 @@
 #include <drivers/net/socket/socket.h>
 #include <hardware/smp/smp.h>
 #include <os/errno.h>
+#include <hardware/interrupts/mode.h>
+#include <hardware/interrupts/panic.h>
 
 #define AT_FDCWD (-100)
 #define CLONE_VM 0x00000100
@@ -51,6 +53,10 @@ void syscalls_cpu_initialize()
 
 void syscalls_initialize()
 {
+#ifdef HERMES_UNIKERNEL
+    if ((uint64_t)kcall_entry != HERMES_KCALL_ADDR)
+        panic("kcall_entry is not at HERMES_KCALL_ADDR", __FILE__, __LINE__);
+#endif
     idt_set_entry(SYSCALL_VECTOR, (uintptr_t)irq_interrupt_syscall);
     idt[SYSCALL_VECTOR].type_attr = 0xEE;
     syscalls_cpu_initialize();

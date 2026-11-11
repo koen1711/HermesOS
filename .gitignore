@@ -1,5 +1,6 @@
 build/
 buildtools/cross
+buildtools/cross-unikernel
 
 cmake-build-debug/
 cmake-build-release/
