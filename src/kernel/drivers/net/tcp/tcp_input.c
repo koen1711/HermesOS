@@ -828,12 +828,12 @@ static void tcp_input_packet(struct netbuf* nb, const size_t off, const struct i
     tcp_header_to_host(th);
 
     uint64_t flags;
-    tcp_table_lock(&flags);
-    struct inpcb* inp = inpcb_lookup(&tcp_pcbs, src, th->src_port, dst, th->dst_port, true);
+    tcp_table_read_lock(&flags);
+    const struct inpcb* inp = inpcb_lookup(&tcp_pcbs, src, th->src_port, dst, th->dst_port, true);
     struct socket* so = inp && inp->ppcb ? inp->socket : nullptr;
     if (so)
         sock_hold(so);
-    tcp_table_unlock(flags);
+    tcp_table_read_unlock(flags);
     if (so)
         sock_lock(so);
     if (so && so->pcb == inp && inp->ppcb) {

@@ -1,5 +1,6 @@
 #include <drivers/timer/callout.h>
 
+#include <hardware/interrupts/irq.h>
 #include <hardware/timer/pit.h>
 #include <hardware/timer/tsc.h>
 #include <hardware/smp/smp.h>
@@ -7,17 +8,25 @@
 
 #define WHEEL_SIZE 256
 
-static struct dlist wheel[WHEEL_SIZE];
-static spinlock_t callout_lock;
-static volatile uint64_t ticks;
+struct callout_wheel {
+    spinlock_t lock;
+    uint64_t done;
+    struct callout* running;
+    struct dlist slots[WHEEL_SIZE];
+} __attribute__((aligned(64)));
 
-static struct callout* running[MAX_CPUS];
+static struct callout_wheel wheels[MAX_CPUS];
+static volatile uint64_t ticks;
 
 void callout_initialize()
 {
-    for (int i = 0; i < WHEEL_SIZE; i++)
-        dlist_init(&wheel[i]);
-    spinlock_init(&callout_lock, "callout");
+    for (int c = 0; c < MAX_CPUS; c++) {
+        for (int i = 0; i < WHEEL_SIZE; i++)
+            dlist_init(&wheels[c].slots[i]);
+        spinlock_init(&wheels[c].lock, "callout");
+        wheels[c].done = 0;
+        wheels[c].running = nullptr;
+    }
     ticks = 0;
 }
 
@@ -29,13 +38,28 @@ void callout_init(struct callout* c)
     c->arg = nullptr;
     c->pending = false;
     c->mpsafe = false;
+    c->cpu = -1;
     c->dispatched = 0;
 }
 
 static void callout_unlink(struct callout* c)
 {
-    dlist_remove(&wheel[c->expires % WHEEL_SIZE], &c->link);
-    c->pending = false;
+    dlist_remove(&wheels[c->cpu].slots[c->expires % WHEEL_SIZE], &c->link);
+    __atomic_store_n(&c->pending, false, __ATOMIC_RELEASE);
+}
+
+static struct callout_wheel* callout_lock_wheel(const struct callout* c)
+{
+    for (;;) {
+        const int cpu = __atomic_load_n(&c->cpu, __ATOMIC_ACQUIRE);
+        if (cpu < 0)
+            return nullptr;
+        struct callout_wheel* w = &wheels[cpu];
+        spinlock_acquire(&w->lock);
+        if (__atomic_load_n(&c->cpu, __ATOMIC_RELAXED) == cpu)
+            return w;
+        spinlock_release(&w->lock);
+    }
 }
 
 void callout_reset(struct callout* c, uint64_t delay, const callout_func_t func, void* arg)
@@ -43,26 +67,52 @@ void callout_reset(struct callout* c, uint64_t delay, const callout_func_t func,
     if (delay == 0)
         delay = 1;
 
-    uint64_t flags;
-    spinlock_acquire_irqsave(&callout_lock, &flags);
+    const uint64_t flags = irq_save();
+    const int self = cpu_this()->index;
+    struct callout_wheel* mine = &wheels[self];
+    struct callout_wheel* old;
+    for (;;) {
+        const int cpu = __atomic_load_n(&c->cpu, __ATOMIC_ACQUIRE);
+        old = cpu < 0 || cpu == self ? nullptr : &wheels[cpu];
+        if (old && cpu < self)
+            spinlock_acquire(&old->lock);
+        spinlock_acquire(&mine->lock);
+        if (old && cpu > self)
+            spinlock_acquire(&old->lock);
+        if (__atomic_load_n(&c->cpu, __ATOMIC_RELAXED) == cpu)
+            break;
+        if (old)
+            spinlock_release(&old->lock);
+        spinlock_release(&mine->lock);
+    }
+
     if (c->pending)
         callout_unlink(c);
     c->expires = ticks + delay;
     c->func = func;
     c->arg = arg;
-    c->pending = true;
-    dlist_insert_tail(&wheel[c->expires % WHEEL_SIZE], &c->link);
-    spinlock_release_irqrestore(&callout_lock, flags);
+    __atomic_store_n(&c->cpu, self, __ATOMIC_RELEASE);
+    dlist_insert_tail(&mine->slots[c->expires % WHEEL_SIZE], &c->link);
+    __atomic_store_n(&c->pending, true, __ATOMIC_RELEASE);
+
+    if (old)
+        spinlock_release(&old->lock);
+    spinlock_release(&mine->lock);
+    irq_restore(flags);
 }
 
 bool callout_stop(struct callout* c)
 {
-    uint64_t flags;
-    spinlock_acquire_irqsave(&callout_lock, &flags);
-    const bool was = c->pending;
+    if (!__atomic_load_n(&c->pending, __ATOMIC_ACQUIRE))
+        return false;
+    const uint64_t flags = irq_save();
+    struct callout_wheel* w = callout_lock_wheel(c);
+    const bool was = w && c->pending;
     if (was)
         callout_unlink(c);
-    spinlock_release_irqrestore(&callout_lock, flags);
+    if (w)
+        spinlock_release(&w->lock);
+    irq_restore(flags);
     return was;
 }
 
@@ -74,7 +124,7 @@ void callout_drain(struct callout* c)
         for (int i = 0; i < MAX_CPUS; i++) {
             if (i == self)
                 continue;
-            while (__atomic_load_n(&running[i], __ATOMIC_ACQUIRE) == c) {
+            while (__atomic_load_n(&wheels[i].running, __ATOMIC_ACQUIRE) == c) {
                 smp_spin_poll();
                 asm volatile("pause");
             }
@@ -84,7 +134,7 @@ void callout_drain(struct callout* c)
 
 bool callout_pending(const struct callout* c)
 {
-    return c->pending;
+    return __atomic_load_n(&c->pending, __ATOMIC_ACQUIRE);
 }
 
 uint32_t callout_dispatches(const struct callout* c)
@@ -92,32 +142,40 @@ uint32_t callout_dispatches(const struct callout* c)
     return __atomic_load_n(&c->dispatched, __ATOMIC_ACQUIRE);
 }
 
-void callout_tick()
+static struct callout* wheel_due(struct callout_wheel* w, const uint64_t now)
+{
+    uint64_t from = w->done + 1;
+    if (now - w->done > WHEEL_SIZE)
+        from = now - WHEEL_SIZE + 1;
+    for (uint64_t t = from; t <= now; t++) {
+        const struct dlist* slot = &w->slots[t % WHEEL_SIZE];
+        for (struct dlist_node* n = dlist_first(slot); n; n = dlist_next(n)) {
+            const auto c = dlist_entry(n, struct callout, link);
+            if (c->expires <= now)
+                return c;
+        }
+        w->done = t;
+    }
+    return nullptr;
+}
+
+static void wheel_run(struct callout_wheel* w, const uint64_t now)
 {
     uint64_t flags;
-    spinlock_acquire_irqsave(&callout_lock, &flags);
-    const uint64_t now = ++ticks;
-    const struct dlist* slot = &wheel[now % WHEEL_SIZE];
+    spinlock_acquire_irqsave(&w->lock, &flags);
     bool big_locks = false, kernel_locked = false, net_locked = false;
 
     for (;;) {
-        struct callout* due = nullptr;
-        for (struct dlist_node* n = dlist_first(slot); n; n = dlist_next(n)) {
-            const auto c = dlist_entry(n, struct callout, link);
-            if (c->expires <= now) {
-                due = c;
-                break;
-            }
-        }
+        struct callout* due = wheel_due(w, now);
         if (!due)
             break;
 
         if (!due->mpsafe && !big_locks) {
-            spinlock_release_irqrestore(&callout_lock, flags);
+            spinlock_release_irqrestore(&w->lock, flags);
             kernel_locked = kernel_lock_enter();
             net_locked = net_lock_enter();
             big_locks = true;
-            spinlock_acquire_irqsave(&callout_lock, &flags);
+            spinlock_acquire_irqsave(&w->lock, &flags);
             continue;
         }
 
@@ -125,19 +183,32 @@ void callout_tick()
         __atomic_add_fetch(&due->dispatched, 1, __ATOMIC_RELEASE);
         const callout_func_t func = due->func;
         void* arg = due->arg;
-        struct callout** slot_running = &running[cpu_this()->index];
-        struct callout* outer = *slot_running;
-        __atomic_store_n(slot_running, due, __ATOMIC_RELEASE);
-        spinlock_release_irqrestore(&callout_lock, flags);
+        struct callout* outer = w->running;
+        __atomic_store_n(&w->running, due, __ATOMIC_RELEASE);
+        spinlock_release_irqrestore(&w->lock, flags);
         func(arg);
-        __atomic_store_n(slot_running, outer, __ATOMIC_RELEASE);
-        spinlock_acquire_irqsave(&callout_lock, &flags);
+        __atomic_store_n(&w->running, outer, __ATOMIC_RELEASE);
+        spinlock_acquire_irqsave(&w->lock, &flags);
     }
-    spinlock_release_irqrestore(&callout_lock, flags);
+    spinlock_release_irqrestore(&w->lock, flags);
     if (net_locked)
         net_lock_exit();
     if (kernel_locked)
         kernel_lock_exit();
+}
+
+void callout_tick()
+{
+    const uint64_t now = __atomic_add_fetch(&ticks, 1, __ATOMIC_ACQ_REL);
+    wheel_run(&wheels[cpu_this()->index], now);
+}
+
+void callout_tick_local()
+{
+    struct callout_wheel* w = &wheels[cpu_this()->index];
+    const uint64_t now = __atomic_load_n(&ticks, __ATOMIC_ACQUIRE);
+    if (w->done < now)
+        wheel_run(w, now);
 }
 
 void callout_poll()

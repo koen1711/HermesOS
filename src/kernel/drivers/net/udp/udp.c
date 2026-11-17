@@ -38,12 +38,12 @@ void udp_initialize()
 
 static void udp_lock(uint64_t* flags)
 {
-    spinlock_acquire_irqsave(&udp_pcbs.lock, flags);
+    brlock_write_acquire(&udp_pcbs.lock, flags);
 }
 
 static void udp_unlock(const uint64_t flags)
 {
-    spinlock_release_irqrestore(&udp_pcbs.lock, flags);
+    brlock_write_release(&udp_pcbs.lock, flags);
 }
 
 static bool udp_validate(struct netbuf* nb, const size_t off, const struct in6_addr* src, const struct in6_addr* dst)

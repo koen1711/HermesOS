@@ -9,6 +9,7 @@
 #include <drivers/terminal/terminal.h>
 #include <hardware/timer/pit.h>
 #include <drivers/scheduler/process.h>
+#include <drivers/timer/callout.h>
 #include <drivers/scheduler/signal.h>
 #include <hardware/memory/vm.h>
 #include <hardware/smp/lapic.h>
@@ -145,6 +146,7 @@ void syscall_dispatch(interrupt_context* context)
 void trap_handler(interrupt_context* context)
 {
     const uint64_t vector = context->interrupt_number;
+    cpu_this()->halted = false;
 
     if (vector == TLB_SHOOTDOWN_VECTOR) {
         smp_tlb_interrupt();
@@ -155,6 +157,12 @@ void trap_handler(interrupt_context* context)
 
     if (vector == LAPIC_TIMER_VECTOR || vector == RESCHED_VECTOR) {
         lapic_eoi();
+        if (vector == LAPIC_TIMER_VECTOR) {
+            struct cpu* cpu = cpu_this();
+            cpu->irq_depth++;
+            callout_tick_local();
+            cpu->irq_depth--;
+        }
         irq_softintr();
     } else if (vector != PAGE_FAULT_VECTOR || !resolve_page_fault(context)) {
         if (vector < EXCEPTION_COUNT)

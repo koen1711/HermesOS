@@ -7,7 +7,7 @@
 #   profiler/profiler stop                copy the samples out and write profiler/output/<stamp>/report.html
 #   profiler/profiler status              per-CPU state and buffer fullness
 #
-# Settings: HERMES_PROGRAMS, PROFILER_BUILD_DIR, PROFILER_OUTPUT, PROFILER_BUFFER_MIB, SMP (at least 2),
+# Settings: HERMES_PROGRAMS, PROFILER_BUILD_DIR, PROFILER_OUTPUT, PROFILER_BUFFER_MIB, SMP,
 # DISK_MODE (continue, the default when a disk exists, or fresh put this build on the disk; keep boots it as it is), DISK_SIZE.
 # The first run copies $HERMES_PROGRAMS/build/image/core.img (with its installed Python packages) to the profiling image.
 # QEMU's monitor socket and pidfile live in the per-user session directory, so QEMU_EXTRA_ARGS may be word-split safely.
@@ -46,16 +46,7 @@ then
 	HOST_CPUS=$(nproc 2>/dev/null || getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)
 	SMP=$((HOST_CPUS / 2))
 	[ "$SMP" -gt 16 ] && SMP=16
-	if [ "$SMP" -lt 2 ]
-	then
-		if [ "$HOST_CPUS" -lt 2 ]
-		then
-			echo "the guest needs at least 2 CPUs and this host has $HOST_CPUS"
-			exit 1
-		fi
-		echo "raising SMP from $SMP to 2: the kernel needs at least 2 CPUs to start its local APIC"
-		SMP=2
-	fi
+	[ "$SMP" -lt 1 ] && SMP=1
 fi
 case "$SMP" in
 	''|*[!0-9]*)
@@ -63,9 +54,9 @@ case "$SMP" in
 		exit 1
 		;;
 esac
-if [ "$SMP" -lt 2 ]
+if [ "$SMP" -lt 1 ]
 then
-	echo "SMP=$SMP is not supported: the kernel needs at least 2 CPUs to initialise its local APIC (use SMP=2 or more)"
+	echo "SMP=$SMP is not supported: the guest needs at least 1 CPU"
 	exit 1
 fi
 export SMP

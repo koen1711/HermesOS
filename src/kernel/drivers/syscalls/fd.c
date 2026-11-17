@@ -2,6 +2,8 @@
 
 #include <drivers/fs/vfs/vfs.h>
 #include <drivers/scheduler/process.h>
+#include <hardware/interrupts/irq.h>
+#include <hardware/smp/smp.h>
 #include <os/errno.h>
 
 static struct proc_files* current_files()
@@ -62,18 +64,48 @@ struct file_s* fd_get(const int fd)
     return files->file[fd];
 }
 
+static bool file_tryget(struct file_s* f)
+{
+    int n = __atomic_load_n(&f->ref_count, __ATOMIC_ACQUIRE);
+    while (n > 0)
+        if (__atomic_compare_exchange_n(&f->ref_count, &n, n + 1, true, __ATOMIC_ACQUIRE, __ATOMIC_ACQUIRE))
+            return true;
+    return false;
+}
+
 struct file_s* fd_pin(const int fd)
 {
     struct proc_files* files = current_files();
     if (files == nullptr || fd < 0 || fd >= PROC_MAX_FILE_DESCRIPTORS)
         return nullptr;
-    uint64_t flags;
-    spinlock_acquire_irqsave(&files->lock, &flags);
-    struct file_s* f = files->file[fd];
-    if (f != nullptr)
-        __atomic_fetch_add(&f->ref_count, 1, __ATOMIC_RELAXED);
-    spinlock_release_irqrestore(&files->lock, flags);
-    return f;
+    for (;;) {
+        const uint64_t flags = irq_save();
+        struct cpu* cpu = cpu_this();
+        __atomic_store_n(&cpu->fd_lookup, true, __ATOMIC_SEQ_CST);
+        struct file_s* f = __atomic_load_n(&files->file[fd], __ATOMIC_ACQUIRE);
+        const bool got = f && file_tryget(f);
+        __atomic_store_n(&cpu->fd_lookup, false, __ATOMIC_RELEASE);
+        irq_restore(flags);
+        if (f == nullptr)
+            return nullptr;
+        if (got) {
+            if (__atomic_load_n(&files->file[fd], __ATOMIC_ACQUIRE) == f)
+                return f;
+            vfs_file_put(f);
+        }
+    }
+}
+
+void fd_pin_quiesce()
+{
+    __atomic_thread_fence(__ATOMIC_SEQ_CST);
+    for (int i = 0; i < cpu_count(); i++) {
+        const struct cpu* cpu = cpu_get(i);
+        while (__atomic_load_n(&cpu->fd_lookup, __ATOMIC_ACQUIRE)) {
+            smp_spin_poll();
+            asm volatile("pause");
+        }
+    }
 }
 
 int fd_close(const int fd)

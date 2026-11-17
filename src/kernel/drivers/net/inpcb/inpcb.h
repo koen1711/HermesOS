@@ -2,9 +2,8 @@
 #define NET_INPCB_INPCB_H
 
 #include <os/stdint.h>
-#include <os/stdbool.h>
 #include <utils/queue/queue.h>
-#include <utils/sync/spinlock.h>
+#include <utils/sync/brlock.h>
 #include <drivers/net/ipv4/ipv4.h>
 #include <drivers/net/ipv6/ipv6.h>
 
@@ -48,7 +47,7 @@ struct inpcb_table {
     struct dlist hash[INPCB_HASH_SIZE];
     struct dlist port_hash[INPCB_HASH_SIZE];
     uint16_t last_port;
-    spinlock_t lock;
+    brlock_t lock;
     const char* name;
 };
 

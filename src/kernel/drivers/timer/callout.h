@@ -13,6 +13,7 @@ struct callout {
     void* arg;
     bool pending;
     bool mpsafe;
+    int cpu;
     uint32_t dispatched;
 };
 
@@ -28,6 +29,7 @@ bool callout_pending(const struct callout* c);
 uint32_t callout_dispatches(const struct callout* c);
 
 void callout_tick();
+void callout_tick_local();
 void callout_poll();
 
 uint64_t ticks_get();

@@ -53,8 +53,5 @@ void kernel_main(void* multiboot_info_ptr)
 #endif
 
     irq_restore(0x200);
-    while (1)
-    {
-        asm volatile("hlt");
-    }
+    process_idle_loop();
 }

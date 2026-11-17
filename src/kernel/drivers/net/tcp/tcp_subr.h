@@ -17,6 +17,8 @@ void tcp_initialize();
 
 void tcp_table_lock(uint64_t* flags);
 void tcp_table_unlock(uint64_t flags);
+void tcp_table_read_lock(uint64_t* flags);
+void tcp_table_read_unlock(uint64_t flags);
 
 int tcp_attach_pcb(struct socket* so);
 void tcp_pcb_release(struct inpcb* inp);

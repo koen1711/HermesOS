@@ -3,6 +3,7 @@
 #include "utils/str/str.h"
 #include <drivers/fs/notify/inotify.h>
 #include <drivers/fs/vfs/poll_head.h>
+#include <drivers/syscalls/fd.h>
 #include <hardware/smp/smp.h>
 #include <utils/sync/spinlock.h>
 #include <os/errno.h>
@@ -663,6 +664,7 @@ void vfs_file_release(struct file_s* f)
         release_node(f->mount, f->node);
         f->mount->open_count--;
     }
+    fd_pin_quiesce();
     free(f);
     uint64_t flags;
     spinlock_acquire_irqsave(&fd_table_lock, &flags);

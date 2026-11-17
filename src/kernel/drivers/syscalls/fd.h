@@ -10,6 +10,7 @@ int fd_install_from(struct file_s* f, int min_fd, bool cloexec);
 int fd_install_at(int fd, struct file_s* f, bool cloexec);
 struct file_s* fd_get(int fd);
 struct file_s* fd_pin(int fd);
+void fd_pin_quiesce();
 int fd_close(int fd);
 bool fd_cloexec(int fd);
 void fd_set_cloexec(int fd, bool on);

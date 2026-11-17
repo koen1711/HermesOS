@@ -17,6 +17,10 @@ struct cpu {
     volatile bool tlb_flush;
     tss_t* tss;
     uint32_t irq_depth;
+
+    volatile bool halted;
+    volatile bool fd_lookup;
+    volatile uint32_t pv_eoi;
 } __attribute__((aligned(64)));
 
 struct cpu* cpu_this();

@@ -1,6 +1,7 @@
 #include "lapic.h"
 
 #include <hardware/memory/mmu.h>
+#include <hardware/smp/smp.h>
 #include <hardware/timer/tsc.h>
 
 enum lapic_register {
@@ -30,10 +31,18 @@ enum lapic_register {
 #define X2APIC_MSR_BASE 0x800
 #define X2APIC_ICR 0x830
 #define CPUID1_ECX_X2APIC (1u << 21)
+#define CPUID1_ECX_HYPERVISOR (1u << 31)
+
+#define KVM_CPUID_SIGNATURE 0x40000000
+#define KVM_CPUID_FEATURES 0x40000001
+#define KVM_FEATURE_PV_EOI 6
+#define MSR_KVM_PV_EOI_EN 0x4b564d04
+#define KVM_PV_EOI_ENABLED 1u
 
 static volatile uint32_t* lapic;
 static uint32_t timer_count;
 static bool x2apic;
+static bool pv_eoi;
 
 static uint64_t rdmsr(const uint32_t msr)
 {
@@ -52,6 +61,19 @@ static bool x2apic_supported()
     uint32_t eax, ebx, ecx, edx;
     asm volatile("cpuid" : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx) : "a"(1), "c"(0));
     return ecx & CPUID1_ECX_X2APIC;
+}
+
+static bool kvm_pv_eoi_supported()
+{
+    uint32_t eax, ebx, ecx, edx;
+    asm volatile("cpuid" : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx) : "a"(1), "c"(0));
+    if (!(ecx & CPUID1_ECX_HYPERVISOR))
+        return false;
+    asm volatile("cpuid" : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx) : "a"(KVM_CPUID_SIGNATURE), "c"(0));
+    if (ebx != 0x4b4d564b || ecx != 0x564b4d56 || edx != 0x4d || eax < KVM_CPUID_FEATURES)
+        return false;
+    asm volatile("cpuid" : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx) : "a"(KVM_CPUID_FEATURES), "c"(0));
+    return eax & (1u << KVM_FEATURE_PV_EOI);
 }
 
 static uint32_t lapic_read(const uint32_t reg)
@@ -112,6 +134,12 @@ void lapic_enable(const bool mask_lint0)
     lapic_write(LAPIC_SVR, LAPIC_SVR_ENABLE | LAPIC_SPURIOUS_VECTOR);
     if (mask_lint0)
         lapic_write(LAPIC_LVT_LINT0, LAPIC_MASKED);
+    if (kvm_pv_eoi_supported()) {
+        struct cpu* cpu = cpu_this();
+        cpu->pv_eoi = 0;
+        wrmsr(MSR_KVM_PV_EOI_EN, virt_to_phys((const void*)&cpu->pv_eoi) | KVM_PV_EOI_ENABLED);
+        pv_eoi = true;
+    }
 }
 
 uint32_t lapic_id()
@@ -123,6 +151,13 @@ uint32_t lapic_id()
 
 void lapic_eoi()
 {
+    if (pv_eoi) {
+        struct cpu* cpu = cpu_this();
+        if (cpu->pv_eoi & KVM_PV_EOI_ENABLED) {
+            cpu->pv_eoi = 0;
+            return;
+        }
+    }
     lapic_write(LAPIC_EOI, 0);
 }
 

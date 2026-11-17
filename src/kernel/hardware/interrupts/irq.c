@@ -285,7 +285,8 @@ uint64_t irq_save()
     return flags;
 }
 
-void irq_restore(uint64_t flags)
+void irq_restore(const uint64_t flags)
 {
-    asm volatile("pushq %0\n\tpopfq" : : "rm"(flags) : "memory", "cc");
+    if (flags & 0x200)
+        asm volatile("sti" : : : "memory");
 }

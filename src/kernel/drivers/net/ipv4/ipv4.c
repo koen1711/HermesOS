@@ -47,6 +47,52 @@ static struct callout reassemble_callout;
 static struct dlist all_addrs;
 static spinlock_t addr_lock;
 
+#define ADDR_SNAP_MAX 8
+static struct {
+    uint32_t seq;
+    uint32_t count;
+    struct {
+        const struct netif* nif;
+        struct in_addr addr;
+        struct in_addr broadcast;
+        uint8_t prefix_len;
+    } e[ADDR_SNAP_MAX];
+} addr_snap __attribute__((aligned(64)));
+
+static void addr_snap_update_locked()
+{
+    __atomic_store_n(&addr_snap.seq, addr_snap.seq + 1, __ATOMIC_RELAXED);
+    __atomic_thread_fence(__ATOMIC_RELEASE);
+    uint32_t count = 0;
+    for (struct dlist_node* n = dlist_first(&all_addrs); n; n = dlist_next(n), count++) {
+        if (count >= ADDR_SNAP_MAX)
+            continue;
+        const auto ia = dlist_entry(n, struct ipv4_ifaddr, all_link);
+        addr_snap.e[count].nif = ia->nif;
+        addr_snap.e[count].addr = ia->addr;
+        addr_snap.e[count].broadcast = ia->broadcast;
+        addr_snap.e[count].prefix_len = ia->prefix_len;
+    }
+    addr_snap.count = count;
+    __atomic_store_n(&addr_snap.seq, addr_snap.seq + 1, __ATOMIC_RELEASE);
+}
+
+static uint32_t addr_snap_begin()
+{
+    for (;;) {
+        const uint32_t seq = __atomic_load_n(&addr_snap.seq, __ATOMIC_ACQUIRE);
+        if (!(seq & 1))
+            return seq;
+        asm volatile("pause");
+    }
+}
+
+static bool addr_snap_retry(const uint32_t seq)
+{
+    __atomic_thread_fence(__ATOMIC_ACQUIRE);
+    return __atomic_load_n(&addr_snap.seq, __ATOMIC_RELAXED) != seq;
+}
+
 void ipv4_initialize()
 {
     for (int i = 0; i < 256; i++)
@@ -97,6 +143,7 @@ static void ipv4_addr_unlink_locked(struct ipv4_ifaddr* ia)
 {
     dlist_remove(&ia->nif->ipv4_addrs, &ia->link);
     dlist_remove(&all_addrs, &ia->all_link);
+    addr_snap_update_locked();
 }
 
 int ipv4_addr_add(struct netif* nif, const struct in_addr addr, const uint8_t prefix_len, const uint64_t valid_until)
@@ -124,6 +171,7 @@ int ipv4_addr_add(struct netif* nif, const struct in_addr addr, const uint8_t pr
     }
     dlist_insert_tail(&nif->ipv4_addrs, &ia->link);
     dlist_insert_tail(&all_addrs, &ia->all_link);
+    addr_snap_update_locked();
     spinlock_release_irqrestore(&addr_lock, irq);
 
     const int rc = route_add4(addr, prefix_len, (struct in_addr){ INADDR_ANY }, nif, 0);
@@ -216,6 +264,17 @@ struct in_addr ipv4_select_source(struct netif* nif, const struct in_addr dst)
 
 bool ipv4_is_local(const struct in_addr addr)
 {
+    for (;;) {
+        const uint32_t seq = addr_snap_begin();
+        const uint32_t count = __atomic_load_n(&addr_snap.count, __ATOMIC_RELAXED);
+        if (count > ADDR_SNAP_MAX)
+            break;
+        bool local = false;
+        for (uint32_t i = 0; i < count && !local; i++)
+            local = addr_snap.e[i].addr.s_addr == addr.s_addr;
+        if (!addr_snap_retry(seq))
+            return local;
+    }
     uint64_t irq;
     spinlock_acquire_irqsave(&addr_lock, &irq);
     const bool local = ipv4_addr_find_locked(addr) != nullptr;
@@ -227,6 +286,18 @@ bool ipv4_is_broadcast(const struct netif* nif, const struct in_addr addr)
 {
     if (addr.s_addr == INADDR_BROADCAST)
         return true;
+    for (;;) {
+        const uint32_t seq = addr_snap_begin();
+        const uint32_t count = __atomic_load_n(&addr_snap.count, __ATOMIC_RELAXED);
+        if (count > ADDR_SNAP_MAX)
+            break;
+        bool bcast = false;
+        for (uint32_t i = 0; i < count && !bcast; i++)
+            bcast = addr_snap.e[i].nif == nif && addr_snap.e[i].prefix_len < 31
+                    && addr_snap.e[i].broadcast.s_addr == addr.s_addr;
+        if (!addr_snap_retry(seq))
+            return bcast;
+    }
     bool bcast = false;
     uint64_t irq;
     spinlock_acquire_irqsave(&addr_lock, &irq);

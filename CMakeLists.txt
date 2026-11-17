@@ -18,6 +18,8 @@ if(HERMES_PROFILER)
 endif()
 
 option(HERMES_UNIKERNEL "Trusted workload: every process runs in ring 0, syscalls are direct calls" OFF)
+set(HERMES_NETISR_IDLE_POLL_US 30 CACHE STRING "How long an idle CPU keeps polling RX after the last packet, in µs (0 disables)")
+set(HERMES_NETISR_IDLE_POLL_MAX_US 100 CACHE STRING "Upper bound on one idle RX poll, in µs")
 
 list(APPEND SOURCES ${ALL_ASM_SOURCES})
 set_source_files_properties(${ALL_ASM_SOURCES} PROPERTIES LANGUAGE ASM)
@@ -57,6 +59,9 @@ target_compile_options(${PROJECT_NAME} PRIVATE
     -fno-pie -mno-red-zone -mno-sse>)
 target_link_options(${PROJECT_NAME} PRIVATE
     -m64 -nostdlib -no-pie -static -z max-page-size=0x1000)
+
+target_compile_definitions(${PROJECT_NAME} PRIVATE
+    $<$<COMPILE_LANGUAGE:C>:NETISR_IDLE_POLL_US=${HERMES_NETISR_IDLE_POLL_US} NETISR_IDLE_POLL_MAX_US=${HERMES_NETISR_IDLE_POLL_MAX_US}>)
 
 if(HERMES_PROFILER)
     target_include_directories(${PROJECT_NAME} PRIVATE profiler/kernel)

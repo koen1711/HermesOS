@@ -1,4 +1,5 @@
 #include "process.h"
+#include <drivers/net/core/netisr.h>
 #include <hardware/memory/mmu.h>
 #include <hardware/memory/pmm.h>
 #include <hardware/gdt/tss.h>
@@ -134,6 +135,29 @@ void process_yield() {
     sched_switch(flags);
 }
 
+void process_idle_loop() {
+    struct cpu *cpu = cpu_this();
+    for (;;) {
+        asm volatile("cli" : : : "memory");
+        __atomic_store_n(&cpu->halted, true, __ATOMIC_SEQ_CST);
+        if (process_ready_pending()) {
+            __atomic_store_n(&cpu->halted, false, __ATOMIC_RELAXED);
+            asm volatile("sti" : : : "memory");
+            process_yield();
+            continue;
+        }
+
+        if (netisr_wanted()) {
+            __atomic_store_n(&cpu->halted, false, __ATOMIC_RELAXED);
+            irq_softintr();
+            asm volatile("sti" : : : "memory");
+            continue;
+        }
+        asm volatile("sti; hlt" : : : "memory");
+        __atomic_store_n(&cpu->halted, false, __ATOMIC_RELAXED);
+    }
+}
+
 void process_sleep(const int wait_id) {
     uint64_t flags;
     spinlock_acquire_irqsave(&sched_lock, &flags);
@@ -168,6 +192,11 @@ static int kick_other_idle_cpus(int count) {
         }
         const process_t *cur = __atomic_load_n(&per_cpu[i].current, __ATOMIC_SEQ_CST);
         if (cur == nullptr || cur != per_cpu[i].idle) {
+            continue;
+        }
+        __atomic_thread_fence(__ATOMIC_SEQ_CST);
+        if (!__atomic_load_n(&cpu_get(i)->halted, __ATOMIC_SEQ_CST)) {
+            count--;
             continue;
         }
         if (__atomic_exchange_n(&kick_pending[i], true, __ATOMIC_SEQ_CST)) {
@@ -920,7 +949,9 @@ static void switch_process(process_t *prev, process_t *next) {
     asm volatile("fxsave64 %0" : "=m"(prev->fpu_state));
     asm volatile("fxrstor64 %0" : : "m"(next->fpu_state));
     wrmsr(MSR_FS_BASE, next->fs_base);
-    switch_vm(next->page_map);
+
+    if (read_cr3() != next->page_map)
+        switch_vm(next->page_map);
     context_switch(&prev->context, next->context);
 }
 

@@ -16,7 +16,7 @@ void inpcb_table_init(struct inpcb_table* table, const char* name)
         dlist_init(&table->port_hash[i]);
     }
     table->last_port = 0;
-    spinlock_init(&table->lock, name);
+    brlock_init(&table->lock, name);
     table->name = name;
 }
 
@@ -377,12 +377,12 @@ static int inpcb_pr_name(struct socket* so, struct sockaddr* addr, socklen_t* le
         return -ENOTCONN;
 
     uint64_t flags;
-    spinlock_acquire_irqsave(&inp->table->lock, &flags);
+    brlock_read_acquire(&inp->table->lock, &flags);
     if (peer)
         inpcb_get_peername(inp, addr, len);
     else
         inpcb_get_sockname(inp, addr, len);
-    spinlock_release_irqrestore(&inp->table->lock, flags);
+    brlock_read_release(&inp->table->lock, flags);
     return 0;
 }
 

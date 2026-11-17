@@ -2,6 +2,10 @@
 
 #include "hardware/interrupts/panic.h"
 #include "hardware/memory/alloc.h"
+#include <hardware/interrupts/irq.h>
+#include <hardware/smp/smp.h>
+#include <utils/str/str.h>
+#include <utils/sync/spinlock.h>
 
 void netbuf_initialize()
 {
@@ -17,10 +21,82 @@ static struct netbuf* netbuf_setup(struct netbuf* nb, const size_t size, const b
     return nb;
 }
 
+#define NB_BATCH 32
+#define NB_DEPOT_MAX 64
+
+enum { NB_SMALL, NB_CLUSTER, NB_CLASSES };
+
+struct nb_cache {
+    struct netbuf* head;
+    uint32_t count;
+    struct netbuf* full;
+};
+
+static struct {
+    struct nb_cache c[NB_CLASSES];
+} __attribute__((aligned(64))) nb_caches[MAX_CPUS];
+
+static struct {
+    spinlock_t lock;
+    struct netbuf* chains;
+    uint32_t nchains;
+} __attribute__((aligned(64))) nb_depots[NB_CLASSES];
+
+static int nb_class(const struct netbuf* nb)
+{
+    if (nb->buf != (const uint8_t*)(nb + 1))
+        return -1;
+    if (nb->buf_size == NETBUF_SIZE)
+        return NB_SMALL;
+    return nb->buf_size == NETBUF_CLUSTER_SIZE ? NB_CLUSTER : -1;
+}
+
+static struct netbuf* nb_depot_take(const int cls)
+{
+    spinlock_acquire(&nb_depots[cls].lock);
+    struct netbuf* chain = nb_depots[cls].chains;
+    if (chain) {
+        nb_depots[cls].chains = chain->next_pkt;
+        nb_depots[cls].nchains--;
+    }
+    spinlock_release(&nb_depots[cls].lock);
+    return chain;
+}
+
+static void nb_depot_put(const int cls, struct netbuf* chain)
+{
+    spinlock_acquire(&nb_depots[cls].lock);
+    const bool room = nb_depots[cls].nchains < NB_DEPOT_MAX;
+    if (room) {
+        chain->next_pkt = nb_depots[cls].chains;
+        nb_depots[cls].chains = chain;
+        nb_depots[cls].nchains++;
+    }
+    spinlock_release(&nb_depots[cls].lock);
+    while (!room && chain) {
+        struct netbuf* next = chain->next;
+        free(chain);
+        chain = next;
+    }
+}
+
 static struct netbuf* netbuf_alloc_sized(const size_t size, const bool pkthdr)
 {
-    struct netbuf* nb = malloc(sizeof(struct netbuf) + size);
-    if (!nb)
+    const int cls = size == NETBUF_SIZE ? NB_SMALL : NB_CLUSTER;
+    const uint64_t flags = irq_save();
+    struct nb_cache* cache = &nb_caches[cpu_this()->index].c[cls];
+    struct netbuf* nb = cache->head;
+    if (!nb) {
+        nb = cache->full ? cache->full : nb_depot_take(cls);
+        cache->full = nullptr;
+        cache->count = nb ? NB_BATCH : 0;
+    }
+    if (nb) {
+        cache->head = nb->next;
+        cache->count--;
+    }
+    irq_restore(flags);
+    if (!nb && !(nb = malloc(sizeof(struct netbuf) + size)))
         return nullptr;
     memset(nb, 0, sizeof(struct netbuf));
     return netbuf_setup(nb, size, pkthdr);
@@ -60,7 +136,26 @@ struct netbuf* netbuf_alloc_packet(const size_t len)
 
 void netbuf_free(struct netbuf* nb)
 {
-    free(nb);
+    const int cls = nb_class(nb);
+    if (cls < 0) {
+        free(nb);
+        return;
+    }
+    const uint64_t flags = irq_save();
+    struct nb_cache* cache = &nb_caches[cpu_this()->index].c[cls];
+    struct netbuf* spill = nullptr;
+    if (cache->count == NB_BATCH) {
+        spill = cache->full;
+        cache->full = cache->head;
+        cache->head = nullptr;
+        cache->count = 0;
+    }
+    nb->next = cache->head;
+    cache->head = nb;
+    cache->count++;
+    if (spill)
+        nb_depot_put(cls, spill);
+    irq_restore(flags);
 }
 
 void netbuf_free_chain(struct netbuf* nb)

@@ -211,55 +211,64 @@ void epoll_file_release(struct file_s* f)
     spinlock_release(&epoll_global_lock);
 }
 
+#define EP_HARVEST_CHUNK 16
+
 static int ep_harvest_ready(struct epoll* ep, struct epoll_event_k* out, const int max, const bool consume,
                             struct file_s** deferred)
 {
+    struct epoll_entry* chunk[EP_HARVEST_CHUNK];
+    struct epoll_entry* requeue[EP_HARVEST_CHUNK];
+    int nrequeue = 0;
+    int count = 0;
+
     uint64_t flags;
     spinlock_acquire_irqsave(&ep->rdlock, &flags);
     struct dlist batch = ep->rdlist;
     dlist_init(&ep->rdlist);
-    spinlock_release_irqrestore(&ep->rdlock, flags);
-
-    int count = 0;
-    while (!dlist_empty(&batch) && count < max) {
-        struct epoll_entry* e = rd_entry_of(dlist_first(&batch));
-        spinlock_acquire_irqsave(&ep->rdlock, &flags);
-        dlist_remove(&batch, &e->rdlink);
-        e->on_rdlist = false;
-        spinlock_release_irqrestore(&ep->rdlock, flags);
-
-        struct file_s* pinned = fd_pin(e->fd);
-        if (pinned != e->file || e->disabled) {
-            file_unpin(pinned, deferred);
-            continue;
+    for (;;) {
+        for (int i = 0; i < nrequeue; i++)
+            ep_queue_locked(requeue[i]);
+        nrequeue = 0;
+        int n = 0;
+        while (n < EP_HARVEST_CHUNK && count + n < max && !dlist_empty(&batch)) {
+            struct epoll_entry* e = rd_entry_of(dlist_first(&batch));
+            dlist_remove(&batch, &e->rdlink);
+            e->on_rdlist = false;
+            chunk[n++] = e;
         }
-        const uint32_t ready = entry_ready(e, deferred);
-        file_unpin(pinned, deferred);
-        if (!ready)
-            continue;
-
-        if (out)
-            out[count] = (struct epoll_event_k){ .events = ready, .data = e->data };
-        count++;
-        if (consume && (e->events & EPOLLONESHOT)) {
-            e->disabled = true;
-        } else if (!consume || !(e->events & EPOLLET)) {
-            spinlock_acquire_irqsave(&ep->rdlock, &flags);
-            ep_queue_locked(e);
+        if (n == 0) {
+            while (!dlist_empty(&batch)) {
+                struct dlist_node* node = dlist_last(&batch);
+                dlist_remove(&batch, node);
+                dlist_insert_head(&ep->rdlist, node);
+            }
             spinlock_release_irqrestore(&ep->rdlock, flags);
-        }
-    }
-
-    if (!dlist_empty(&batch)) {
-        spinlock_acquire_irqsave(&ep->rdlock, &flags);
-        while (!dlist_empty(&batch)) {
-            struct dlist_node* n = dlist_last(&batch);
-            dlist_remove(&batch, n);
-            dlist_insert_head(&ep->rdlist, n);
+            return count;
         }
         spinlock_release_irqrestore(&ep->rdlock, flags);
+
+        for (int i = 0; i < n; i++) {
+            struct epoll_entry* e = chunk[i];
+            struct file_s* pinned = fd_pin(e->fd);
+            if (pinned != e->file || e->disabled) {
+                file_unpin(pinned, deferred);
+                continue;
+            }
+            const uint32_t ready = entry_ready(e, deferred);
+            file_unpin(pinned, deferred);
+            if (!ready)
+                continue;
+
+            if (out)
+                out[count] = (struct epoll_event_k){ .events = ready, .data = e->data };
+            count++;
+            if (consume && (e->events & EPOLLONESHOT))
+                e->disabled = true;
+            else if (!consume || !(e->events & EPOLLET))
+                requeue[nrequeue++] = e;
+        }
+        spinlock_acquire_irqsave(&ep->rdlock, &flags);
     }
-    return count;
 }
 
 static int ep_harvest_legacy(struct epoll* ep, struct epoll_event_k* out, const int max, const bool consume,

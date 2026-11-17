@@ -107,6 +107,7 @@ process_t *process_create_kernel(void (*fn)(void *), void *arg);
 scheduler_t *scheduler_get();
 
 void process_yield();
+[[noreturn]] void process_idle_loop();
 void context_switch(uint64_t *old, uint64_t new);
 
 void process_sleep(int wait_id);

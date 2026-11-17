@@ -13,8 +13,12 @@
 #define NETISR_SOFTINTR_BUDGET 256
 #define NETISR_FLOWS 8
 #define NETISR_RX_BUDGET 128
+#ifndef NETISR_IDLE_POLL_US
 #define NETISR_IDLE_POLL_US 30
+#endif
+#ifndef NETISR_IDLE_POLL_MAX_US
 #define NETISR_IDLE_POLL_MAX_US 100
+#endif
 #define NETISR_MAX_POLLERS 4
 #define NETISR_FLOW_MASK ((1u << NETISR_FLOWS) - 1)
 
@@ -239,6 +243,11 @@ void netisr_unregister_poller(const netisr_poller_t poller)
         netisr_poller_t expected = poller;
         __atomic_compare_exchange_n(&pollers[i], &expected, nullptr, false, __ATOMIC_RELEASE, __ATOMIC_RELAXED);
     }
+}
+
+bool netisr_wanted()
+{
+    return __atomic_load_n(&rx_wanted, __ATOMIC_ACQUIRE) || netisr_pending();
 }
 
 void netisr_rx_schedule()

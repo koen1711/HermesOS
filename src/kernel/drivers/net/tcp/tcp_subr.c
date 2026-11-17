@@ -31,12 +31,22 @@ void tcp_initialize()
 
 void tcp_table_lock(uint64_t* flags)
 {
-    spinlock_acquire_irqsave(&tcp_pcbs.lock, flags);
+    brlock_write_acquire(&tcp_pcbs.lock, flags);
 }
 
 void tcp_table_unlock(const uint64_t flags)
 {
-    spinlock_release_irqrestore(&tcp_pcbs.lock, flags);
+    brlock_write_release(&tcp_pcbs.lock, flags);
+}
+
+void tcp_table_read_lock(uint64_t* flags)
+{
+    brlock_read_acquire(&tcp_pcbs.lock, flags);
+}
+
+void tcp_table_read_unlock(const uint64_t flags)
+{
+    brlock_read_release(&tcp_pcbs.lock, flags);
 }
 
 static uint8_t tcp_pick_rcv_scale(const struct socket* so)

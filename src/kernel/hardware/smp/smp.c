@@ -251,8 +251,7 @@ static void ap_main()
     lapic_timer_start();
     __atomic_store_n(&cpu->online, true, __ATOMIC_RELEASE);
 
-    for (;;)
-        asm volatile("sti; hlt");
+    process_idle_loop();
 }
 
 static bool start_ap(struct cpu* cpu)
@@ -301,7 +300,7 @@ void smp_initialize()
     uint8_t apic_ids[MAX_CPUS];
     uint64_t lapic_phys = 0;
     const int found = acpi_find_cpus(apic_ids, MAX_CPUS, &lapic_phys);
-    if (found <= 1 || !lapic_initialize(lapic_phys))
+    if (found < 1 || !lapic_initialize(lapic_phys))
         return;
 
     kernel_gdtr.size = 0x800 - 1;
@@ -315,7 +314,8 @@ void smp_initialize()
     const uint64_t flags = irq_save();
     const bool locked = kernel_lock_enter();
     lapic_enable(false);
-    lapic_timer_calibrate(AP_TIMER_HZ);
+    if (found > 1)
+        lapic_timer_calibrate(AP_TIMER_HZ);
     const uint32_t bsp = lapic_id();
     cpus[0].apic_id = bsp;
 
